@@ -1,0 +1,27 @@
+// 38 cols x 25 rows layout matrix
+export default [
+  ['XX','XX','XX','XX','XX','XX','XX','XX','XX','XX','ESC','ESC','ESC','ESC','ESC','ESC','ESC','ESC','ESC','ESC','ESC','ESC','ESC','ESC','ESC','ESC','ESC','ESC','XX','XX','XX','XX','XX','XX','XX','XX','XX','XX'],
+  ['XX','XX','XX','XX','XX','XX','XX','XX','XX','XX','ESC','ESC','ESC','ESC','ESC','ESC','ESC','ESC','ESC','ESC','ESC','ESC','ESC','ESC','ESC','ESC','ESC','ESC','XX','XX','XX','XX','XX','XX','XX','XX','XX','XX'],
+  ['XX','XX','XX','PA 17','PA 17','XX','XX','XX','XX','XX','XX','XX','XX','XX','XX','XX','XX','XX','XX','XX','XX','XX','XX','XX','XX','XX','XX','XX','XX','XX','XX','XX','XX','PA 18','PA 18','XX','XX','XX'],
+  ['XX','XX','XX','PA 17','PA 17','XX','PB 19','PB 19','XX','XX','XX','XX','XX','XX','XX','XX','XX','XX','XX','XX','XX','XX','XX','XX','XX','XX','XX','XX','XX','XX','PB 20','PB 20','XX','PA 18','PA 18','XX','XX','XX'],
+  ['XX','XX','PA 15','PA 15','XX','XX','PB 19','PB 19','XX','XX','15','13','11','9','A','7','5','3','1','2','4','6','8','A','10','12','14','16','XX','XX','PB 20','PB 20','XX','XX','PA 16','PA 16','XX','XX'],
+  ['XX','XX','PA 15','PA 15','XX','PB 17','PB 17','XX','XX','17','15','13','11','9','B','7','5','3','1','2','4','6','8','B','10','12','14','16','18','XX','XX','PB 18','PB 18','XX','PA 16','PA 16','XX','XX'],
+  ['XX','PA 13','PA 13','XX','XX','PB 17','PB 17','XX','XX','17','15','13','11','9','C','7','5','3','1','2','4','6','8','C','10','12','14','16','18','XX','XX','PB 18','PB 18','XX','XX','PA 14','PA 14','XX'],
+  ['XX','PA 13','PA 13','XX','PB 15','PB 15','XX','XX','19','17','15','13','11','9','D','7','5','3','1','2','4','6','8','D','10','12','14','16','18','20','XX','XX','PB 16','PB 16','XX','PA 14','PA 14','XX'],
+  ['XX','PA 11','PA 11','XX','PB 15','PB 15','XX','21','19','17','15','13','11','9','E','7','5','3','1','2','4','6','8','E','10','12','14','16','18','20','22','XX','PB 16','PB 16','XX','PA 12','PA 12','XX'],
+  ['XX','PA 11','PA 11','XX','PB 13','PB 13','XX','21','19','17','15','13','11','9','F','7','5','3','1','2','4','6','8','F','10','12','14','16','18','20','22','XX','PB 14','PB 14','XX','PA 12','PA 12','XX'],
+  ['XX','PA 9','PA 9','XX','PB 13','PB 13','XX','21','19','17','15','13','11','9','G','7','5','3','1','2','4','6','8','G','10','12','14','16','18','20','22','XX','PB 14','PB 14','XX','PA 10','PA 10','XX'],
+  ['XX','PA 9','PA 9','XX','XX','XX','XX','21','19','17','15','13','11','9','H','7','5','3','1','2','4','6','8','H','10','12','14','16','18','20','22','XX','XX','XX','XX','PA 10','PA 10','XX'],
+  ['XX','PA 7','PA 7','XX','XX','XX','XX','21','19','17','15','13','11','9','I','7','5','3','1','2','4','6','8','I','10','12','14','16','18','20','22','XX','XX','XX','XX','PA 8','PA 8','XX'],
+  ['XX','PA 7','PA 7','XX','PB 11','PB 11','XX','XX','19','17','15','13','11','9','J','7','5','3','1','2','4','6','8','J','10','12','14','16','18','20','XX','XX','PB 12','PB 12','XX','PA 8','PA 8','XX'],
+  ['XX','PA 5','PA 5','XX','PB 11','PB 11','XX','XX','19','17','15','13','11','9','K','7','5','3','1','2','4','6','8','K','10','12','14','16','18','20','XX','XX','PB 12','PB 12','XX','PA 6','PA 6','XX'],
+  ['XX','PA 5','PA 5','XX','XX','PB 9','PB 9','XX','XX','XX','15','13','11','9','L','7','5','3','1','2','4','6','8','L','10','12','14','16','XX','XX','XX','PB 10','PB 10','XX','XX','PA 6','PA 6','XX'],
+  ['XX','XX','PA 3','PA 3','XX','PB 9','PB 9','XX','XX','XX','XX','11','9','7','M','XX','5','3','1','2','4','6','XX','M','8','10','12','XX','XX','XX','XX','PB 10','PB 10','XX','PA 4','PA 4','XX','XX'],
+  ['XX','XX','PA 3','PA 3','XX','XX','XX','PB 7','PB 7','XX','XX','XX','XX','XX','XX','XX','XX','XX','XX','XX','XX','XX','XX','XX','XX','XX','XX','XX','XX','PB 8','PB 8','XX','XX','XX','PA 4','PA 4','XX','XX'],
+  ['XX','XX','XX','XX','PA 1','PA 1','XX','PB 7','PB 7','PB 5','PB 5','PB 3','PB 3','PB 1','PB 1','XX','XX','XX','XX','XX','XX','XX','XX','PB 2','PB 2','PB 4','PB 4','PB 6','PB 6','PB 8','PB 8','XX','PA 2','PA 2','XX','XX','XX','XX'],
+  ['XX','XX','XX','XX','PA 1','PA 1','XX','XX','XX','PB 5','PB 5','PB 3','PB 3','PB 1','PB 1','XX','XX','XX','XX','XX','XX','XX','XX','PB 2','PB 2','PB 4','PB 4','PB 6','PB 6','XX','XX','XX','PA 2','PA 2','XX','XX','XX','XX'],
+  ['XX','XX','XX','XX','XX','XX','XX','XX','XX','XX','XX','XX','XX','XX','XX','XX','XX','XX','XX','XX','XX','XX','XX','XX','XX','XX','XX','XX','XX','XX','XX','XX','XX','XX','XX','XX','XX','XX'],
+  ['XX','XX','XX','XX','XX','XX','XX','PULL','PULL','PULL','PULL','PULL','PULL','PULL','PULL','PULL','PULL','PULL','PULL','PULL','PULL','PULL','PULL','PULL','PULL','PULL','PULL','PULL','PULL','PULL','PULL','XX','XX','XX','XX','XX','XX'],
+  ['XX','XX','XX','XX','XX','XX','XX','PULL','PULL','PULL','PULL','PULL','PULL','PULL','PULL','PULL','PULL','PULL','PULL','PULL','PULL','PULL','PULL','PULL','PULL','PULL','PULL','PULL','PULL','PULL','PULL','XX','XX','XX','XX','XX','XX'],
+  ['XX','XX','XX','XX','XX','XX','XX','PULL','PULL','PULL','PULL','PULL','PULL','PULL','PULL','PULL','PULL','PULL','PULL','PULL','PULL','PULL','PULL','PULL','PULL','PULL','PULL','PULL','PULL','PULL','PULL','XX','XX','XX','XX','XX','XX']
+];
