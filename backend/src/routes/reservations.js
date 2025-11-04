@@ -6,6 +6,28 @@ import { optionalAuth } from '../middleware/auth.js';
 
 const router = Router();
 
+// GET /api/reservations - List reservations with filters
+router.get('/', async (req, res) => {
+  const { user_id, session_id, status } = req.query;
+  const Reservation = sequelize.models.reservations;
+  
+  const where = {};
+  if (user_id) where.user_id = user_id;
+  if (session_id) where.session_id = session_id;
+  if (status) where.status = status;
+  
+  try {
+    const reservations = await Reservation.findAll({ 
+      where,
+      order: [['createdAt', 'DESC']]
+    });
+    return res.json(reservations);
+  } catch (err) {
+    console.error('[Reservations GET] Error:', err);
+    return res.status(500).json({ error: 'Server error' });
+  }
+});
+
 async function enrichItemsWithPrices(items, session_id) {
   try {
     const { sessions: Session, shows: Show } = sequelize.models;

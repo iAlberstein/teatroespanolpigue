@@ -5,6 +5,7 @@ export default function registerModels(sequelize) {
     id: { type: DataTypes.UUID, defaultValue: DataTypes.UUIDV4, primaryKey: true },
     name: { type: DataTypes.STRING, allowNull: false },
     email: { type: DataTypes.STRING, allowNull: false, unique: true },
+    phone: { type: DataTypes.STRING, allowNull: true },
     password_hash: { type: DataTypes.STRING, allowNull: false },
     role: { type: DataTypes.ENUM('admin','boleteria','productor','espectador','premium'), allowNull: false, defaultValue: 'espectador' }
   });
@@ -64,9 +65,15 @@ export default function registerModels(sequelize) {
     session_id: { type: DataTypes.UUID, allowNull: false },
     user_id: { type: DataTypes.UUID, allowNull: true },
     cashier_id: { type: DataTypes.UUID, allowNull: true },
-    payment_method: { type: DataTypes.ENUM('efectivo','tarjeta','qr','mp'), allowNull: false },
+    payment_method: { type: DataTypes.ENUM('efectivo','tarjeta','qr','mp','cash','card','transfer'), allowNull: false },
+    payment_status: { type: DataTypes.ENUM('pending','approved','rejected'), defaultValue: 'approved' },
     discount_id: { type: DataTypes.UUID, allowNull: true },
-    total_amount: { type: DataTypes.DECIMAL(10,2), allowNull: false }
+    total_amount: { type: DataTypes.DECIMAL(10,2), allowNull: false },
+    customer_name: { type: DataTypes.STRING, allowNull: true },
+    customer_email: { type: DataTypes.STRING, allowNull: true },
+    customer_phone: { type: DataTypes.STRING, allowNull: true },
+    sold_by: { type: DataTypes.UUID, allowNull: true },
+    metadata: { type: DataTypes.JSON, allowNull: true }
   });
 
   const Validation = sequelize.define('validations', {
@@ -79,8 +86,8 @@ export default function registerModels(sequelize) {
   });
 
   // Associations
-  Show.hasMany(Session, { foreignKey: 'show_id' });
-  Session.belongsTo(Show, { foreignKey: 'show_id' });
+  Show.hasMany(Session, { foreignKey: 'show_id', as: 'sessions' });
+  Session.belongsTo(Show, { foreignKey: 'show_id', as: 'show' });
 
   Session.hasMany(Ticket, { foreignKey: 'session_id' });
   Ticket.belongsTo(Session, { foreignKey: 'session_id' });

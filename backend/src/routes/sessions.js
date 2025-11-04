@@ -4,8 +4,12 @@ import { sequelize } from '../lib/sequelize.js';
 const router = Router();
 
 router.get('/', async (req, res) => {
-  const Session = sequelize.models.sessions;
-  const sessions = await Session.findAll({ limit: 100 });
+  const { sessions: Session, shows: Show } = sequelize.models;
+  const sessions = await Session.findAll({ 
+    include: [{ model: Show, as: 'show' }],
+    limit: 100,
+    order: [['starts_at', 'ASC']]
+  });
   res.json(sessions);
 });
 

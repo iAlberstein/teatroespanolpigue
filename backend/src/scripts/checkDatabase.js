@@ -32,7 +32,7 @@ async function checkDatabase() {
     if (sessionCount > 0) {
       const sessions = await Session.findAll({ 
         limit: 5,
-        include: [{ model: Show }]
+        include: [{ model: Show, as: 'show' }]
       });
       sessions.forEach(s => {
         console.log(`  - ${s.show?.title || 'N/A'}: ${s.starts_at}`);

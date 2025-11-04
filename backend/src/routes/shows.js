@@ -9,6 +9,30 @@ router.get('/', async (req, res) => {
   res.json(shows);
 });
 
+// Get sessions for a specific show
+router.get('/:id/sessions', async (req, res) => {
+  try {
+    const { sessions: Session } = sequelize.models;
+    const { Op } = await import('sequelize');
+    
+    // Only return future or current sessions
+    const now = new Date();
+    const sessions = await Session.findAll({
+      where: { 
+        show_id: req.params.id,
+        starts_at: {
+          [Op.gte]: now
+        }
+      },
+      order: [['starts_at', 'ASC']]
+    });
+    res.json(sessions);
+  } catch (error) {
+    console.error('[SHOWS] Error getting sessions:', error);
+    res.status(500).json({ error: 'internal_error' });
+  }
+});
+
 // Update pricing_json for a show
 // Body: { pricing_json: object }
 router.put('/:id/pricing', async (req, res) => {

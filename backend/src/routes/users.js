@@ -38,7 +38,7 @@ router.get('/:id/tickets', async (req, res) => {
   const { tickets: Ticket, sessions: Session, shows: Show } = sequelize.models;
   const tickets = await Ticket.findAll({
     where: { user_id: req.params.id },
-    include: [{ model: Session, include: [Show] }],
+    include: [{ model: Session, include: [{ model: Show, as: 'show' }] }],
     order: [['createdAt', 'DESC']]
   });
   res.json(tickets);
@@ -48,7 +48,7 @@ router.get('/:id/sales', async (req, res) => {
   const { sales: Sale, sessions: Session, shows: Show } = sequelize.models;
   const sales = await Sale.findAll({
     where: { user_id: req.params.id },
-    include: [{ model: Session, include: [Show] }],
+    include: [{ model: Session, include: [{ model: Show, as: 'show' }] }],
     order: [['createdAt', 'DESC']]
   });
   res.json(sales);

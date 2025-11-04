@@ -39,7 +39,7 @@ router.post('/validate', authenticateToken, requireRole('boleteria', 'admin'), a
       include: [
         {
           model: Session,
-          include: [{ model: Show }]
+          include: [{ model: Show, as: 'show' }]
         }
       ]
     });
@@ -171,7 +171,7 @@ router.get('/:id', authenticateToken, async (req, res) => {
       include: [
         {
           model: Session,
-          include: [{ model: Show }]
+          include: [{ model: Show, as: 'show' }]
         },
         {
           model: User,
@@ -224,6 +224,218 @@ router.get('/:id/validations', authenticateToken, requireRole('admin', 'boleteri
   } catch (error) {
     console.error('[TICKETS] Get validations error:', error);
     return res.status(500).json({ error: 'internal_error' });
+  }
+});
+
+/**
+ * POST /api/tickets/box-office-sale
+ * Create a direct sale from box office (without Mercado Pago)
+ * Body: { 
+ *   session_id: string,
+ *   items: [{ type: 'butaca'|'palco'|'pullman', seat_code?: string, quantity?: number, price: number }],
+ *   customer: { name: string, email?: string, phone?: string },
+ *   payment_method: 'cash' | 'card' | 'transfer'
+ * }
+ * Requires: boleteria or admin role
+ */
+router.post('/box-office-sale', authenticateToken, requireRole('boleteria', 'admin'), async (req, res) => {
+  try {
+    const { session_id, items, customer, payment_method = 'cash' } = req.body;
+    const { reservations: Reservation, sales: Sale, tickets: Ticket, sessions: Session, users: User } = sequelize.models;
+
+    // Validate session exists
+    const session = await Session.findByPk(session_id);
+    if (!session) {
+      return res.status(404).json({ error: 'session_not_found', message: 'Session not found' });
+    }
+
+    // Validate items
+    if (!Array.isArray(items) || items.length === 0) {
+      return res.status(400).json({ error: 'invalid_items', message: 'Items array is required' });
+    }
+
+    // Validate customer data
+    if (!customer || !customer.name) {
+      return res.status(400).json({ error: 'invalid_customer', message: 'Customer name is required' });
+    }
+
+    // Search for existing user by email or phone
+    let existingUser = null;
+    let userFoundBy = null;
+    
+    if (customer.email) {
+      existingUser = await User.findOne({ 
+        where: { email: customer.email },
+        attributes: ['id', 'name', 'email', 'phone', 'role']
+      });
+      if (existingUser) userFoundBy = 'email';
+    }
+    
+    if (!existingUser && customer.phone) {
+      existingUser = await User.findOne({ 
+        where: { phone: customer.phone },
+        attributes: ['id', 'name', 'email', 'phone', 'role']
+      });
+      if (existingUser) userFoundBy = 'phone';
+    }
+
+    // Calculate total
+    const total = items.reduce((sum, item) => {
+      if (item.type === 'pullman') {
+        return sum + (Number(item.price || 0) * Number(item.quantity || 1));
+      }
+      return sum + Number(item.price || 0);
+    }, 0);
+
+    // Create sale record
+    const sale = await Sale.create({
+      session_id,
+      user_id: existingUser ? existingUser.id : null,
+      total_amount: total,
+      payment_method,
+      payment_status: 'approved',
+      customer_name: customer.name,
+      customer_email: customer.email || null,
+      customer_phone: customer.phone || null,
+      sold_by: req.user.userId,
+      metadata: {
+        source: 'box_office',
+        items,
+        user_matched: existingUser ? { by: userFoundBy, user_id: existingUser.id } : null
+      }
+    });
+
+    // Create tickets
+    const tickets = [];
+    const ticketUserId = existingUser ? existingUser.id : null;
+    
+    for (const item of items) {
+      if (item.type === 'butaca' || item.type === 'palco') {
+        const ticket = await Ticket.create({
+          session_id,
+          sale_id: sale.id,
+          user_id: ticketUserId, // Associate ticket directly to user if found
+          type: item.type,
+          seat_code: item.seat_code,
+          section: item.type === 'butaca' ? 'platea' : 'palco',
+          price: Number(item.price || 0),
+          status: 'sold',
+          qr_data: null // Will be generated later
+        });
+        tickets.push(ticket);
+      } else if (item.type === 'pullman') {
+        const quantity = Number(item.quantity || 1);
+        for (let i = 0; i < quantity; i++) {
+          const ticket = await Ticket.create({
+            session_id,
+            sale_id: sale.id,
+            user_id: ticketUserId, // Associate ticket directly to user if found
+            type: 'pullman',
+            seat_code: null,
+            section: 'pullman',
+            price: Number(item.price || 0),
+            status: 'sold',
+            qr_data: null
+          });
+          tickets.push(ticket);
+        }
+      }
+    }
+
+    // Generate QR data for each ticket
+    const { generateTicketQR } = await import('../lib/qr.js');
+    for (const ticket of tickets) {
+      const { qr_code, qr_data } = await generateTicketQR({
+        id: ticket.id,
+        session_id: ticket.session_id,
+        user_id: ticket.user_id, // Use the ticket's user_id
+        type: ticket.type,
+        seat_code: ticket.seat_code
+      });
+      await ticket.update({ qr_code, qr_data });
+    }
+
+    // Update in-memory sold state
+    const io = req.app.get('io');
+    if (io) {
+      io.soldSeats = io.soldSeats || new Map();
+      io.soldPalcos = io.soldPalcos || new Map();
+      io.pullmanSold = io.pullmanSold || new Map();
+
+      const seatSet = io.soldSeats.get(session_id) || new Set();
+      const palcoSet = io.soldPalcos.get(session_id) || new Set();
+      let pullmanCount = io.pullmanSold.get(session_id) || 0;
+
+      for (const item of items) {
+        if (item.type === 'butaca' && item.seat_code) {
+          seatSet.add(item.seat_code);
+          io.to(`session:${session_id}`).emit('seat_sold', { seatId: item.seat_code });
+        }
+        if (item.type === 'palco' && item.seat_code) {
+          palcoSet.add(item.seat_code);
+          io.to(`session:${session_id}`).emit('palco_sold', { palco: item.seat_code });
+        }
+        if (item.type === 'pullman') {
+          pullmanCount += Number(item.quantity || 1);
+        }
+      }
+
+      io.soldSeats.set(session_id, seatSet);
+      io.soldPalcos.set(session_id, palcoSet);
+      io.pullmanSold.set(session_id, pullmanCount);
+
+      if (pullmanCount > 0) {
+        io.to(`session:${session_id}`).emit('pullman_sold', { sold: pullmanCount });
+      }
+    }
+
+    // Get seller info
+    const seller = await User.findByPk(req.user.userId, {
+      attributes: ['id', 'name', 'email', 'role']
+    });
+
+    // Format tickets with seat locations
+    const { formatSeatLocation } = await import('../lib/seatFormatter.js');
+    const formattedTickets = tickets.map(t => ({
+      id: t.id,
+      type: t.type,
+      seat_code: t.seat_code,
+      location: formatSeatLocation(t.seat_code, t.type),
+      section: t.section,
+      price: t.price,
+      qr_data: t.qr_data
+    }));
+
+    return res.json({
+      success: true,
+      sale: {
+        id: sale.id,
+        total_amount: sale.total_amount,
+        payment_method: sale.payment_method,
+        customer_name: sale.customer_name,
+        customer_email: sale.customer_email,
+        customer_phone: sale.customer_phone
+      },
+      seller: seller ? {
+        name: seller.name,
+        email: seller.email
+      } : null,
+      user_association: existingUser ? {
+        found: true,
+        matched_by: userFoundBy,
+        user: {
+          id: existingUser.id,
+          name: existingUser.name,
+          email: existingUser.email,
+          role: existingUser.role
+        },
+        message: `Esta entrada se guardó automáticamente en el perfil del usuario ${existingUser.name}`
+      } : null,
+      tickets: formattedTickets
+    });
+  } catch (error) {
+    console.error('[BOX_OFFICE_SALE] Error:', error);
+    return res.status(500).json({ error: 'server_error', message: 'Error creating sale' });
   }
 });
 

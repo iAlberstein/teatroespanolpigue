@@ -29,10 +29,14 @@ function Navbar() {
     }}>
       <div style={{ display: 'flex', gap: 12 }}>
         <Link to="/" style={{ textDecoration: 'none', color: '#333' }}>Home</Link>
-        <Link to="/cartelera" style={{ textDecoration: 'none', color: '#333' }}>Cartelera</Link>
+        {(!isAuthenticated || user?.role !== 'boleteria') && (
+          <Link to="/cartelera" style={{ textDecoration: 'none', color: '#333' }}>Cartelera</Link>
+        )}
         {isAuthenticated && (
           <>
-            <Link to="/perfil" style={{ textDecoration: 'none', color: '#333' }}>Mi Perfil</Link>
+            {user?.role !== 'boleteria' && (
+              <Link to="/perfil" style={{ textDecoration: 'none', color: '#333' }}>Mi Perfil</Link>
+            )}
             {(user?.role === 'boleteria' || user?.role === 'admin') && (
               <>
                 <Link to="/validar" style={{ textDecoration: 'none', color: '#333' }}>✓ Validar Entrada</Link>
