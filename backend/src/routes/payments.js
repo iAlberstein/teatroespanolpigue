@@ -24,16 +24,47 @@ router.post('/preference', optionalAuth, async (req, res) => {
 
     const items = Array.isArray(reservation.items) ? reservation.items : [];
     const mpItems = [];
+    let subtotal = 0;
+    
     for (const it of items) {
+      const price = Number(it.price || 0);
+      
       if (it.type === 'butaca' && it.seat_code) {
-        mpItems.push({ title: `Platea ${it.seat_code}`, quantity: 1, unit_price: 100 });
+        mpItems.push({ 
+          title: `Platea ${it.seat_code}`, 
+          quantity: 1, 
+          unit_price: price 
+        });
+        subtotal += price;
       } else if (it.type === 'palco' && it.seat_code) {
-        mpItems.push({ title: `Palco ${it.seat_code}${it.quantity ? ` (pack ${it.quantity})` : ''}`, quantity: 1, unit_price: 100 });
+        mpItems.push({ 
+          title: `Palco ${it.seat_code}${it.quantity ? ` (pack ${it.quantity})` : ''}`, 
+          quantity: 1, 
+          unit_price: price 
+        });
+        subtotal += price;
       } else if (it.type === 'pullman' && it.quantity > 0) {
-        mpItems.push({ title: `Pullman`, quantity: Number(it.quantity), unit_price: 100 });
+        const quantity = Number(it.quantity);
+        mpItems.push({ 
+          title: `Pullman`, 
+          quantity, 
+          unit_price: price 
+        });
+        subtotal += price * quantity;
       }
     }
+    
     if (mpItems.length === 0) return res.status(400).json({ error: 'no_items' });
+    
+    // Add 10% service charge for spectators
+    const serviceCharge = Math.round(subtotal * 0.10);
+    if (serviceCharge > 0) {
+      mpItems.push({
+        title: 'Cargo por servicio (10%)',
+        quantity: 1,
+        unit_price: serviceCharge
+      });
+    }
 
     const FRONTEND_URL = process.env.FRONTEND_URL || 'http://localhost:5173';
     const BASE_URL = process.env.BASE_URL || 'http://localhost:4000';

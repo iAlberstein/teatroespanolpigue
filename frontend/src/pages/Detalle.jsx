@@ -367,7 +367,7 @@ export default function Detalle(){
     };
 
     const items = [];
-    let total = 0;
+    let subtotal = 0;
 
     // Seats
     Array.from(currentSelection.selectedSeatIds).forEach(sid => {
@@ -378,7 +378,7 @@ export default function Detalle(){
         price,
         quantity: 1
       });
-      total += price;
+      subtotal += price;
     });
 
     // Palcos
@@ -391,7 +391,7 @@ export default function Detalle(){
         price,
         quantity: 1
       });
-      total += price;
+      subtotal += price;
     });
 
     // Pullman
@@ -403,13 +403,17 @@ export default function Detalle(){
         price,
         quantity: currentSelection.pullmanSelected
       });
-      total += price * currentSelection.pullmanSelected;
+      subtotal += price * currentSelection.pullmanSelected;
     }
 
-    return { items, total };
+    // Service charge 10% (only for spectators)
+    const serviceCharge = Math.round(subtotal * 0.10);
+    const total = subtotal + serviceCharge;
+
+    return { items, subtotal, serviceCharge, total };
   };
 
-  const { items: cartItems, total: cartTotal } = calculatePrices();
+  const { items: cartItems, subtotal: cartSubtotal, serviceCharge: cartServiceCharge, total: cartTotal } = calculatePrices();
 
   // Sidebar content for spectator mode
   const spectatorSidebar = (
@@ -446,6 +450,32 @@ export default function Detalle(){
             ))}
           </ul>
           
+          {/* Subtotal */}
+          <div style={{ 
+            marginTop: 12,
+            paddingTop: 8,
+            borderTop: '1px solid #ddd',
+            display: 'flex',
+            justifyContent: 'space-between',
+            fontSize: 14
+          }}>
+            <span>Subtotal:</span>
+            <span>${cartSubtotal.toLocaleString('es-AR')}</span>
+          </div>
+          
+          {/* Service charge */}
+          <div style={{ 
+            marginTop: 4,
+            display: 'flex',
+            justifyContent: 'space-between',
+            fontSize: 14,
+            color: '#666'
+          }}>
+            <span>Cargo por servicio (10%):</span>
+            <span>${cartServiceCharge.toLocaleString('es-AR')}</span>
+          </div>
+          
+          {/* Total */}
           <div style={{ 
             marginTop: 12,
             paddingTop: 12,
