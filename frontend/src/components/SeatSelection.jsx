@@ -38,6 +38,14 @@ export default function SeatSelection({
   const [soldPalcosLabels, setSoldPalcosLabels] = useState(new Set());
   const [heldByOtherSeatIds, setHeldByOtherSeatIds] = useState(new Set());
   const [heldByOtherPalcosLabels, setHeldByOtherPalcosLabels] = useState(new Set());
+  
+  // Pricing state (loaded from backend)
+  const [pricing, setPricing] = useState({
+    platea_general: 5000,
+    palcos_bajos: 10000,
+    palcos_altos: 8000,
+    pullman: 3000
+  });
 
   // Load availability immediately when session changes (don't wait for socket)
   useEffect(() => {
@@ -66,6 +74,11 @@ export default function SeatSelection({
         setSoldSeatIds(new Set(data.soldSeats || []));
         setSoldPalcosLabels(new Set(data.soldPalcos || []));
         setPullmanAvailable(data.pullman?.available ?? 92);
+        
+        // Set pricing if available
+        if (data.pricing) {
+          setPricing(data.pricing);
+        }
         
         // Filter held items by socket ID if available
         const myId = socketRef.current?.id;
@@ -185,7 +198,8 @@ export default function SeatSelection({
         selectedPalcosLabels,
         pullmanSelected,
         clearSelection,
-        socketRef
+        socketRef,
+        pricing  // Include pricing in callback
       });
     }
   }, [selectedSeatIds, selectedPalcosLabels, pullmanSelected]);

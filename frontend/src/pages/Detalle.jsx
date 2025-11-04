@@ -280,19 +280,31 @@ export default function Detalle(){
   const payWithMP = async () => {
     if (!reservation) return;
     try {
-      const r = await apiFetch('/api/payments/create-preference', {
+      const r = await apiFetch('/api/payments/preference', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ reservation_id: reservation.id })
       });
+      
+      if (!r.ok) {
+        const errorData = await r.json().catch(() => ({}));
+        console.error('[MP] Error creating preference:', errorData);
+        alert('Error al crear la preferencia de pago. Por favor, intentá de nuevo.');
+        return;
+      }
+      
       const data = await r.json();
+      console.log('[MP] Preference created:', data);
+      
       if (data.init_point) {
         window.location.href = data.init_point;
       } else {
-        alert('No se pudo obtener init_point');
+        console.error('[MP] No init_point in response:', data);
+        alert('No se pudo obtener la URL de pago. Verificá la configuración de Mercado Pago.');
       }
     } catch (e) {
-      alert('Error de red creando preferencia');
+      console.error('[MP] Network error:', e);
+      alert('Error de red al crear la preferencia. Por favor, intentá de nuevo.');
     }
   };
 
@@ -322,28 +334,141 @@ export default function Detalle(){
     );
   }, [currentSelection, selectedSession]);
 
+  // Calculate prices and total
+  const calculatePrices = () => {
+    const pricing = currentSelection.pricing || {
+      platea_general: 5000,
+      palcos_bajos: 10000,
+      palcos_altos: 8000,
+      pullman: 3000
+    };
+
+    const items = [];
+    let total = 0;
+
+    // Seats
+    Array.from(currentSelection.selectedSeatIds).forEach(sid => {
+      const price = Number(pricing.platea_general || 5000);
+      items.push({
+        type: 'butaca',
+        label: formatSeatLocation(sid, 'butaca'),
+        price,
+        quantity: 1
+      });
+      total += price;
+    });
+
+    // Palcos
+    Array.from(currentSelection.selectedPalcosLabels).forEach(label => {
+      const isPB = /^PB/i.test(label);
+      const price = isPB ? Number(pricing.palcos_bajos || 10000) : Number(pricing.palcos_altos || 8000);
+      items.push({
+        type: 'palco',
+        label: formatSeatLocation(label, 'palco'),
+        price,
+        quantity: 1
+      });
+      total += price;
+    });
+
+    // Pullman
+    if (currentSelection.pullmanSelected > 0) {
+      const price = Number(pricing.pullman || 3000);
+      items.push({
+        type: 'pullman',
+        label: 'Pullman',
+        price,
+        quantity: currentSelection.pullmanSelected
+      });
+      total += price * currentSelection.pullmanSelected;
+    }
+
+    return { items, total };
+  };
+
+  const { items: cartItems, total: cartTotal } = calculatePrices();
+
   // Sidebar content for spectator mode
   const spectatorSidebar = (
     <div style={{ minWidth: 260 }}>
-      <div style={{ marginBottom: 4, fontWeight: 600 }}>Carrito</div>
+      <div style={{ marginBottom: 8, fontWeight: 600, fontSize: 16 }}>🛒 Carrito</div>
       {reservation && (
-        <div style={{ marginBottom: 8, fontSize: 13 }}>Tiempo restante: <strong>{fmt(timeLeft)}</strong></div>
+        <div style={{ marginBottom: 12, fontSize: 13, padding: 8, background: '#fff3cd', borderRadius: 4 }}>
+          ⏱️ Tiempo restante: <strong>{fmt(timeLeft)}</strong>
+        </div>
       )}
-      <ul>
-        {Array.from(currentSelection.selectedSeatIds).map(sid => {
-          const loc = formatSeatLocation(sid, 'butaca');
-          return <li key={sid}>{loc}</li>;
-        })}
-        {Array.from(currentSelection.selectedPalcosLabels).map(label => {
-          const loc = formatSeatLocation(label, 'palco');
-          return <li key={label}>{loc}</li>;
-        })}
-        {currentSelection.pullmanSelected > 0 && <li>Pullman x {currentSelection.pullmanSelected}</li>}
-      </ul>
+      
+      {cartItems.length === 0 ? (
+        <p style={{ color: '#666', fontSize: 14, fontStyle: 'italic' }}>
+          Seleccioná tus butacas
+        </p>
+      ) : (
+        <>
+          <ul style={{ listStyle: 'none', padding: 0, margin: 0 }}>
+            {cartItems.map((item, idx) => (
+              <li key={idx} style={{ 
+                padding: '8px 0', 
+                borderBottom: '1px solid #eee',
+                display: 'flex',
+                justifyContent: 'space-between',
+                fontSize: 14
+              }}>
+                <span>
+                  {item.label} {item.quantity > 1 && `x${item.quantity}`}
+                </span>
+                <span style={{ fontWeight: 600 }}>
+                  ${(item.price * item.quantity).toLocaleString('es-AR')}
+                </span>
+              </li>
+            ))}
+          </ul>
+          
+          <div style={{ 
+            marginTop: 12,
+            paddingTop: 12,
+            borderTop: '2px solid #333',
+            display: 'flex',
+            justifyContent: 'space-between',
+            fontSize: 16,
+            fontWeight: 700
+          }}>
+            <span>TOTAL:</span>
+            <span>${cartTotal.toLocaleString('es-AR')}</span>
+          </div>
+        </>
+      )}
+      
       {reservation && (
-        <div style={{ display:'flex', gap:8, marginTop:8 }}>
-          <button onClick={cancelReservation}>Cancelar reserva</button>
-          <button onClick={payWithMP} style={{ background:'#009EE3', color:'#fff', border:'none', padding:'6px 10px', borderRadius:4 }}>Pagar con Mercado Pago</button>
+        <div style={{ display:'flex', flexDirection: 'column', gap:8, marginTop:16 }}>
+          <button 
+            onClick={payWithMP} 
+            style={{ 
+              background:'#009EE3', 
+              color:'#fff', 
+              border:'none', 
+              padding:'12px 16px', 
+              borderRadius:6,
+              fontWeight: 600,
+              fontSize: 15,
+              cursor: 'pointer'
+            }}
+          >
+            💳 Pagar ${cartTotal.toLocaleString('es-AR')}
+          </button>
+          <button 
+            onClick={cancelReservation}
+            style={{
+              background: '#fff',
+              color: '#666',
+              border: '1px solid #ddd',
+              padding: '8px 12px',
+              borderRadius: 4,
+              fontSize: 13,
+              cursor: 'pointer'
+            }}
+          >
+            ✕ Cancelar reserva
+          </button>
         </div>
       )}
     </div>

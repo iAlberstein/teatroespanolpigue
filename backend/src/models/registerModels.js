@@ -13,17 +13,31 @@ export default function registerModels(sequelize) {
   const Show = sequelize.define('shows', {
     id: { type: DataTypes.UUID, defaultValue: DataTypes.UUIDV4, primaryKey: true },
     title: { type: DataTypes.STRING, allowNull: false },
-    sala: { type: DataTypes.STRING, allowNull: false },
-    date: { type: DataTypes.DATEONLY, allowNull: false },
-    time: { type: DataTypes.STRING, allowNull: false },
-    pricing_json: { type: DataTypes.JSON, allowNull: false }
+    description: { type: DataTypes.TEXT, allowNull: true },
+    duration_minutes: { type: DataTypes.INTEGER, allowNull: false, defaultValue: 120 },
+    image_url: { type: DataTypes.STRING, allowNull: true },
+    pricing_json: { type: DataTypes.JSON, allowNull: false, defaultValue: {} },
+    // Legacy fields (mantener para compatibilidad con datos existentes)
+    sala: { type: DataTypes.STRING, allowNull: true },
+    date: { type: DataTypes.DATEONLY, allowNull: true },
+    time: { type: DataTypes.STRING, allowNull: true }
   });
 
   const Session = sequelize.define('sessions', {
     id: { type: DataTypes.UUID, defaultValue: DataTypes.UUIDV4, primaryKey: true },
     show_id: { type: DataTypes.UUID, allowNull: false },
     starts_at: { type: DataTypes.DATE, allowNull: false },
-    ends_at: { type: DataTypes.DATE, allowNull: false }
+    ends_at: { type: DataTypes.DATE, allowNull: false },
+    pricing_json: { 
+      type: DataTypes.JSON, 
+      allowNull: true,
+      comment: 'Pricing for this session. If null, inherits from show. Format: { platea_general, palcos_bajos, palcos_altos, pullman }' 
+    },
+    capacity_override: {
+      type: DataTypes.INTEGER,
+      allowNull: true,
+      comment: 'Override default capacity (154) for this session'
+    }
   });
 
   const Reservation = sequelize.define('reservations', {

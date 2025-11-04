@@ -27,7 +27,13 @@ export default function BoxOffice() {
     selectedSeatIds: new Set(),
     selectedPalcosLabels: new Set(),
     pullmanSelected: 0,
-    clearSelection: null
+    clearSelection: null,
+    pricing: {
+      platea_general: 5000,
+      palcos_bajos: 10000,
+      palcos_altos: 8000,
+      pullman: 3000
+    }
   });
 
   // Load shows on mount (same as Cartelera)
@@ -74,14 +80,24 @@ export default function BoxOffice() {
   }, [selectedShow]);
 
   const calculateTotal = () => {
-    // TODO: Get prices from selected session's pricing_json
-    const seatPrice = 5000; // Default price
-    const palcoPrice = 10000;
-    const pullmanPrice = 3000;
+    const pricing = currentSelection.pricing || {
+      platea_general: 5000,
+      palcos_bajos: 10000,
+      palcos_altos: 8000,
+      pullman: 3000
+    };
     
-    const seatsTotal = currentSelection.selectedSeatIds.size * seatPrice;
-    const palcosTotal = currentSelection.selectedPalcosLabels.size * palcoPrice;
-    const pullmanTotal = currentSelection.pullmanSelected * pullmanPrice;
+    const seatsTotal = currentSelection.selectedSeatIds.size * Number(pricing.platea_general || 5000);
+    
+    // Calculate palcos price based on label (PB vs PA)
+    let palcosTotal = 0;
+    for (const palco of currentSelection.selectedPalcosLabels) {
+      const isPB = /^PB/i.test(palco);
+      const price = isPB ? Number(pricing.palcos_bajos || 10000) : Number(pricing.palcos_altos || 8000);
+      palcosTotal += price;
+    }
+    
+    const pullmanTotal = currentSelection.pullmanSelected * Number(pricing.pullman || 3000);
     
     return seatsTotal + palcosTotal + pullmanTotal;
   };
@@ -102,10 +118,12 @@ export default function BoxOffice() {
     setSuccess(null);
 
     try {
-      // TODO: Get prices from selected session
-      const seatPrice = 5000;
-      const palcoPrice = 10000;
-      const pullmanPrice = 3000;
+      const pricing = currentSelection.pricing || {
+        platea_general: 5000,
+        palcos_bajos: 10000,
+        palcos_altos: 8000,
+        pullman: 3000
+      };
 
       const items = [];
       
@@ -114,16 +132,18 @@ export default function BoxOffice() {
         items.push({
           type: 'butaca',
           seat_code: seatId,
-          price: seatPrice
+          price: Number(pricing.platea_general || 5000)
         });
       }
       
       // Add palcos
       for (const palco of currentSelection.selectedPalcosLabels) {
+        const isPB = /^PB/i.test(palco);
+        const price = isPB ? Number(pricing.palcos_bajos || 10000) : Number(pricing.palcos_altos || 8000);
         items.push({
           type: 'palco',
           seat_code: palco,
-          price: palcoPrice
+          price
         });
       }
       
@@ -132,7 +152,7 @@ export default function BoxOffice() {
         items.push({
           type: 'pullman',
           quantity: currentSelection.pullmanSelected,
-          price: pullmanPrice
+          price: Number(pricing.pullman || 3000)
         });
       }
 
