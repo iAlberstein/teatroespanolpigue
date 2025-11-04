@@ -1,10 +1,11 @@
 import { useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
+import { apiFetch } from '../lib/api';
 
 export default function Cartelera(){
   const [shows, setShows] = useState([]);
   useEffect(() => {
-    fetch('http://localhost:4000/api/shows').then(r=>r.json()).then(setShows).catch(()=>setShows([]));
+    apiFetch('/api/shows').then(r=>r.json()).then(setShows).catch(()=>setShows([]));
   }, []);
   return (
     <div>

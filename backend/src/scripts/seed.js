@@ -23,10 +23,10 @@ async function main() {
       date: dayjs().add(7, 'day').format('YYYY-MM-DD'),
       time: '21:00',
       pricing_json: {
-        platea_general: 10000,
-        palcos_bajos: 42000,
-        palcos_altos: 22000,
-        pullman: 8000
+        platea_general: 100,
+        palcos_bajos: 100,
+        palcos_altos: 100,
+        pullman: 100
       }
     });
 

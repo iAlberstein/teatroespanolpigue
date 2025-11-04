@@ -1,4 +1,13 @@
-import 'dotenv/config';
+import dotenv from 'dotenv';
+import { fileURLToPath } from 'url';
+import { dirname, join } from 'path';
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = dirname(__filename);
+dotenv.config({ path: join(__dirname, '..', '.env') });
+
+console.log('[STARTUP] MP_ACCESS_TOKEN loaded:', !!process.env.MP_ACCESS_TOKEN);
+
 import express from 'express';
 import http from 'http';
 import cors from 'cors';
@@ -11,14 +20,61 @@ import { Op } from 'sequelize';
 
 const app = express();
 const server = http.createServer(app);
+// Build allowed origins list: support comma-separated CORS_ORIGIN plus FRONTEND_URL and APP_URL
+const normalizeOrigin = (o) => (o || '').replace(/\/$/, '');
+const parseOrigins = (raw) =>
+  (raw || '')
+    .split(',')
+    .map((s) => normalizeOrigin(s.trim()))
+    .filter(Boolean);
+
+const envOrigins = parseOrigins(process.env.CORS_ORIGIN);
+const extraOrigins = [process.env.FRONTEND_URL, process.env.APP_URL]
+  .filter(Boolean)
+  .map(normalizeOrigin);
+const allowedOrigins = Array.from(new Set([...envOrigins, ...extraOrigins]));
+if (allowedOrigins.length === 0) {
+  // default to localhost:5173 if nothing provided
+  allowedOrigins.push('http://localhost:5173');
+}
+console.log('[CORS] allowed origins:', allowedOrigins);
+
+const isNgrok = (o) => /https?:\/\/[^\s]+\.ngrok(-free)?\.(dev|io)$/i.test(o);
+const originAllowed = (o) => {
+  const n = normalizeOrigin(o);
+  if (allowedOrigins.includes('*')) return true;
+  if (allowedOrigins.includes(n)) return true;
+  if (isNgrok(n)) return true; // allow any ngrok domain in dev
+  return false;
+};
+
 const io = new SocketIOServer(server, {
   cors: {
-    origin: process.env.CORS_ORIGIN || '*',
+    origin: (origin, callback) => {
+      if (!origin) return callback(null, true);
+      if (originAllowed(origin)) return callback(null, true);
+      console.warn('[CORS][socket.io] denied origin:', origin, 'allowed:', allowedOrigins);
+      return callback(new Error('Not allowed by CORS'));
+    },
     methods: ['GET', 'POST']
   }
 });
 
-app.use(cors({ origin: process.env.CORS_ORIGIN || '*', credentials: true }));
+app.use(cors({
+  origin: (origin, callback) => {
+    if (!origin) return callback(null, true);
+    if (originAllowed(origin)) return callback(null, true);
+    console.warn('[CORS][express] denied origin:', origin, 'allowed:', allowedOrigins);
+    return callback(new Error('Not allowed by CORS'));
+  },
+  credentials: true,
+  methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With', 'Accept', 'Origin', 'x-socket-id'],
+  exposedHeaders: ['Content-Length', 'X-JSON'],
+  maxAge: 86400, // 24 hours
+  preflightContinue: false,
+  optionsSuccessStatus: 204
+}));
 app.use(express.json());
 app.set('io', io);
 
@@ -40,9 +96,14 @@ io.on('connection', (socket) => {
   // In-memory palco holds per session: Map(sessionId => Map(palcoLabel => socketId))
   const palcoHolds = io.palcoHolds || (io.palcoHolds = new Map());
 
-  socket.on('join_session', (sessionId) => {
+  socket.on('join_session', async (data) => {
+    const sessionId = typeof data === 'string' ? data : data.sessionId;
+    const userId = typeof data === 'object' ? data.userId : null;
+    
     socket.join(`session:${sessionId}`);
     socket.data.sessionId = sessionId;
+    socket.data.userId = userId;
+    
     // init pullman state if missing
     if (!pullmanState.has(sessionId)) {
       pullmanState.set(sessionId, { capacity: 92, heldBySocket: new Map() });
@@ -55,6 +116,44 @@ io.on('connection', (socket) => {
     // ensure seat holds map exists
     if (!seatHolds.has(sessionId)) seatHolds.set(sessionId, new Map());
     if (!palcoHolds.has(sessionId)) palcoHolds.set(sessionId, new Map());
+    
+    // Re-asociar holds de reservas activas del usuario
+    if (userId) {
+      try {
+        const { reservations: Reservation } = sequelize.models;
+        const now = dayjs().toDate();
+        const activeReservations = await Reservation.findAll({
+          where: {
+            user_id: userId,
+            session_id: sessionId,
+            status: 'active',
+            expires_at: { [Op.gt]: now }
+          }
+        });
+        
+        if (activeReservations.length > 0) {
+          const reservation = activeReservations[0];
+          const items = Array.isArray(reservation.items) ? reservation.items : [];
+          const seatMap = seatHolds.get(sessionId);
+          const palcoMap = palcoHolds.get(sessionId);
+          
+          // Re-asociar butacas al nuevo socket (sin emitir eventos individuales)
+          for (const it of items) {
+            if (it.type === 'butaca' && it.seat_code) {
+              seatMap.set(it.seat_code, socket.id);
+            }
+            if (it.type === 'palco' && it.seat_code) {
+              palcoMap.set(it.seat_code, socket.id);
+            }
+          }
+          
+          // Emitir la reserva completa al cliente (esto actualiza toda la UI de una vez)
+          socket.emit('reservation_restored', reservation);
+        }
+      } catch (err) {
+        console.error('[Socket] Error restoring holds:', err);
+      }
+    }
   });
 
   // Toggle palco hold (PA/PB packs)
@@ -158,7 +257,7 @@ io.on('connection', (socket) => {
     }
   });
 
-  socket.on('disconnect', () => {
+  socket.on('disconnect', async () => {
     const sessionId = socket.data.sessionId;
     if (!sessionId) return;
     const st = pullmanState.get(sessionId);
@@ -176,9 +275,26 @@ io.on('connection', (socket) => {
       for (const [seatId, holder] of holds.entries()) {
         if (holder === socket.id) toRelease.push(seatId);
       }
-      for (const seatId of toRelease) {
-        holds.delete(seatId);
-        io.to(`session:${sessionId}`).emit('seat_released', { seatId, by: socket.id });
+      // check active reservations to persist holds during payment/navigation
+      try {
+        const { reservations: Reservation } = sequelize.models;
+        const now = dayjs().toDate();
+        const actives = await Reservation.findAll({ where: { session_id: sessionId, status: 'active', expires_at: { [Op.gt]: now } } });
+        for (const seatId of toRelease) {
+          const keptByActive = actives.some(r => Array.isArray(r.items) && r.items.some(it => it.type === 'butaca' && it.seat_code === seatId));
+          if (keptByActive) {
+            // keep hold: do NOT delete or emit release
+            continue;
+          }
+          holds.delete(seatId);
+          io.to(`session:${sessionId}`).emit('seat_released', { seatId, by: socket.id });
+        }
+      } catch {
+        // fallback: release all
+        for (const seatId of toRelease) {
+          holds.delete(seatId);
+          io.to(`session:${sessionId}`).emit('seat_released', { seatId, by: socket.id });
+        }
       }
     }
     // Release all palcos held by this socket
@@ -188,9 +304,21 @@ io.on('connection', (socket) => {
       for (const [palco, holder] of pHolds.entries()) {
         if (holder === socket.id) toReleasePalcos.push(palco);
       }
-      for (const palco of toReleasePalcos) {
-        pHolds.delete(palco);
-        io.to(`session:${sessionId}`).emit('palco_released', { palco, by: socket.id });
+      try {
+        const { reservations: Reservation } = sequelize.models;
+        const now = dayjs().toDate();
+        const actives = await Reservation.findAll({ where: { session_id: sessionId, status: 'active', expires_at: { [Op.gt]: now } } });
+        for (const palco of toReleasePalcos) {
+          const keptByActive = actives.some(r => Array.isArray(r.items) && r.items.some(it => it.type === 'palco' && it.seat_code === palco));
+          if (keptByActive) continue;
+          pHolds.delete(palco);
+          io.to(`session:${sessionId}`).emit('palco_released', { palco, by: socket.id });
+        }
+      } catch {
+        for (const palco of toReleasePalcos) {
+          pHolds.delete(palco);
+          io.to(`session:${sessionId}`).emit('palco_released', { palco, by: socket.id });
+        }
       }
     }
   });
@@ -201,6 +329,44 @@ io.on('connection', (socket) => {
     registerModels(sequelize);
     await sequelize.authenticate();
     await sequelize.sync();
+
+    // Load sold tickets from DB into memory on startup
+    const { tickets: Ticket } = sequelize.models;
+    try {
+      io.soldSeats = io.soldSeats || new Map();
+      io.soldPalcos = io.soldPalcos || new Map();
+      io.pullmanSold = io.pullmanSold || new Map();
+      
+      const soldTickets = await Ticket.findAll({
+        where: {
+          status: { [Op.in]: ['sold', 'validated'] }
+        },
+        attributes: ['session_id', 'type', 'seat_code']
+      });
+      
+      // Group by session
+      const sessionMap = new Map();
+      for (const t of soldTickets) {
+        if (!sessionMap.has(t.session_id)) {
+          sessionMap.set(t.session_id, { seats: new Set(), palcos: new Set(), pullman: 0 });
+        }
+        const s = sessionMap.get(t.session_id);
+        if (t.type === 'butaca' && t.seat_code) s.seats.add(t.seat_code);
+        if (t.type === 'palco' && t.seat_code) s.palcos.add(t.seat_code);
+        if (t.type === 'pullman') s.pullman++;
+      }
+      
+      // Populate io maps
+      for (const [sessionId, data] of sessionMap.entries()) {
+        io.soldSeats.set(sessionId, data.seats);
+        io.soldPalcos.set(sessionId, data.palcos);
+        io.pullmanSold.set(sessionId, data.pullman);
+      }
+      
+      console.log(`[STARTUP] Loaded ${soldTickets.length} sold tickets from DB into memory`);
+    } catch (err) {
+      console.error('[STARTUP] Error loading sold tickets:', err);
+    }
 
     // Simple expiry worker for reservations: runs every 15s
     const { reservations: Reservation } = sequelize.models;

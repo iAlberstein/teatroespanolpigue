@@ -1,10 +1,14 @@
-import { useParams } from 'react-router-dom';
+import { useParams, useNavigate } from 'react-router-dom';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { io } from 'socket.io-client';
+import { useAuth } from '../contexts/AuthContext.jsx';
 import SalaPrincipalGrid from '../components/SalaPrincipalGrid.jsx';
+import { apiFetch, apiAuthFetch, API_URL } from '../lib/api';
 
 export default function Detalle(){
   const { id } = useParams();
+  const { user, token, isAuthenticated } = useAuth();
+  const navigate = useNavigate();
   const [sessions, setSessions] = useState([]);
   const [reservation, setReservation] = useState(null);
   const [timeLeft, setTimeLeft] = useState(0);
@@ -20,6 +24,19 @@ export default function Detalle(){
   const [pullmanAvailable, setPullmanAvailable] = useState(92);
   const [syncing, setSyncing] = useState(false);
   const expiredHandledRef = useRef(false);
+  const creatingReservationRef = useRef(false); // Flag para prevenir creaciones duplicadas
+
+  // Check authentication before allowing reservations
+  const checkAuth = () => {
+    if (!isAuthenticated) {
+      const goToLogin = window.confirm('🔒 Necesitás iniciar sesión para reservar entradas.\n\n¿Querés ir al login ahora?');
+      if (goToLogin) {
+        navigate('/login');
+      }
+      return false;
+    }
+    return true;
+  };
 
   const handleExpire = async () => {
     if (expiredHandledRef.current) return;
@@ -39,7 +56,7 @@ export default function Detalle(){
       setSelectedPalcosLabels(new Set());
       setHeldByOtherPalcosLabels(new Set());
       if (reservation) {
-        await fetch(`http://localhost:4000/api/reservations/${reservation.id}`, { method: 'DELETE' }).catch(()=>{});
+        await apiFetch(`/api/reservations/${reservation.id}`, { method: 'DELETE' }).catch(()=>{});
       }
       setReservation(null);
       setTimeLeft(0);
@@ -49,7 +66,7 @@ export default function Detalle(){
   };
 
   useEffect(() => {
-    fetch('http://localhost:4000/api/sessions')
+    apiFetch('/api/sessions')
       .then(r=>r.json())
       .then(all => setSessions(all.filter(x=>x.show_id===id)))
       .catch(()=>setSessions([]));
@@ -58,7 +75,7 @@ export default function Detalle(){
   // Establish socket once (mount), register listeners
   useEffect(() => {
     if (!socketRef.current) {
-      socketRef.current = io('http://localhost:4000');
+      socketRef.current = io(API_URL);
     }
     const s = socketRef.current;
 
@@ -154,6 +171,40 @@ export default function Detalle(){
     s.on('palco_sold', onPalcoSold);
     s.on('pullman_sold', onPullmanSold);
 
+    // Restoration: cuando vuelve el usuario y tiene reserva activa
+    const onReservationRestored = (restoredReservation) => {
+      console.log('[DEBUG] Reservation restored:', restoredReservation);
+      setReservation(restoredReservation);
+      // Restaurar selecciones visuales
+      const items = Array.isArray(restoredReservation.items) ? restoredReservation.items : [];
+      const seatCodes = items.filter(it => it.type === 'butaca' && it.seat_code).map(it => it.seat_code);
+      const palcoCodes = items.filter(it => it.type === 'palco' && it.seat_code).map(it => it.seat_code);
+      const pullman = items.find(it => it.type === 'pullman');
+      
+      if (seatCodes.length > 0) {
+        setSelectedSeatIds(new Set(seatCodes));
+        // Limpiar estas butacas de "held by other" porque ahora son mías
+        setHeldByOtherSeatIds(prev => {
+          const updated = new Set(prev);
+          seatCodes.forEach(code => updated.delete(code));
+          return updated;
+        });
+      }
+      if (palcoCodes.length > 0) {
+        setSelectedPalcosLabels(new Set(palcoCodes));
+        // Limpiar estos palcos de "held by other"
+        setHeldByOtherPalcosLabels(prev => {
+          const updated = new Set(prev);
+          palcoCodes.forEach(code => updated.delete(code));
+          return updated;
+        });
+      }
+      if (pullman && pullman.quantity > 0) {
+        setPullmanSelected(pullman.quantity);
+      }
+    };
+    s.on('reservation_restored', onReservationRestored);
+
     return () => {
       s.off('reservation_expired', onExpired);
       s.off('reservation_created', onCreated);
@@ -169,6 +220,7 @@ export default function Detalle(){
       s.off('seat_sold', onSeatSold);
       s.off('palco_sold', onPalcoSold);
       s.off('pullman_sold', onPullmanSold);
+      s.off('reservation_restored', onReservationRestored);
       s.disconnect();
       socketRef.current = null;
     };
@@ -177,9 +229,12 @@ export default function Detalle(){
   // Join session when sessions[0] is available
   useEffect(() => {
     if (socketRef.current && sessions[0]) {
-      socketRef.current.emit('join_session', sessions[0].id);
+      socketRef.current.emit('join_session', {
+        sessionId: sessions[0].id,
+        userId: user?.id || null
+      });
     }
-  }, [sessions]);
+  }, [sessions, user]);
 
   // Load availability snapshot when session available and socket connected (to know my socket id)
   useEffect(() => {
@@ -188,7 +243,7 @@ export default function Detalle(){
     if (!sId || !s || !s.id) return;
     (async () => {
       try {
-        const r = await fetch(`http://localhost:4000/api/sessions/${sId}/availability`);
+        const r = await apiFetch(`/api/sessions/${sId}/availability`);
         if (!r.ok) return;
         const data = await r.json();
         const myId = s.id;
@@ -232,6 +287,9 @@ export default function Detalle(){
   const firstSessionId = useMemo(() => sessions[0]?.id, [sessions]);
 
   const onPullmanChange = (delta) => {
+    // Check authentication first
+    if (!checkAuth()) return;
+    
     if (!socketRef.current || !firstSessionId) return;
     socketRef.current.emit('pullman_change', { sessionId: firstSessionId, delta });
   };
@@ -253,8 +311,10 @@ export default function Detalle(){
   };
 
   // Auto-reserve: on any selection change, create or update reservation
+  const syncSeqRef = useRef(0);
   useEffect(() => {
     const items = buildItems();
+    console.log('[DEBUG] Auto-reserve useEffect triggered. items:', items, 'firstSessionId:', firstSessionId, 'reservation:', reservation);
     if (!firstSessionId) return;
     if (items.length === 0) {
       // Auto-cancel cuando la selección queda vacía
@@ -277,25 +337,111 @@ export default function Detalle(){
       return;
     }
     if (syncing) return;
-    let aborted = false;
+    // Si ya estamos creando una reserva, no crear otra
+    if (!reservation && creatingReservationRef.current) return;
+    
+    const mySeq = ++syncSeqRef.current;
     const sync = async () => {
       try {
         setSyncing(true);
         if (!reservation) {
+          // Activar flag antes de crear
+          creatingReservationRef.current = true;
+          
+          // Check auth before creating reservation
+          if (!checkAuth()) {
+            setSyncing(false);
+            creatingReservationRef.current = false;
+            return;
+          }
+          
+          // Verificar si ya existe una reserva activa antes de crear
+          if (user?.id) {
+            const checkRes = await apiAuthFetch(`/api/reservations?user_id=${user.id}&session_id=${firstSessionId}&status=active`, {}, token);
+            if (checkRes.ok) {
+              const existingReservations = await checkRes.json();
+              if (Array.isArray(existingReservations) && existingReservations.length > 0) {
+                const existing = existingReservations[0];
+                console.log('[DEBUG] Found existing active reservation:', existing);
+                setReservation(existing);
+                creatingReservationRef.current = false;
+                // Actualizar con los items actuales
+                await apiFetch(`/api/reservations/${existing.id}`, {
+                  method: 'PUT',
+                  headers: {
+                    'Content-Type': 'application/json',
+                    'x-socket-id': socketRef.current?.id || ''
+                  },
+                  body: JSON.stringify({ items })
+                }).catch(()=>{});
+                return;
+              }
+            }
+          }
+          
           // create new reservation and start timer immediately
-          const res = await fetch('http://localhost:4000/api/reservations', {
+          const headers = {
+            'Content-Type': 'application/json',
+            'x-socket-id': socketRef.current?.id || ''
+          };
+          if (token) {
+            headers['Authorization'] = `Bearer ${token}`;
+          }
+          
+          const res = await apiFetch('/api/reservations', {
             method: 'POST',
-            headers: {
-              'Content-Type': 'application/json',
-              'x-socket-id': socketRef.current?.id || ''
-            },
-            body: JSON.stringify({ session_id: firstSessionId, items })
+            headers,
+            body: JSON.stringify({ session_id: firstSessionId, items, user_id: user?.id })
           });
-          if (!res.ok) return; // soft fail
+          if (res.status === 409) {
+            const body = await res.json().catch(()=>({}));
+            if (body?.reservation) {
+              setReservation(body.reservation);
+              creatingReservationRef.current = false; // Desactivar flag
+              // actualizar inmediatamente con los items vigentes
+              await apiFetch(`/api/reservations/${body.reservation.id}`, {
+                method: 'PUT',
+                headers: {
+                  'Content-Type': 'application/json',
+                  'x-socket-id': socketRef.current?.id || ''
+                },
+                body: JSON.stringify({ items })
+              }).catch(()=>{});
+              return;
+            }
+            if (body?.reservation_id) {
+              // fallback antiguo
+              const r2 = await apiFetch(`/api/reservations/${body.reservation_id}`);
+              if (r2.ok) {
+                const existing = await r2.json();
+                setReservation(existing);
+                creatingReservationRef.current = false; // Desactivar flag
+                await apiFetch(`/api/reservations/${body.reservation_id}`, {
+                  method: 'PUT',
+                  headers: {
+                    'Content-Type': 'application/json',
+                    'x-socket-id': socketRef.current?.id || ''
+                  },
+                  body: JSON.stringify({ items })
+                }).catch(()=>{});
+              }
+              return;
+            }
+            console.error('[DEBUG] POST /api/reservations 409 without reservation info');
+            creatingReservationRef.current = false; // Desactivar flag en error
+            return;
+          }
+          if (!res.ok) {
+            console.error('[DEBUG] POST /api/reservations failed:', res.status, await res.text());
+            creatingReservationRef.current = false; // Desactivar flag en error
+            return;
+          }
           const data = await res.json();
-          if (!aborted) setReservation(data);
+          console.log('[DEBUG] Reservation created:', data);
+          setReservation(data);
+          creatingReservationRef.current = false; // Desactivar flag después de crear
         } else {
-          const res = await fetch(`http://localhost:4000/api/reservations/${reservation.id}`, {
+          const res = await apiFetch(`/api/reservations/${reservation.id}`, {
             method: 'PUT',
             headers: {
               'Content-Type': 'application/json',
@@ -305,19 +451,24 @@ export default function Detalle(){
           });
           if (res.status === 409) {
             // backend says reservation not active (likely expired) -> expire locally now
-            if (!aborted) await handleExpire();
+            await handleExpire();
             return;
           }
           if (!res.ok) return;
           const data = await res.json();
-          if (!aborted) setReservation(data);
+          console.log('[DEBUG] Reservation updated:', data);
+          if (mySeq === syncSeqRef.current) setReservation(data);
         }
       } finally {
-        if (!aborted) setSyncing(false);
+        setSyncing(false);
+        // Solo desactivar si la reserva ya existe (fue creada exitosamente)
+        if (reservation) {
+          creatingReservationRef.current = false;
+        }
       }
     };
     sync();
-    return () => { aborted = true; };
+    return () => {};
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selectedSeatIds, selectedPalcosLabels, pullmanSelected, firstSessionId]);
 
@@ -345,7 +496,7 @@ export default function Detalle(){
     if (pullmanSelected > 0) {
       items.push({ type: 'pullman', section: 'Pullman', quantity: pullmanSelected });
     }
-    const res = await fetch('http://localhost:4000/api/reservations', {
+    const res = await apiFetch('/api/reservations', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ session_id: firstSessionId, items })
@@ -361,7 +512,7 @@ export default function Detalle(){
 
   const cancelReservation = async () => {
     if (!reservation) return;
-    await fetch(`http://localhost:4000/api/reservations/${reservation.id}`, { method: 'DELETE' });
+    await apiFetch(`/api/reservations/${reservation.id}`, { method: 'DELETE' });
     setReservation(null);
     setTimeLeft(0);
     // limpiar carrito local
@@ -381,6 +532,44 @@ export default function Detalle(){
     const m = Math.floor(s/60).toString().padStart(2,'0');
     const r = (s%60).toString().padStart(2,'0');
     return `${m}:${r}`;
+  };
+
+  const payWithMP = async () => {
+    if (!reservation) return;
+    
+    if (!checkAuth()) return;
+    
+    try {
+      const headers = {
+        'Content-Type': 'application/json',
+        'x-socket-id': socketRef.current?.id || ''
+      };
+      if (token) {
+        headers['Authorization'] = `Bearer ${token}`;
+      }
+      
+      const res = await apiFetch('/api/payments/preference', {
+        method: 'POST',
+        headers,
+        body: JSON.stringify({ reservation_id: reservation.id })
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        alert('Error al crear preferencia: ' + (data?.error || res.status));
+        return;
+      }
+      if (data.warning) {
+        alert('Configurar MP_ACCESS_TOKEN en backend .env para habilitar Checkout Pro.');
+        return;
+      }
+      if (data.init_point) {
+        window.location.href = data.init_point;
+      } else {
+        alert('No se pudo obtener init_point');
+      }
+    } catch (e) {
+      alert('Error de red creando preferencia');
+    }
   };
 
   return (
@@ -415,17 +604,35 @@ export default function Detalle(){
             pullmanAvailable={pullmanAvailable}
             onPullmanChange={onPullmanChange}
             onToggleSeat={({ r, c, val, row }) => {
+              // Check authentication first
+              if (!checkAuth()) return;
+              
               if (!socketRef.current || !firstSessionId) return;
               // Prevent new holds if reservation expired
               const end = reservation?.expires_at ? new Date(reservation.expires_at).getTime() : null;
               if (reservation && end && Date.now() >= end) { handleExpire(); return; }
               const seatId = `${row || ''}${val}`;
+              // Optimistic local toggle to ensure auto-reserve kicks in
+              setSelectedSeatIds(prev => {
+                const n = new Set(prev);
+                if (n.has(seatId)) n.delete(seatId); else n.add(seatId);
+                return n;
+              });
               socketRef.current.emit('seat_toggle', { sessionId: firstSessionId, seatId });
             }}
             onTogglePalco={({ label }) => {
+              // Check authentication first
+              if (!checkAuth()) return;
+              
               if (!socketRef.current || !firstSessionId) return;
               const end = reservation?.expires_at ? new Date(reservation.expires_at).getTime() : null;
               if (reservation && end && Date.now() >= end) { handleExpire(); return; }
+              // Optimistic local toggle for palcos
+              setSelectedPalcosLabels(prev => {
+                const n = new Set(prev);
+                if (n.has(label)) n.delete(label); else n.add(label);
+                return n;
+              });
               socketRef.current.emit('palco_toggle', { sessionId: firstSessionId, palco: label });
             }}
           />
@@ -451,7 +658,10 @@ export default function Detalle(){
             )}
           </ul>
           {reservation && (
-            <button onClick={cancelReservation} style={{ marginTop: 8 }}>Cancelar reserva</button>
+            <div style={{ display:'flex', gap:8, marginTop:8 }}>
+              <button onClick={cancelReservation}>Cancelar reserva</button>
+              <button onClick={payWithMP} style={{ background:'#009EE3', color:'#fff', border:'none', padding:'6px 10px', borderRadius:4 }}>Pagar con Mercado Pago</button>
+            </div>
           )}
         </div>
       </div>

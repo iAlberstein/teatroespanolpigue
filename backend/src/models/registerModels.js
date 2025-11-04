@@ -41,8 +41,11 @@ export default function registerModels(sequelize) {
     seat_code: { type: DataTypes.STRING, allowNull: true },
     section: { type: DataTypes.STRING, allowNull: false },
     type: { type: DataTypes.ENUM('butaca','palco','pullman'), allowNull: false },
-    qr_code: { type: DataTypes.STRING, allowNull: true },
-    status: { type: DataTypes.ENUM('available','reserved','sold','blocked'), defaultValue: 'available' }
+    qr_code: { type: DataTypes.STRING, allowNull: true, unique: true },
+    qr_data: { type: DataTypes.TEXT, allowNull: true },
+    status: { type: DataTypes.ENUM('available','reserved','sold','validated','blocked'), defaultValue: 'available' },
+    validated_at: { type: DataTypes.DATE, allowNull: true },
+    validated_by: { type: DataTypes.UUID, allowNull: true }
   });
 
   const Discount = sequelize.define('discounts', {
@@ -64,6 +67,15 @@ export default function registerModels(sequelize) {
     payment_method: { type: DataTypes.ENUM('efectivo','tarjeta','qr','mp'), allowNull: false },
     discount_id: { type: DataTypes.UUID, allowNull: true },
     total_amount: { type: DataTypes.DECIMAL(10,2), allowNull: false }
+  });
+
+  const Validation = sequelize.define('validations', {
+    id: { type: DataTypes.UUID, defaultValue: DataTypes.UUIDV4, primaryKey: true },
+    ticket_id: { type: DataTypes.UUID, allowNull: false },
+    validated_by: { type: DataTypes.UUID, allowNull: false },
+    device_info: { type: DataTypes.JSON, allowNull: true },
+    ip_address: { type: DataTypes.STRING, allowNull: true },
+    validation_type: { type: DataTypes.ENUM('qr_scan','manual'), defaultValue: 'qr_scan' }
   });
 
   // Associations
@@ -88,5 +100,11 @@ export default function registerModels(sequelize) {
   Discount.hasMany(Sale, { foreignKey: 'discount_id' });
   Sale.belongsTo(Discount, { foreignKey: 'discount_id' });
 
-  return { User, Show, Session, Reservation, Ticket, Discount, Sale };
+  Ticket.hasMany(Validation, { foreignKey: 'ticket_id' });
+  Validation.belongsTo(Ticket, { foreignKey: 'ticket_id' });
+
+  User.hasMany(Validation, { foreignKey: 'validated_by' });
+  Validation.belongsTo(User, { foreignKey: 'validated_by', as: 'validator' });
+
+  return { User, Show, Session, Reservation, Ticket, Discount, Sale, Validation };
 }
