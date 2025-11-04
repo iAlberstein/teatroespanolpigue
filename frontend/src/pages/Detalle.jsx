@@ -266,9 +266,25 @@ export default function Detalle(){
 
   const cancelReservation = async () => {
     if (!reservation) return;
-    await apiFetch(`/api/reservations/${reservation.id}`, { method: 'DELETE' });
-    setReservation(null);
-    setTimeLeft(0);
+    
+    try {
+      // Delete reservation from backend
+      await apiFetch(`/api/reservations/${reservation.id}`, { method: 'DELETE' });
+      
+      // Clear reservation state
+      setReservation(null);
+      setTimeLeft(0);
+      
+      // Clear selection in SeatSelection component using ref
+      if (clearSelectionRef.current) {
+        clearSelectionRef.current();
+      }
+      
+      console.log('[Reservation] Cancelled and selection cleared');
+    } catch (err) {
+      console.error('[Reservation] Error cancelling:', err);
+      alert('Error al cancelar la reserva');
+    }
   };
 
   const fmt = (s) => {
@@ -316,9 +332,16 @@ export default function Detalle(){
     socketRef: null
   });
 
+  // Store clearSelection function in a ref for stable access
+  const clearSelectionRef = useRef(null);
+
   // Handle selection changes from SeatSelection component
   const handleSeatSelectionChange = (selection) => {
     setCurrentSelection(selection);
+    // Update ref with latest clearSelection
+    if (selection.clearSelection) {
+      clearSelectionRef.current = selection.clearSelection;
+    }
   };
 
   // Auto-reserve when selection changes
