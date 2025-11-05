@@ -441,7 +441,7 @@ export default function Detalle(){
                 fontSize: 14
               }}>
                 <span>
-                  {item.label} {item.quantity > 1 && `x${item.quantity}`}
+                  {item.label} {item.type === 'pullman' ? `x${item.quantity}` : (item.quantity > 1 && `x${item.quantity}`)}
                 </span>
                 <span style={{ fontWeight: 600 }}>
                   ${(item.price * item.quantity).toLocaleString('es-AR')}
