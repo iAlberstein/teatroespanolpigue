@@ -241,7 +241,6 @@ router.get('/:id/validations', authenticateToken, requireRole('admin', 'boleteri
 router.post('/box-office-sale', authenticateToken, requireRole('boleteria', 'admin'), async (req, res) => {
   try {
     const { session_id, items, customer, payment_method = 'cash' } = req.body;
-    console.log('[BOX_OFFICE] Received items:', JSON.stringify(items, null, 2));
     const { reservations: Reservation, sales: Sale, tickets: Ticket, sessions: Session, users: User } = sequelize.models;
 
     // Validate session exists
@@ -354,6 +353,7 @@ router.post('/box-office-sale', authenticateToken, requireRole('boleteria', 'adm
         seat_code: ticket.seat_code
       });
       await ticket.update({ qr_code, qr_data });
+      await ticket.reload(); // Reload to get fresh data including price
     }
 
     // Update in-memory sold state
@@ -400,12 +400,6 @@ router.post('/box-office-sale', authenticateToken, requireRole('boleteria', 'adm
     const formattedTickets = tickets.map(t => {
       // Get plain values from Sequelize instance
       const ticketData = t.get ? t.get({ plain: true }) : t;
-      console.log('[BOX_OFFICE] Formatting ticket:', { 
-        id: ticketData.id, 
-        type: ticketData.type, 
-        seat_code: ticketData.seat_code, 
-        price: ticketData.price 
-      });
       return {
         id: ticketData.id,
         type: ticketData.type,
@@ -416,7 +410,6 @@ router.post('/box-office-sale', authenticateToken, requireRole('boleteria', 'adm
         qr_data: ticketData.qr_data
       };
     });
-    console.log('[BOX_OFFICE] Formatted tickets:', JSON.stringify(formattedTickets, null, 2));
 
     return res.json({
       success: true,

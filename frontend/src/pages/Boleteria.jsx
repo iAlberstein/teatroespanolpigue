@@ -176,8 +176,6 @@ export default function BoxOffice() {
       }
 
       const data = await res.json();
-      console.log('[BOLETERIA] Sale response:', data);
-      console.log('[BOLETERIA] Tickets:', data.tickets);
       setSuccess(data);
       
       // Clear selection and customer data
