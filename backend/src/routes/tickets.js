@@ -398,15 +398,22 @@ router.post('/box-office-sale', authenticateToken, requireRole('boleteria', 'adm
     // Format tickets with seat locations
     const { formatSeatLocation } = await import('../lib/seatFormatter.js');
     const formattedTickets = tickets.map(t => {
-      console.log('[BOX_OFFICE] Formatting ticket:', { id: t.id, type: t.type, seat_code: t.seat_code, price: t.price });
+      // Get plain values from Sequelize instance
+      const ticketData = t.get ? t.get({ plain: true }) : t;
+      console.log('[BOX_OFFICE] Formatting ticket:', { 
+        id: ticketData.id, 
+        type: ticketData.type, 
+        seat_code: ticketData.seat_code, 
+        price: ticketData.price 
+      });
       return {
-        id: t.id,
-        type: t.type,
-        seat_code: t.seat_code,
-        location: formatSeatLocation(t.seat_code, t.type),
-        section: t.section,
-        price: t.price,
-        qr_data: t.qr_data
+        id: ticketData.id,
+        type: ticketData.type,
+        seat_code: ticketData.seat_code,
+        location: formatSeatLocation(ticketData.seat_code, ticketData.type),
+        section: ticketData.section,
+        price: ticketData.price,
+        qr_data: ticketData.qr_data
       };
     });
     console.log('[BOX_OFFICE] Formatted tickets:', JSON.stringify(formattedTickets, null, 2));
