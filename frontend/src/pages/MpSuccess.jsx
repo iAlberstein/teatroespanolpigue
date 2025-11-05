@@ -64,10 +64,17 @@ export default function MpSuccess(){
           headers,
           body: JSON.stringify({ payment_id: paymentId })
         });
+        
+        const data = await res.json().catch(() => ({}));
+        console.log('[MP_SUCCESS] Confirm response:', { ok: res.ok, status: res.status, data });
+        
         if (!aborted) {
           setSaleConfirmed(res.ok);
           if (!res.ok) {
+            console.error('[MP_SUCCESS] Confirm failed:', data);
             confirmingRef.current = false; // Liberar en caso de error para permitir retry
+          } else {
+            console.log('[MP_SUCCESS] Sale confirmed successfully');
           }
         }
       } finally {
@@ -106,7 +113,12 @@ export default function MpSuccess(){
       <h1>Compra confirmada</h1>
       <p>¡Gracias! Tu pago fue aprobado.</p>
       {saleConfirmed && <p style={{ color: '#28a745', fontWeight: 600 }}>✓ Compra procesada exitosamente</p>}
-      {confirmingSale && <p style={{ color: '#666' }}>Procesando compra...</p>}
+      {!saleConfirmed && confirmingSale && <p style={{ color: '#666' }}>Procesando compra...</p>}
+      {!saleConfirmed && !confirmingSale && status === 'approved' && (
+        <p style={{ color: '#ff9800', fontSize: 14 }}>
+          ⚠️ La compra se confirmará automáticamente. Si no ves la confirmación, recargá la página.
+        </p>
+      )}
       <div style={{ marginTop: 12, padding: 12, border: '1px solid #ddd', borderRadius: 6 }}>
         <div style={{ fontWeight: 600, marginBottom: 8 }}>Resumen</div>
         <div>Reservation ID: <code>{reservationId}</code></div>

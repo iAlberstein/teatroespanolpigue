@@ -176,6 +176,8 @@ export default function BoxOffice() {
       }
 
       const data = await res.json();
+      console.log('[BOLETERIA] Sale response:', data);
+      console.log('[BOLETERIA] Tickets:', data.tickets);
       setSuccess(data);
       
       // Clear selection and customer data
@@ -391,7 +393,7 @@ export default function BoxOffice() {
             <ul style={{ marginTop: 8, marginBottom: 0, paddingLeft: 20, fontSize: 14 }}>
               {success.tickets?.map(ticket => (
                 <li key={ticket.id}>
-                  {ticket.location} - ${Number(ticket.price).toLocaleString('es-AR')}
+                  {ticket.location} - ${Number(ticket.price || 0).toLocaleString('es-AR')}
                 </li>
               ))}
             </ul>

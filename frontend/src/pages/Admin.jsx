@@ -7,7 +7,7 @@ import ShowForm from '../components/admin/ShowForm';
 import SessionManager from '../components/admin/SessionManager';
 
 export default function Admin() {
-  const { user, token, logout } = useAuth();
+  const { user, token } = useAuth();
   const navigate = useNavigate();
   const [shows, setShows] = useState([]);
   const [sessions, setSessions] = useState([]);
@@ -185,36 +185,9 @@ export default function Admin() {
 
   return (
     <div style={{ padding: 24, maxWidth: 1200, margin: '0 auto' }}>
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 24 }}>
-        <div>
-          <h1 style={{ margin: 0 }}>🎭 Panel de Administración</h1>
-          <p style={{ color: '#666', margin: '4px 0 0 0' }}>Gestión de espectáculos y sesiones</p>
-        </div>
-        <div style={{ display: 'flex', gap: 12, alignItems: 'center' }}>
-          <span style={{ fontSize: 14, color: '#666' }}>
-            👤 {user?.name || user?.email}
-          </span>
-          <button
-            onClick={() => {
-              if (window.confirm('¿Cerrar sesión y volver al inicio?')) {
-                logout();
-                navigate('/');
-              }
-            }}
-            style={{
-              padding: '8px 16px',
-              background: '#dc3545',
-              color: '#fff',
-              border: 'none',
-              borderRadius: 4,
-              cursor: 'pointer',
-              fontSize: 14,
-              fontWeight: 500
-            }}
-          >
-            🚪 Cerrar Sesión
-          </button>
-        </div>
+      <div style={{ marginBottom: 24 }}>
+        <h1 style={{ margin: 0 }}>🎭 Panel de Administración</h1>
+        <p style={{ color: '#666', margin: '4px 0 0 0' }}>Gestión de espectáculos y sesiones</p>
       </div>
 
       {/* Error/Success messages */}
