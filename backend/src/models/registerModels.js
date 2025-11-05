@@ -52,10 +52,12 @@ export default function registerModels(sequelize) {
   const Ticket = sequelize.define('tickets', {
     id: { type: DataTypes.UUID, defaultValue: DataTypes.UUIDV4, primaryKey: true },
     session_id: { type: DataTypes.UUID, allowNull: false },
+    sale_id: { type: DataTypes.UUID, allowNull: true },
     user_id: { type: DataTypes.UUID, allowNull: true },
     seat_code: { type: DataTypes.STRING, allowNull: true },
     section: { type: DataTypes.STRING, allowNull: false },
     type: { type: DataTypes.ENUM('butaca','palco','pullman'), allowNull: false },
+    price: { type: DataTypes.DECIMAL(10,2), allowNull: false, defaultValue: 0 },
     qr_code: { type: DataTypes.STRING, allowNull: true, unique: true },
     qr_data: { type: DataTypes.TEXT, allowNull: true },
     status: { type: DataTypes.ENUM('available','reserved','sold','validated','blocked'), defaultValue: 'available' },
