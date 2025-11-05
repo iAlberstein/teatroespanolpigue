@@ -14,10 +14,13 @@ export default function MpSuccess(){
   const [reservation, setReservation] = useState(null);
   const [reservationId, setReservationId] = useState(reservationIdParam || '');
   const [email, setEmail] = useState('');
+  const [whatsapp, setWhatsapp] = useState('');
   const [confirmingSale, setConfirmingSale] = useState(false);
   const [saleConfirmed, setSaleConfirmed] = useState(false);
   const [sendingEmail, setSendingEmail] = useState(false);
   const [emailSent, setEmailSent] = useState(false);
+  const [sendingWhatsapp, setSendingWhatsapp] = useState(false);
+  const [whatsappSent, setWhatsappSent] = useState(false);
   const confirmingRef = useRef(false); // Flag para prevenir confirmaciones duplicadas
 
   // If reservation_id is missing but we have payment_id, fetch payment to get metadata.reservation_id
@@ -69,16 +72,23 @@ export default function MpSuccess(){
         console.log('[MP_SUCCESS] Confirm response:', { ok: res.ok, status: res.status, data });
         
         if (!aborted) {
-          setSaleConfirmed(res.ok);
-          if (!res.ok) {
-            console.error('[MP_SUCCESS] Confirm failed:', data);
-            confirmingRef.current = false; // Liberar en caso de error para permitir retry
-          } else {
+          if (res.ok) {
+            setSaleConfirmed(true);
+            setConfirmingSale(false);
             console.log('[MP_SUCCESS] Sale confirmed successfully');
+          } else {
+            console.error('[MP_SUCCESS] Confirm failed:', data);
+            setConfirmingSale(false);
+            setSaleConfirmed(false);
+            confirmingRef.current = false; // Liberar en caso de error para permitir retry
           }
         }
-      } finally {
-        if (!aborted) setConfirmingSale(false);
+      } catch (err) {
+        console.error('[MP_SUCCESS] Error confirming:', err);
+        if (!aborted) {
+          setConfirmingSale(false);
+          setSaleConfirmed(false);
+        }
       }
     })();
     return () => { aborted = true; };
@@ -108,14 +118,22 @@ export default function MpSuccess(){
     return seatCode;
   };
 
-  const total = () => {
-    if (!reservation?.items) return 0;
-    return reservation.items.reduce((sum, it) => {
+  const calculateTotals = () => {
+    if (!reservation?.items) return { subtotal: 0, serviceCharge: 0, total: 0 };
+    
+    const subtotal = reservation.items.reduce((sum, it) => {
       if (it.type === 'butaca' || it.type === 'palco') return sum + Number(it.price || 0);
       if (it.type === 'pullman') return sum + (Number(it.price || it.unit_price || 0) * Number(it.quantity || 1));
       return sum;
     }, 0);
+    
+    const serviceCharge = Math.round(subtotal * 0.10);
+    const total = subtotal + serviceCharge;
+    
+    return { subtotal, serviceCharge, total };
   };
+  
+  const { subtotal, serviceCharge, total } = calculateTotals();
 
   const onSendEmail = async () => {
     if (!reservationId || !email) return;
@@ -129,6 +147,21 @@ export default function MpSuccess(){
       setEmailSent(res.ok);
     } finally {
       setSendingEmail(false);
+    }
+  };
+
+  const onSendWhatsapp = async () => {
+    if (!reservationId || !whatsapp) return;
+    setSendingWhatsapp(true);
+    try {
+      const res = await apiFetch('/api/payments/whatsapp', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ reservation_id: reservationId, phone: whatsapp })
+      });
+      setWhatsappSent(res.ok);
+    } finally {
+      setSendingWhatsapp(false);
     }
   };
 
@@ -209,9 +242,35 @@ export default function MpSuccess(){
           </ul>
         </div>
         
+        {/* Subtotal */}
         <div style={{ 
-          marginTop: 16, 
-          paddingTop: 16, 
+          marginTop: 12,
+          paddingTop: 12,
+          borderTop: '1px solid #ddd',
+          display: 'flex',
+          justifyContent: 'space-between',
+          fontSize: 15
+        }}>
+          <span>Subtotal:</span>
+          <span>${subtotal.toLocaleString('es-AR')}</span>
+        </div>
+        
+        {/* Service charge */}
+        <div style={{ 
+          marginTop: 6,
+          display: 'flex',
+          justifyContent: 'space-between',
+          fontSize: 15,
+          color: '#666'
+        }}>
+          <span>Cargo por servicio (10%):</span>
+          <span>${serviceCharge.toLocaleString('es-AR')}</span>
+        </div>
+        
+        {/* Total */}
+        <div style={{ 
+          marginTop: 12, 
+          paddingTop: 12, 
           borderTop: '2px solid #333',
           display: 'flex',
           justifyContent: 'space-between',
@@ -219,9 +278,25 @@ export default function MpSuccess(){
           fontWeight: 700
         }}>
           <span>Total:</span>
-          <span style={{ color: '#28a745' }}>${total().toLocaleString('es-AR')}</span>
+          <span style={{ color: '#28a745' }}>${total.toLocaleString('es-AR')}</span>
         </div>
       </div>
+      
+      {/* Leyenda sobre perfil */}
+      {saleConfirmed && (
+        <div style={{ 
+          marginTop: 16, 
+          padding: 12, 
+          background: '#e7f3ff', 
+          border: '1px solid #2196f3',
+          borderRadius: 8,
+          color: '#0d47a1',
+          fontSize: 14,
+          textAlign: 'center'
+        }}>
+          ✓ Tus entradas ya están guardadas en tu perfil
+        </div>
+      )}
 
       <div style={{ 
         marginTop: 24, 
@@ -229,40 +304,85 @@ export default function MpSuccess(){
         background: '#f8f9fa', 
         borderRadius: 8 
       }}>
-        <div style={{ fontWeight: 600, marginBottom: 8, fontSize: 15 }}>📧 Enviar entradas por email</div>
-        <p style={{ fontSize: 14, color: '#666', marginBottom: 12 }}>
-          Recibí una copia de tus entradas en tu correo
+        <div style={{ fontWeight: 600, marginBottom: 8, fontSize: 15 }}>📧 Enviar entradas</div>
+        <p style={{ fontSize: 14, color: '#666', marginBottom: 16 }}>
+          Recibí una copia de tus entradas por email o WhatsApp
         </p>
-        <div style={{ display: 'flex', gap: 8 }}>
-          <input 
-            type="email" 
-            placeholder="tu@email.com"
-            value={email} 
-            onChange={e=>setEmail(e.target.value)}
-            style={{
-              flex: 1,
-              padding: '10px 12px',
-              border: '1px solid #ddd',
-              borderRadius: 6,
-              fontSize: 14
-            }}
-          />
-          <button 
-            onClick={onSendEmail} 
-            disabled={sendingEmail || !email}
-            style={{
-              padding: '10px 20px',
-              background: email && !sendingEmail ? '#007bff' : '#ccc',
-              color: '#fff',
-              border: 'none',
-              borderRadius: 6,
-              cursor: email && !sendingEmail ? 'pointer' : 'not-allowed',
-              fontSize: 14,
-              fontWeight: 600
-            }}
-          >
-            {sendingEmail ? 'Enviando...' : emailSent ? '✓ Enviado' : 'Enviar'}
-          </button>
+        
+        {/* Email */}
+        <div style={{ marginBottom: 16 }}>
+          <label style={{ display: 'block', marginBottom: 6, fontSize: 14, fontWeight: 500 }}>
+            Email:
+          </label>
+          <div style={{ display: 'flex', gap: 8 }}>
+            <input 
+              type="email" 
+              placeholder="tu@email.com"
+              value={email} 
+              onChange={e=>setEmail(e.target.value)}
+              style={{
+                flex: 1,
+                padding: '10px 12px',
+                border: '1px solid #ddd',
+                borderRadius: 6,
+                fontSize: 14
+              }}
+            />
+            <button 
+              onClick={onSendEmail} 
+              disabled={sendingEmail || !email}
+              style={{
+                padding: '10px 20px',
+                background: email && !sendingEmail ? '#007bff' : '#ccc',
+                color: '#fff',
+                border: 'none',
+                borderRadius: 6,
+                cursor: email && !sendingEmail ? 'pointer' : 'not-allowed',
+                fontSize: 14,
+                fontWeight: 600
+              }}
+            >
+              {sendingEmail ? 'Enviando...' : emailSent ? '✓ Enviado' : 'Enviar'}
+            </button>
+          </div>
+        </div>
+        
+        {/* WhatsApp */}
+        <div>
+          <label style={{ display: 'block', marginBottom: 6, fontSize: 14, fontWeight: 500 }}>
+            WhatsApp:
+          </label>
+          <div style={{ display: 'flex', gap: 8 }}>
+            <input 
+              type="tel" 
+              placeholder="+54 9 11 1234-5678"
+              value={whatsapp} 
+              onChange={e=>setWhatsapp(e.target.value)}
+              style={{
+                flex: 1,
+                padding: '10px 12px',
+                border: '1px solid #ddd',
+                borderRadius: 6,
+                fontSize: 14
+              }}
+            />
+            <button 
+              onClick={onSendWhatsapp} 
+              disabled={sendingWhatsapp || !whatsapp}
+              style={{
+                padding: '10px 20px',
+                background: whatsapp && !sendingWhatsapp ? '#25D366' : '#ccc',
+                color: '#fff',
+                border: 'none',
+                borderRadius: 6,
+                cursor: whatsapp && !sendingWhatsapp ? 'pointer' : 'not-allowed',
+                fontSize: 14,
+                fontWeight: 600
+              }}
+            >
+              {sendingWhatsapp ? 'Enviando...' : whatsappSent ? '✓ Enviado' : 'Enviar'}
+            </button>
+          </div>
         </div>
       </div>
 
