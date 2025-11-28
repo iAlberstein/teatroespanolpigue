@@ -5,11 +5,9 @@ import { apiFetch } from '../lib/api';
 export default function Cartelera(){
   const [shows, setShows] = useState([]);
   useEffect(() => {
-    console.log('[CARTELERA] Fetching shows from /api/shows');
     apiFetch('/api/shows')
       .then(r=>r.json())
       .then(data => {
-        console.log('[CARTELERA] Shows loaded:', data);
         setShows(data);
       })
       .catch(err => {

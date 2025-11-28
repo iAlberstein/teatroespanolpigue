@@ -6,17 +6,19 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 dotenv.config({ path: join(__dirname, '..', '.env') });
 
-console.log('[STARTUP] MP_ACCESS_TOKEN loaded:', !!process.env.MP_ACCESS_TOKEN);
-
 import express from 'express';
 import http from 'http';
 import cors from 'cors';
 import { Server as SocketIOServer } from 'socket.io';
-import { sequelize } from './lib/sequelize.js';
+import { initSequelize, sequelize } from './lib/sequelize.js';
 import registerModels from './models/registerModels.js';
 import apiRouter from './routes/index.js';
 import dayjs from 'dayjs';
 import { Op } from 'sequelize';
+
+// Inicializar Sequelize DESPUÉS de cargar dotenv
+const sequelizeInstance = initSequelize();
+registerModels(sequelizeInstance);
 
 const app = express();
 const server = http.createServer(app);
@@ -62,19 +64,24 @@ const io = new SocketIOServer(server, {
 
 app.use(cors({
   origin: (origin, callback) => {
+    // Safari y otros navegadores pueden enviar undefined para same-origin requests
     if (!origin) return callback(null, true);
     if (originAllowed(origin)) return callback(null, true);
     console.warn('[CORS][express] denied origin:', origin, 'allowed:', allowedOrigins);
     return callback(new Error('Not allowed by CORS'));
   },
-  credentials: true,
-  methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS'],
-  allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With', 'Accept', 'Origin', 'x-socket-id'],
-  exposedHeaders: ['Content-Length', 'X-JSON'],
+  credentials: false, // Cambiado a false porque usamos JWT en headers, no cookies
+  methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS', 'HEAD'],
+  allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With', 'Accept', 'Origin', 'x-socket-id', 'Cache-Control', 'Pragma'],
+  exposedHeaders: ['Content-Length', 'X-JSON', 'Content-Type'],
   maxAge: 86400, // 24 hours
   preflightContinue: false,
   optionsSuccessStatus: 204
 }));
+
+// Handle preflight requests explicitly (importante para Safari)
+app.options('*', cors());
+
 app.use(express.json());
 app.set('io', io);
 
@@ -110,7 +117,8 @@ io.on('connection', (socket) => {
     }
     const st = pullmanState.get(sessionId);
     const totalHeld = Array.from(st.heldBySocket.values()).reduce((a,b)=>a+b,0);
-    const available = Math.max(0, st.capacity - totalHeld);
+    const soldCount = io.pullmanSold?.get(sessionId) || 0;
+    const available = Math.max(0, st.capacity - totalHeld - soldCount);
     socket.emit('pullman_updated', { available, capacity: st.capacity });
 
     // ensure seat holds map exists
@@ -224,21 +232,22 @@ io.on('connection', (socket) => {
   socket.on('pullman_change', ({ sessionId, delta }) => {
     if (!pullmanState.has(sessionId)) return;
     const st = pullmanState.get(sessionId);
+    const soldCount = io.pullmanSold?.get(sessionId) || 0;
     const current = st.heldBySocket.get(socket.id) || 0;
     const totalHeldExcludingMe = Array.from(st.heldBySocket.entries())
       .filter(([sid]) => sid !== socket.id)
       .reduce((a, [, v]) => a + v, 0);
-    const maxForMe = Math.max(0, st.capacity - totalHeldExcludingMe);
+    const maxForMe = Math.max(0, st.capacity - totalHeldExcludingMe - soldCount);
     let desired = current + (delta > 0 ? 1 : delta < 0 ? -1 : 0);
     desired = Math.max(0, Math.min(maxForMe, desired));
     if (desired === current) {
-      const availableNoChange = Math.max(0, st.capacity - (totalHeldExcludingMe + current));
+      const availableNoChange = Math.max(0, st.capacity - (totalHeldExcludingMe + current) - soldCount);
       socket.emit('pullman_confirmed', { selected: current, available: availableNoChange, capacity: st.capacity });
       return;
     }
     st.heldBySocket.set(socket.id, desired);
     const newTotal = totalHeldExcludingMe + desired;
-    const available = Math.max(0, st.capacity - newTotal);
+    const available = Math.max(0, st.capacity - newTotal - soldCount);
     // confirm current user's count
     socket.emit('pullman_confirmed', { selected: desired, available, capacity: st.capacity });
     // broadcast availability to all in session
@@ -250,8 +259,9 @@ io.on('connection', (socket) => {
     const st = pullmanState.get(sessionId);
     if (st.heldBySocket.has(socket.id)) {
       st.heldBySocket.set(socket.id, 0);
+      const soldCount = io.pullmanSold?.get(sessionId) || 0;
       const newTotal = Array.from(st.heldBySocket.values()).reduce((a,b)=>a+b,0);
-      const available = Math.max(0, st.capacity - newTotal);
+      const available = Math.max(0, st.capacity - newTotal - soldCount);
       socket.emit('pullman_confirmed', { selected: 0, available, capacity: st.capacity });
       io.to(`session:${sessionId}`).emit('pullman_updated', { available, capacity: st.capacity });
     }
@@ -264,8 +274,9 @@ io.on('connection', (socket) => {
     if (!st) return;
     if (st.heldBySocket.has(socket.id)) {
       st.heldBySocket.delete(socket.id);
+      const soldCount = io.pullmanSold?.get(sessionId) || 0;
       const newTotal = Array.from(st.heldBySocket.values()).reduce((a,b)=>a+b,0);
-      const available = Math.max(0, st.capacity - newTotal);
+      const available = Math.max(0, st.capacity - newTotal - soldCount);
       io.to(`session:${sessionId}`).emit('pullman_updated', { available, capacity: st.capacity });
     }
     // Release all seats held by this socket
@@ -326,7 +337,6 @@ io.on('connection', (socket) => {
 
 (async () => {
   try {
-    registerModels(sequelize);
     await sequelize.authenticate();
     await sequelize.sync();
 

@@ -1,7 +1,7 @@
 // 38 cols x 25 rows layout matrix
 export default [
   ['XX','XX','XX','XX','XX','XX','XX','XX','XX','XX','ESC','ESC','ESC','ESC','ESC','ESC','ESC','ESC','ESC','ESC','ESC','ESC','ESC','ESC','ESC','ESC','ESC','ESC','XX','XX','XX','XX','XX','XX','XX','XX','XX','XX'],
-  ['XX','XX','XX','XX','XX','XX','XX','XX','XX','XX','ESC','ESC','ESC','ESC','ESC','ESC','ESC','ESC','ESC','ESC','ESC','ESC','ESC','ESC','ESC','ESC','ESC','ESC','XX','XX','XX','XX','XX','XX','XX','XX','XX','XX'],
+  ['XX','XX','XX','STEP_PA_L','STEP_PA_L','XX','XX','XX','XX','XX','ESC','ESC','ESC','ESC','ESC','ESC','ESC','ESC','ESC','ESC','ESC','ESC','ESC','ESC','ESC','ESC','ESC','ESC','XX','XX','XX','XX','XX','STEP_PA_R','STEP_PA_R','XX','XX','XX'],
   ['XX','XX','XX','PA 17','PA 17','XX','XX','XX','XX','XX','XX','XX','XX','XX','XX','XX','XX','XX','XX','XX','XX','XX','XX','XX','XX','XX','XX','XX','XX','XX','XX','XX','XX','PA 18','PA 18','XX','XX','XX'],
   ['XX','XX','XX','PA 17','PA 17','XX','PB 19','PB 19','XX','XX','XX','XX','XX','XX','XX','XX','XX','XX','XX','XX','XX','XX','XX','XX','XX','XX','XX','XX','XX','XX','PB 20','PB 20','XX','PA 18','PA 18','XX','XX','XX'],
   ['XX','XX','PA 15','PA 15','XX','XX','PB 19','PB 19','XX','XX','15','13','11','9','A','7','5','3','1','2','4','6','8','A','10','12','14','16','XX','XX','PB 20','PB 20','XX','XX','PA 16','PA 16','XX','XX'],
@@ -21,7 +21,7 @@ export default [
   ['XX','XX','XX','XX','PA 1','PA 1','XX','PB 7','PB 7','PB 5','PB 5','PB 3','PB 3','PB 1','PB 1','XX','XX','XX','XX','XX','XX','XX','XX','PB 2','PB 2','PB 4','PB 4','PB 6','PB 6','PB 8','PB 8','XX','PA 2','PA 2','XX','XX','XX','XX'],
   ['XX','XX','XX','XX','PA 1','PA 1','XX','XX','XX','PB 5','PB 5','PB 3','PB 3','PB 1','PB 1','XX','XX','XX','XX','XX','XX','XX','XX','PB 2','PB 2','PB 4','PB 4','PB 6','PB 6','XX','XX','XX','PA 2','PA 2','XX','XX','XX','XX'],
   ['XX','XX','XX','XX','XX','XX','XX','XX','XX','XX','XX','XX','XX','XX','XX','XX','XX','XX','XX','XX','XX','XX','XX','XX','XX','XX','XX','XX','XX','XX','XX','XX','XX','XX','XX','XX','XX','XX'],
-  ['XX','XX','XX','XX','XX','XX','XX','PULL','PULL','PULL','PULL','PULL','PULL','PULL','PULL','PULL','PULL','PULL','PULL','PULL','PULL','PULL','PULL','PULL','PULL','PULL','PULL','PULL','PULL','PULL','PULL','XX','XX','XX','XX','XX','XX'],
-  ['XX','XX','XX','XX','XX','XX','XX','PULL','PULL','PULL','PULL','PULL','PULL','PULL','PULL','PULL','PULL','PULL','PULL','PULL','PULL','PULL','PULL','PULL','PULL','PULL','PULL','PULL','PULL','PULL','PULL','XX','XX','XX','XX','XX','XX'],
-  ['XX','XX','XX','XX','XX','XX','XX','PULL','PULL','PULL','PULL','PULL','PULL','PULL','PULL','PULL','PULL','PULL','PULL','PULL','PULL','PULL','PULL','PULL','PULL','PULL','PULL','PULL','PULL','PULL','PULL','XX','XX','XX','XX','XX','XX']
+  ['XX','XX','XX','XX','XX','XX','STEP_PULL_L','PULL','PULL','PULL','PULL','PULL','PULL','PULL','PULL','PULL','PULL','PULL','PULL','PULL','PULL','PULL','PULL','PULL','PULL','PULL','PULL','PULL','PULL','PULL','PULL','STEP_PULL_R','XX','XX','XX','XX','XX'],
+  ['XX','XX','XX','XX','XX','XX','STEP_PULL_L','PULL','PULL','PULL','PULL','PULL','PULL','PULL','PULL','PULL','PULL','PULL','PULL','PULL','PULL','PULL','PULL','PULL','PULL','PULL','PULL','PULL','PULL','PULL','PULL','STEP_PULL_R','XX','XX','XX','XX','XX'],
+  ['XX','XX','XX','XX','XX','XX','STEP_PULL_L','PULL','PULL','PULL','PULL','PULL','PULL','PULL','PULL','PULL','PULL','PULL','PULL','PULL','PULL','PULL','PULL','PULL','PULL','PULL','PULL','PULL','PULL','PULL','PULL','STEP_PULL_R','XX','XX','XX','XX','XX']
 ];

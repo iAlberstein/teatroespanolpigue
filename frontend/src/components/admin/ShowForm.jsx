@@ -1,9 +1,12 @@
 import { useState, useEffect } from 'react';
+import { useAuth } from '../../contexts/AuthContext';
+import { apiAuthFetch } from '../../lib/api';
 
 /**
  * Form to create or edit a show with pricing
  */
 export default function ShowForm({ show, onSave, onCancel }) {
+  const { token } = useAuth();
   const isEditing = !!show?.id;
 
   const [formData, setFormData] = useState({
@@ -14,13 +17,22 @@ export default function ShowForm({ show, onSave, onCancel }) {
     palcos_bajos: 10000,
     palcos_altos: 8000,
     pullman: 3000,
-    image_url: ''
+    image_url: '',
+    producer_ids: []
   });
 
   const [errors, setErrors] = useState({});
+  const [producers, setProducers] = useState([]);
+  const [producerSearch, setProducerSearch] = useState('');
+
+  useEffect(() => {
+    loadProducers();
+  }, []);
 
   useEffect(() => {
     if (show) {
+      console.log('Loading show for edit:', show);
+      console.log('Show producers:', show.producers);
       setFormData({
         title: show.title || '',
         description: show.description || '',
@@ -29,10 +41,26 @@ export default function ShowForm({ show, onSave, onCancel }) {
         palcos_bajos: show.pricing_json?.palcos_bajos || 10000,
         palcos_altos: show.pricing_json?.palcos_altos || 8000,
         pullman: show.pricing_json?.pullman || 3000,
-        image_url: show.image_url || ''
+        image_url: show.image_url || '',
+        producer_ids: show.producers?.map(p => p.id) || []
       });
     }
   }, [show]);
+
+  const loadProducers = async () => {
+    try {
+      const res = await apiAuthFetch('/api/producers', { method: 'GET' }, token);
+      if (res.ok) {
+        const data = await res.json();
+        console.log('Producers loaded:', data.producers);
+        setProducers(data.producers || []);
+      } else {
+        console.error('Error response:', await res.text());
+      }
+    } catch (err) {
+      console.error('Error loading producers:', err);
+    }
+  };
 
   const handleChange = (field, value) => {
     setFormData(prev => ({ ...prev, [field]: value }));
@@ -90,9 +118,11 @@ export default function ShowForm({ show, onSave, onCancel }) {
         palcos_altos: Number(formData.palcos_altos),
         pullman: Number(formData.pullman)
       },
-      image_url: formData.image_url.trim() || null
+      image_url: formData.image_url.trim() || null,
+      producer_ids: formData.producer_ids
     };
 
+    console.log('Saving show with producers:', payload.producer_ids);
     onSave(payload);
   };
 
@@ -261,6 +291,91 @@ export default function ShowForm({ show, onSave, onCancel }) {
               />
               {errors.pullman && <span style={{ color: '#dc3545', fontSize: 12 }}>{errors.pullman}</span>}
             </div>
+          </div>
+        </div>
+
+        {/* Productores */}
+        <div style={{ marginBottom: 24 }}>
+          <label style={{ display: 'block', marginBottom: 8, fontWeight: 600, fontSize: 16 }}>
+            Productores
+          </label>
+          {/* Input de búsqueda */}
+          <input
+            type="text"
+            placeholder="Buscar productor por nombre o email..."
+            value={producerSearch}
+            onChange={(e) => setProducerSearch(e.target.value)}
+            style={{
+              width: '100%',
+              padding: 10,
+              border: '1px solid #ccc',
+              borderRadius: 6,
+              fontSize: 14,
+              marginBottom: 8
+            }}
+          />
+          <div style={{ 
+            border: '1px solid #ccc',
+            borderRadius: 6,
+            padding: 12,
+            minHeight: 100,
+            maxHeight: 200,
+            overflowY: 'auto'
+          }}>
+            {producers.length === 0 ? (
+              <div style={{ color: '#6c757d', fontSize: 14 }}>
+                No hay productores disponibles. Asigná el rol "Productor" a usuarios en la sección Usuarios.
+              </div>
+            ) : (() => {
+              const filtered = producers.filter(p => 
+                producerSearch === '' || 
+                p.name.toLowerCase().includes(producerSearch.toLowerCase()) ||
+                (p.email && p.email.toLowerCase().includes(producerSearch.toLowerCase()))
+              );
+              
+              if (filtered.length === 0) {
+                return (
+                  <div style={{ color: '#6c757d', fontSize: 14, padding: '8px 0' }}>
+                    No se encontraron productores con "{producerSearch}"
+                  </div>
+                );
+              }
+              
+              return filtered.map(producer => (
+                <label
+                  key={producer.id}
+                  style={{
+                    display: 'flex',
+                    alignItems: 'center',
+                    padding: '6px 0',
+                    cursor: 'pointer',
+                    fontSize: 14
+                  }}
+                >
+                  <input
+                    type="checkbox"
+                    checked={formData.producer_ids.includes(producer.id)}
+                    onChange={(e) => {
+                      if (e.target.checked) {
+                        handleChange('producer_ids', [...formData.producer_ids, producer.id]);
+                      } else {
+                        handleChange('producer_ids', formData.producer_ids.filter(id => id !== producer.id));
+                      }
+                    }}
+                    style={{ marginRight: 8 }}
+                  />
+                  <span>{producer.name}</span>
+                  {producer.email && (
+                    <span style={{ marginLeft: 8, fontSize: 12, color: '#6c757d' }}>
+                      ({producer.email})
+                    </span>
+                  )}
+                </label>
+              ));
+            })()}
+          </div>
+          <div style={{ fontSize: 12, color: '#6c757d', marginTop: 4 }}>
+            Seleccioná los productores asociados a este show
           </div>
         </div>
 

@@ -1,10 +1,8 @@
-import { useEffect, useState, useRef } from 'react';
+import { useEffect, useState } from 'react';
 import { useSearchParams } from 'react-router-dom';
-import { useAuth } from '../contexts/AuthContext';
-import { apiFetch, apiAuthFetch } from '../lib/api';
+import { apiFetch } from '../lib/api';
 
 export default function MpSuccess(){
-  const { token } = useAuth();
   const [searchParams] = useSearchParams();
   const reservationIdParam = searchParams.get('reservation_id');
   const paymentId = searchParams.get('payment_id');
@@ -15,13 +13,11 @@ export default function MpSuccess(){
   const [reservationId, setReservationId] = useState(reservationIdParam || '');
   const [email, setEmail] = useState('');
   const [whatsapp, setWhatsapp] = useState('');
-  const [confirmingSale, setConfirmingSale] = useState(false);
-  const [saleConfirmed, setSaleConfirmed] = useState(false);
   const [sendingEmail, setSendingEmail] = useState(false);
   const [emailSent, setEmailSent] = useState(false);
-  const [sendingWhatsapp, setSendingWhatsapp] = useState(false);
   const [whatsappSent, setWhatsappSent] = useState(false);
-  const confirmingRef = useRef(false); // Flag para prevenir confirmaciones duplicadas
+  const [appliedDiscount, setAppliedDiscount] = useState(null);
+  const [saleId, setSaleId] = useState(null);
 
   // If reservation_id is missing but we have payment_id, fetch payment to get metadata.reservation_id
   useEffect(() => {
@@ -42,57 +38,63 @@ export default function MpSuccess(){
     if (!reservationId) return;
     apiFetch(`/api/reservations/${reservationId}`)
       .then(r=>r.json())
-      .then(setReservation)
+      .then(data => {
+        setReservation(data);
+        // Get sale_id if reservation is confirmed
+        if (data && data.status === 'confirmed' && data.sale_id) {
+          setSaleId(data.sale_id);
+        }
+      })
       .catch(()=>setReservation(null));
   }, [reservationId]);
 
-  // Confirm purchase automatically when approved and we have payment_id (reservationId no es necesario)
+  // Load discount info when reservation is available
   useEffect(() => {
-    if (status !== 'approved') return;
-    if (!paymentId) return;
-    if (confirmingRef.current) return; // Prevenir ejecuciones paralelas
-    
-    confirmingRef.current = true;
+    if (!reservationId) return;
     let aborted = false;
     (async () => {
       try {
-        setConfirmingSale(true);
-        const headers = { 'Content-Type': 'application/json' };
-        if (token) {
-          headers['Authorization'] = `Bearer ${token}`;
+        const r = await apiFetch(`/api/payments/discount/${reservationId}`);
+        const j = await r.json();
+        if (!aborted && j.discount) {
+          setAppliedDiscount(j.discount);
         }
-        
-        const res = await apiFetch('/api/payments/confirm', {
-          method: 'POST',
-          headers,
-          body: JSON.stringify({ payment_id: paymentId })
-        });
-        
-        const data = await res.json().catch(() => ({}));
-        console.log('[MP_SUCCESS] Confirm response:', { ok: res.ok, status: res.status, data });
-        
-        if (!aborted) {
-          if (res.ok) {
-            setSaleConfirmed(true);
-            setConfirmingSale(false);
-            console.log('[MP_SUCCESS] Sale confirmed successfully');
-          } else {
-            console.error('[MP_SUCCESS] Confirm failed:', data);
-            setConfirmingSale(false);
-            setSaleConfirmed(false);
-            confirmingRef.current = false; // Liberar en caso de error para permitir retry
-          }
-        }
-      } catch (err) {
-        console.error('[MP_SUCCESS] Error confirming:', err);
-        if (!aborted) {
-          setConfirmingSale(false);
-          setSaleConfirmed(false);
-        }
-      }
+      } catch {}
     })();
     return () => { aborted = true; };
-  }, [status, paymentId, token]);
+  }, [reservationId]);
+
+  // Confirm payment on mount (fallback if webhook fails)
+  useEffect(() => {
+    if (!reservationId || !paymentId || !status) return;
+    if (status !== 'approved') return;
+    
+    let aborted = false;
+    const confirmPayment = async () => {
+      try {
+        console.log('[MP_SUCCESS] Confirming payment for reservation:', reservationId);
+        const response = await apiFetch('/api/payments/confirm', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ 
+            reservation_id: reservationId,
+            payment_id: paymentId,
+            status 
+          })
+        });
+        const result = await response.json();
+        console.log('[MP_SUCCESS] Confirmation result:', result);
+      } catch (e) {
+        console.error('[MP_SUCCESS] Error confirming payment:', e);
+      }
+    };
+    
+    if (!aborted) {
+      confirmPayment();
+    }
+    
+    return () => { aborted = true; };
+  }, [reservationId, paymentId, status]);
 
   // Format seat location consistently
   const formatSeatLocation = (seatCode, type) => {
@@ -119,7 +121,7 @@ export default function MpSuccess(){
   };
 
   const calculateTotals = () => {
-    if (!reservation?.items) return { subtotal: 0, serviceCharge: 0, total: 0 };
+    if (!reservation?.items) return { subtotal: 0, discountAmount: 0, serviceCharge: 0, total: 0 };
     
     const subtotal = reservation.items.reduce((sum, it) => {
       if (it.type === 'butaca' || it.type === 'palco') return sum + Number(it.price || 0);
@@ -127,13 +129,28 @@ export default function MpSuccess(){
       return sum;
     }, 0);
     
-    const serviceCharge = Math.round(subtotal * 0.10);
-    const total = subtotal + serviceCharge;
+    // Apply discount FIRST (before service charge)
+    let discountAmount = 0;
+    let subtotalAfterDiscount = subtotal;
     
-    return { subtotal, serviceCharge, total };
+    if (appliedDiscount) {
+      if (appliedDiscount.type === 'percentage') {
+        discountAmount = Math.round(subtotal * (appliedDiscount.value / 100));
+      } else if (appliedDiscount.type === 'fixed') {
+        discountAmount = Math.round(appliedDiscount.value);
+      }
+      discountAmount = Math.min(discountAmount, subtotal);
+      subtotalAfterDiscount = subtotal - discountAmount;
+    }
+    
+    // Service charge applied AFTER discount
+    const serviceCharge = Math.round(subtotalAfterDiscount * 0.10);
+    const total = subtotalAfterDiscount + serviceCharge;
+    
+    return { subtotal, discountAmount, serviceCharge, total };
   };
   
-  const { subtotal, serviceCharge, total } = calculateTotals();
+  const { subtotal, discountAmount, serviceCharge, total } = calculateTotals();
 
   const onSendEmail = async () => {
     if (!reservationId || !email) return;
@@ -150,63 +167,53 @@ export default function MpSuccess(){
     }
   };
 
-  const onSendWhatsapp = async () => {
-    if (!reservationId || !whatsapp) return;
-    setSendingWhatsapp(true);
-    try {
-      const res = await apiFetch('/api/payments/whatsapp', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ reservation_id: reservationId, phone: whatsapp })
-      });
-      setWhatsappSent(res.ok);
-    } finally {
-      setSendingWhatsapp(false);
-    }
+  const onSendWhatsapp = () => {
+    if (!whatsapp || !saleId) return;
+    
+    // Remove spaces, dashes and other characters
+    const cleanPhone = whatsapp.replace(/[\s\-()]/g, '');
+    
+    // Get show details from reservation
+    const showName = reservation?.session?.show?.title || 'el espectáculo';
+    const sessionDate = reservation?.session?.starts_at ? 
+      new Date(reservation.session.starts_at).toLocaleDateString('es-AR', { 
+        weekday: 'short', day: 'numeric', month: 'short' 
+      }) : '';
+    const sessionTime = reservation?.session?.starts_at ? 
+      new Date(reservation.session.starts_at).toLocaleTimeString('es-AR', { 
+        hour: '2-digit', minute: '2-digit', hour12: true 
+      }) : '';
+    
+    // Build share URL
+    const shareUrl = `${window.location.origin}/api/share/sale/${saleId}`;
+    
+    // Build message
+    const message = `Hola! Te comparto tus entradas para el show ${showName}${sessionDate ? ` del día ${sessionDate}` : ''}${sessionTime ? ` a las ${sessionTime}` : ''}.\n\n🎭 Ver entradas: ${shareUrl}\n\nRecordá llegar al menos 30 minutos antes y mostrar el QR en el acceso.\n\n(Si no podés acceder al link, es porque no tenés agendado este número. Una vez que lo hagas, podrás acceder)\n\n¡Nos vemos!`;
+    
+    // Open WhatsApp with pre-filled message
+    const waUrl = `https://wa.me/549${cleanPhone}?text=${encodeURIComponent(message)}`;
+    window.open(waUrl, '_blank');
+    
+    setWhatsappSent(true);
   };
 
   return (
     <div style={{ padding: 24, maxWidth: 600, margin: '0 auto' }}>
       <h1 style={{ color: '#28a745', marginBottom: 8 }}>🎉 ¡Compra confirmada!</h1>
-      <p style={{ fontSize: 16, marginBottom: 24 }}>Gracias por tu compra. Tu pago fue aprobado exitosamente.</p>
+      <p style={{ fontSize: 16, marginBottom: 16 }}>Gracias por tu compra. Tu pago fue aprobado exitosamente.</p>
       
-      {saleConfirmed && (
-        <div style={{ 
-          padding: 12, 
-          background: '#d4edda', 
-          border: '1px solid #c3e6cb', 
-          borderRadius: 6, 
-          marginBottom: 24,
-          color: '#155724'
-        }}>
-          ✓ Tu compra ha sido procesada exitosamente
-        </div>
-      )}
-      
-      {!saleConfirmed && confirmingSale && (
-        <div style={{ 
-          padding: 12, 
-          background: '#f8f9fa', 
-          border: '1px solid #dee2e6', 
-          borderRadius: 6, 
-          marginBottom: 24 
-        }}>
-          Procesando compra...
-        </div>
-      )}
-      
-      {!saleConfirmed && !confirmingSale && status === 'approved' && (
-        <div style={{ 
-          padding: 12, 
-          background: '#fff3cd', 
-          border: '1px solid #ffeeba', 
-          borderRadius: 6, 
-          marginBottom: 24,
-          color: '#856404'
-        }}>
-          ⚠️ La compra se confirmará automáticamente. Si no ves la confirmación, recargá la página.
-        </div>
-      )}
+      <div style={{ 
+        padding: 12, 
+        background: '#e7f3ff', 
+        border: '1px solid #2196f3',
+        borderRadius: 8,
+        color: '#0d47a1',
+        fontSize: 14,
+        textAlign: 'center',
+        marginBottom: 24
+      }}>
+        ✓ Tus entradas ya están guardadas en tu perfil
+      </div>
       
       <div style={{ 
         marginTop: 24, 
@@ -255,6 +262,21 @@ export default function MpSuccess(){
           <span>${subtotal.toLocaleString('es-AR')}</span>
         </div>
         
+        {/* Discount */}
+        {discountAmount > 0 && appliedDiscount && (
+          <div style={{ 
+            marginTop: 6,
+            display: 'flex',
+            justifyContent: 'space-between',
+            fontSize: 15,
+            color: '#059669',
+            fontWeight: 600
+          }}>
+            <span>Descuento ({appliedDiscount.code}):</span>
+            <span>-${discountAmount.toLocaleString('es-AR')}</span>
+          </div>
+        )}
+        
         {/* Service charge */}
         <div style={{ 
           marginTop: 6,
@@ -281,22 +303,6 @@ export default function MpSuccess(){
           <span style={{ color: '#28a745' }}>${total.toLocaleString('es-AR')}</span>
         </div>
       </div>
-      
-      {/* Leyenda sobre perfil */}
-      {saleConfirmed && (
-        <div style={{ 
-          marginTop: 16, 
-          padding: 12, 
-          background: '#e7f3ff', 
-          border: '1px solid #2196f3',
-          borderRadius: 8,
-          color: '#0d47a1',
-          fontSize: 14,
-          textAlign: 'center'
-        }}>
-          ✓ Tus entradas ya están guardadas en tu perfil
-        </div>
-      )}
 
       <div style={{ 
         marginTop: 24, 
@@ -350,12 +356,12 @@ export default function MpSuccess(){
         {/* WhatsApp */}
         <div>
           <label style={{ display: 'block', marginBottom: 6, fontSize: 14, fontWeight: 500 }}>
-            WhatsApp:
+            WhatsApp: <span style={{ color: '#999', fontWeight: 400, fontSize: 12 }}>(código de área + número)</span>
           </label>
           <div style={{ display: 'flex', gap: 8 }}>
             <input 
               type="tel" 
-              placeholder="+54 9 11 1234-5678"
+              placeholder="11 1234-5678"
               value={whatsapp} 
               onChange={e=>setWhatsapp(e.target.value)}
               style={{
@@ -368,19 +374,19 @@ export default function MpSuccess(){
             />
             <button 
               onClick={onSendWhatsapp} 
-              disabled={sendingWhatsapp || !whatsapp}
+              disabled={!whatsapp}
               style={{
                 padding: '10px 20px',
-                background: whatsapp && !sendingWhatsapp ? '#25D366' : '#ccc',
+                background: whatsapp ? '#25D366' : '#ccc',
                 color: '#fff',
                 border: 'none',
                 borderRadius: 6,
-                cursor: whatsapp && !sendingWhatsapp ? 'pointer' : 'not-allowed',
+                cursor: whatsapp ? 'pointer' : 'not-allowed',
                 fontSize: 14,
                 fontWeight: 600
               }}
             >
-              {sendingWhatsapp ? 'Enviando...' : whatsappSent ? '✓ Enviado' : 'Enviar'}
+              {whatsappSent ? '✓ Abierto' : 'Abrir WhatsApp'}
             </button>
           </div>
         </div>

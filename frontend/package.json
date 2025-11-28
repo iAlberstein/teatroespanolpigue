@@ -9,15 +9,19 @@
     "preview": "vite preview"
   },
   "dependencies": {
+    "chart.js": "^4.4.0",
+    "html5-qrcode": "^2.3.8",
     "react": "18.3.1",
+    "react-chartjs-2": "^5.2.0",
     "react-dom": "18.3.1",
     "react-router-dom": "6.28.0",
+    "react-zoom-pan-pinch": "^3.7.0",
     "socket.io-client": "4.7.5"
   },
   "devDependencies": {
-    "@vitejs/plugin-react": "4.3.3",
     "@types/react": "18.3.6",
     "@types/react-dom": "18.3.0",
+    "@vitejs/plugin-react": "4.3.3",
     "vite": "5.4.10"
   }
 }

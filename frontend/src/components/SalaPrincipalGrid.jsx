@@ -1,5 +1,6 @@
 import React, { useMemo } from 'react';
 import matrix from './SalaPrincipalMatrix.js';
+import stepsIcon from '../../media/images/steps.png';
 
 // Build blocks for all tokens; for merge tokens (ESC, PULL, PA/PB) expand right then down; others are 1x1
 function computeBlocks(mat) {
@@ -7,7 +8,12 @@ function computeBlocks(mat) {
   const cols = mat[0].length;
   const used = Array.from({ length: rows }, () => Array(cols).fill(false));
   const blocks = [];
-  const isMergeToken = (val) => val === 'ESC' || val === 'PULL' || /^PA\s+\d+$/i.test(val) || /^PB\s+\d+$/i.test(val);
+  const isMergeToken = (val) =>
+    val === 'ESC' ||
+    val === 'PULL' ||
+    /^PA\s+\d+$/i.test(val) ||
+    /^PB\s+\d+$/i.test(val) ||
+    /^STEP_/i.test(val);
   const inBounds = (r,c) => r>=0 && r<rows && c>=0 && c<cols;
   for (let r = 0; r < rows; r++) {
     for (let c = 0; c < cols; c++) {
@@ -37,10 +43,40 @@ function computeBlocks(mat) {
   return blocks;
 }
 
-export default function SalaPrincipalGrid({ selectedSeatIds = new Set(), heldByOtherSeatIds = new Set(), soldSeatIds = new Set(), onToggleSeat, selectedPalcosLabels = new Set(), heldByOtherPalcosLabels = new Set(), soldPalcosLabels = new Set(), onTogglePalco, pullmanSelected = 0, pullmanAvailable = 92, onPullmanChange, showPullmanCounter = true }) {
+export default function SalaPrincipalGrid({
+  selectedSeatIds = new Set(),
+  heldByOtherSeatIds = new Set(),
+  soldSeatIds = new Set(),
+  onToggleSeat,
+  selectedPalcosLabels = new Set(),
+  heldByOtherPalcosLabels = new Set(),
+  soldPalcosLabels = new Set(),
+  onTogglePalco,
+  pullmanSelected = 0,
+  pullmanAvailable = 92,
+  onPullmanChange,
+  showPullmanCounter = true,
+  cellSize = 28
+}) {
   const rows = matrix.length;
   const cols = matrix[0].length;
   const blocks = useMemo(() => computeBlocks(matrix), []);
+  const seatFontSize = Math.max(10, Math.round(cellSize * 0.45));
+  const palcoFontSize = Math.max(11, Math.round(cellSize * 0.5));
+  const stageFontSize = Math.max(16, Math.round(cellSize * 0.85));
+  const stageLetterSpacing = Math.max(1, Math.round(cellSize * 0.18));
+  const gap = Math.max(1, Math.round(cellSize / 12));
+  const padding = Math.max(6, Math.round(cellSize / 2.5));
+
+  const baseCell = {
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+    fontSize: seatFontSize,
+    color: '#333',
+    borderRadius: Math.max(3, Math.round(cellSize * 0.15))
+  };
+  const singleCellDimensions = { width: `${cellSize}px`, height: `${cellSize}px` };
 
   // find row letter for a given row by scanning a single-letter A-M token
   const rowLetter = (r) => {
@@ -53,20 +89,21 @@ export default function SalaPrincipalGrid({ selectedSeatIds = new Set(), heldByO
 
   const gridStyle = {
     display: 'grid',
-    gridTemplateColumns: `repeat(${cols}, 28px)`,
-    gridTemplateRows: `repeat(${rows}, 28px)`,
-    gap: '2px',
+    gridTemplateColumns: `repeat(${cols}, ${cellSize}px)`,
+    gridTemplateRows: `repeat(${rows}, ${cellSize}px)`,
+    gap: `${gap}px`,
     background: '#f5f5dc',
-    padding: '10px',
+    padding: `${padding}px`,
     border: '1px solid #ccc',
     width: 'fit-content'
   };
 
-  const baseCell = {
-    display: 'flex', alignItems: 'center', justifyContent: 'center',
-    fontSize: 12, color: '#333', borderRadius: 4
-  };
-  const smallCell = { width: '28px', height: '28px' };
+  const pullmanButtonSize = Math.max(24, Math.round(cellSize * 0.9));
+  const pullmanButtonFont = Math.max(14, Math.round(cellSize * 0.55));
+  const pullmanBadgePadding = Math.round(Math.max(6, cellSize * 0.34));
+  const pullmanBadgeFont = Math.max(12, Math.round(cellSize * 0.48));
+  const pullmanTitleFont = Math.max(16, Math.round(cellSize * 0.75));
+  const pullmanInfoFont = Math.max(10, Math.round(cellSize * 0.4));
 
   return (
     <div style={gridStyle}>
@@ -75,18 +112,144 @@ export default function SalaPrincipalGrid({ selectedSeatIds = new Set(), heldByO
           const style = { ...baseCell, gridColumn: `${b.c + 1} / span ${b.cs}`, gridRow: `${b.r + 1} / span ${b.rs}` };
           const token = b.token;
           if (token === 'ESC') {
-            return <div key={key} style={{ ...style, background:'#000', color:'#fff', fontWeight:700 }}>Escenario</div>;
+            return (
+              <div
+                key={key}
+                style={{
+                  ...style,
+                  background: '#000',
+                  color: '#fff',
+                  fontWeight: 700,
+                  fontSize: `${stageFontSize}px`,
+                  fontFamily: 'Helvetica, Arial, sans-serif',
+                  letterSpacing: `${stageLetterSpacing}px`
+                }}
+              >
+                ESCENARIO
+              </div>
+            );
           }
           if (token === 'PULL') {
             return (
-              <div key={key} style={{ ...style, background:'#c0c0c0', fontWeight:600 }}>
-                <div style={{ display:'flex', gap:8, alignItems:'center' }}>
-                  <span>Pullman</span>
-                  <button aria-label="menos" onClick={() => onPullmanChange && onPullmanChange(-1)} disabled={pullmanSelected<=0} style={{ width:24, height:24, borderRadius:12, background:'#f4a6a6', border:'1px solid #c98888' }}>-</button>
-                  <span style={{ background:'#fff', padding:'0 6px', borderRadius:4 }}>{pullmanSelected}</span>
-                  <button aria-label="más" onClick={() => onPullmanChange && onPullmanChange(1)} disabled={pullmanAvailable<=0} style={{ width:24, height:24, borderRadius:12, background:'#a8d8a8', border:'1px solid #7fbf7f' }}>+</button>
-                  <span style={{ marginLeft:8 }}>Disponibles: {pullmanAvailable}</span>
+              <div
+                key={key}
+                style={{
+                  ...style,
+                  background: '#c0c0c0',
+                  fontWeight: 600,
+                  border: '1px solid #9ca3af',
+                  borderRadius: Math.max(8, Math.round(cellSize * 0.45)),
+                  padding: `${Math.max(8, Math.round(cellSize * 0.35))}px ${Math.max(12, Math.round(cellSize * 0.6))}px`
+                }}
+              >
+                <div
+                  style={{
+                    display: 'grid',
+                    gridTemplateColumns: '1fr auto 1fr',
+                    alignItems: 'center',
+                    gap: Math.max(8, Math.round(cellSize * 0.45))
+                  }}
+                >
+                  <div style={{ fontSize: `${pullmanTitleFont}px`, letterSpacing: '1px', color: '#1f2937' }}>PULLMAN</div>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: Math.max(6, Math.round(cellSize * 0.35)) }}>
+                    <button
+                      aria-label="menos"
+                      onClick={() => onPullmanChange && onPullmanChange(-1)}
+                      disabled={pullmanSelected <= 0}
+                      style={{
+                        width: pullmanButtonSize,
+                        height: pullmanButtonSize,
+                        borderRadius: Math.round(pullmanButtonSize / 2),
+                        background: pullmanSelected <= 0 ? '#fcdada' : '#f87171',
+                        border: '1px solid rgba(220,38,38,0.4)',
+                        color: '#fff',
+                        fontSize: pullmanButtonFont,
+                        fontWeight: 700,
+                        cursor: pullmanSelected <= 0 ? 'not-allowed' : 'pointer'
+                      }}
+                    >
+                      −
+                    </button>
+                    <span
+                      style={{
+                        background: '#ffffff',
+                        padding: `${pullmanBadgePadding}px ${pullmanBadgePadding + 6}px`,
+                        borderRadius: Math.max(10, Math.round(cellSize * 0.4)),
+                        fontSize: pullmanBadgeFont,
+                        fontWeight: 700,
+                        color: '#111827',
+                        minWidth: Math.max(44, Math.round(cellSize * 1.6)),
+                        textAlign: 'center',
+                        border: '1px solid #9ca3af'
+                      }}
+                    >
+                      {pullmanSelected}
+                    </span>
+                    <button
+                      aria-label="más"
+                      onClick={() => onPullmanChange && onPullmanChange(1)}
+                      disabled={pullmanAvailable <= 0}
+                      style={{
+                        width: pullmanButtonSize,
+                        height: pullmanButtonSize,
+                        borderRadius: Math.round(pullmanButtonSize / 2),
+                        background: pullmanAvailable <= 0 ? '#d1fae5' : '#34d399',
+                        border: '1px solid rgba(16,185,129,0.4)',
+                        color: '#065f46',
+                        fontSize: pullmanButtonFont,
+                        fontWeight: 700,
+                        cursor: pullmanAvailable <= 0 ? 'not-allowed' : 'pointer'
+                      }}
+                    >
+                      +
+                    </button>
+                  </div>
+                  <div style={{ textAlign: 'right', fontSize: `${pullmanInfoFont}px`, color: '#1f2937', lineHeight: 1.2 }}>
+                    <div>Disponibles</div>
+                    <div style={{ fontSize: `${Math.max(14, Math.round(cellSize * 0.6))}px`, fontWeight: 700 }}>{pullmanAvailable}</div>
+                  </div>
                 </div>
+              </div>
+            );
+          }
+          if (/^STEP_PA/i.test(token)) {
+            return (
+              <div
+                key={key}
+                style={{
+                  ...style,
+                  background: 'transparent',
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center'
+                }}
+              >
+                <img
+                  src={stepsIcon}
+                  alt="Escalera"
+                  style={{ width: Math.max(24, Math.round(cellSize * 1.2)), height: Math.max(24, Math.round(cellSize * 1.2)), objectFit: 'contain', opacity: 0.85 }}
+                />
+              </div>
+            );
+          }
+          if (/^STEP_PULL/i.test(token)) {
+            const align = token.endsWith('_L') ? 'flex-end' : token.endsWith('_R') ? 'flex-start' : 'center';
+            return (
+              <div
+                key={key}
+                style={{
+                  ...style,
+                  background: 'transparent',
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: align
+                }}
+              >
+                <img
+                  src={stepsIcon}
+                  alt="Escalera"
+                  style={{ width: Math.max(26, Math.round(cellSize * 1.3)), height: Math.max(26, Math.round(cellSize * 1.3)), objectFit: 'contain', opacity: 0.85 }}
+                />
               </div>
             );
           }
@@ -99,7 +262,16 @@ export default function SalaPrincipalGrid({ selectedSeatIds = new Set(), heldByO
             return (
               <button key={key}
                 onClick={() => onTogglePalco && onTogglePalco({ label })}
-                style={{ ...style, background: isSold ? '#808080' : (isSelectedPalco ? '#ffd700' : (isBlocked ? '#9370db' : (isPA ? '#6b8e6b' : '#8fbc8f'))), color: isPA ? '#fff':'#333', fontWeight:600, cursor: (isSold || isBlocked) ? 'not-allowed' : 'pointer', border: isSelectedPalco ? '2px solid #e0b200' : '1px solid rgba(0,0,0,0.2)', opacity: isSold ? 0.9 : 1 }}
+                style={{
+                  ...style,
+                  background: isSold ? '#808080' : (isSelectedPalco ? '#ffd700' : (isBlocked ? '#9370db' : (isPA ? '#6b8e6b' : '#8fbc8f'))),
+                  color: isPA ? '#fff' : '#333',
+                  fontWeight: 600,
+                  cursor: (isSold || isBlocked) ? 'not-allowed' : 'pointer',
+                  border: isSelectedPalco ? `${Math.max(2, Math.round(cellSize * 0.08))}px solid #e0b200` : '1px solid rgba(0,0,0,0.2)',
+                  opacity: isSold ? 0.9 : 1,
+                  fontSize: `${palcoFontSize}px`
+                }}
                 aria-pressed={isSelectedPalco}
                 disabled={isSold || isBlocked}
                 title={`${token} (pack ${isPA ? 2 : 4})`}
@@ -107,7 +279,20 @@ export default function SalaPrincipalGrid({ selectedSeatIds = new Set(), heldByO
             );
           }
           if (/^[A-M]$/.test(token)) {
-            return <div key={key} style={{ ...style, ...smallCell, background:'transparent', fontWeight:700 }}>{token}</div>;
+            return (
+              <div
+                key={key}
+                style={{
+                  ...style,
+                  ...singleCellDimensions,
+                  background: 'transparent',
+                  fontWeight: 700,
+                  fontSize: `${palcoFontSize}px`
+                }}
+              >
+                {token}
+              </div>
+            );
           }
           if (/^\d+$/.test(token)) {
             const row = rowLetter(b.r);
@@ -119,7 +304,14 @@ export default function SalaPrincipalGrid({ selectedSeatIds = new Set(), heldByO
             return (
               <button key={key}
                 onClick={() => onToggleSeat && onToggleSeat({ r:b.r, c:b.c, val: token, row })}
-                style={{ ...style, ...smallCell, cursor: (isSold || isBlocked) ? 'not-allowed' : 'pointer', background: isSold ? '#808080' : (isSelected ? '#ffd700' : (isBlocked ? '#9370db' : '#a8d8a8')), border:'1px solid #7fbf7f', opacity: (isSold || isBlocked) ? 0.9 : 1 }}
+                style={{
+                  ...style,
+                  ...singleCellDimensions,
+                  cursor: (isSold || isBlocked) ? 'not-allowed' : 'pointer',
+                  background: isSold ? '#808080' : (isSelected ? '#ffd700' : (isBlocked ? '#9370db' : '#a8d8a8')),
+                  border: '1px solid #7fbf7f',
+                  opacity: (isSold || isBlocked) ? 0.9 : 1
+                }}
                 aria-pressed={isSelected}
                 disabled={isSold || isBlocked}
                 title={row ? `Fila ${row} - Asiento ${token}` : `Asiento ${token}`}
@@ -127,7 +319,7 @@ export default function SalaPrincipalGrid({ selectedSeatIds = new Set(), heldByO
             );
           }
           // fallback
-          return <div key={key} style={{ ...style, ...smallCell, background:'#eef0f2' }}>{token}</div>;
+          return <div key={key} style={{ ...style, ...singleCellDimensions, background:'#eef0f2' }}>{token}</div>;
         })}
     </div>
   );

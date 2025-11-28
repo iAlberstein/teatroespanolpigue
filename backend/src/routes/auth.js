@@ -3,6 +3,7 @@ import bcrypt from 'bcrypt';
 import jwt from 'jsonwebtoken';
 import { sequelize } from '../lib/sequelize.js';
 import { authenticateToken } from '../middleware/auth.js';
+import { createActivityLog, ActionTypes, EntityTypes } from '../middleware/activityLogger.js';
 
 const router = express.Router();
 const JWT_SECRET = process.env.JWT_SECRET || 'iStein2513';
@@ -11,11 +12,11 @@ const JWT_EXPIRES_IN = process.env.JWT_EXPIRES_IN || '7d';
 /**
  * POST /api/auth/register
  * Register a new user
- * Body: { name, email, password, role? }
+ * Body: { name, email, password, phone?, dni?, role? }
  */
 router.post('/register', async (req, res) => {
   try {
-    const { name, email, password, role } = req.body;
+    const { name, email, password, phone, dni, role } = req.body;
 
     // Validation
     if (!name || !email || !password) {
@@ -51,6 +52,8 @@ router.post('/register', async (req, res) => {
     const user = await User.create({
       name,
       email: email.toLowerCase(),
+      phone: phone || null,
+      dni: dni || null,
       password_hash,
       role: userRole
     });
@@ -66,6 +69,17 @@ router.post('/register', async (req, res) => {
       JWT_SECRET,
       { expiresIn: JWT_EXPIRES_IN }
     );
+
+    // Log activity
+    await createActivityLog({
+      userId: user.id,
+      actionType: ActionTypes.REGISTER,
+      entityType: EntityTypes.USER,
+      entityId: user.id,
+      details: { email: user.email, role: user.role },
+      ipAddress: req.ip || req.headers['x-forwarded-for'] || req.connection.remoteAddress,
+      userAgent: req.headers['user-agent']
+    });
 
     return res.status(201).json({
       message: 'User registered successfully',
@@ -121,6 +135,17 @@ router.post('/login', async (req, res) => {
       JWT_SECRET,
       { expiresIn: JWT_EXPIRES_IN }
     );
+
+    // Log activity
+    await createActivityLog({
+      userId: user.id,
+      actionType: ActionTypes.LOGIN,
+      entityType: EntityTypes.USER,
+      entityId: user.id,
+      details: { email: user.email, role: user.role },
+      ipAddress: req.ip || req.headers['x-forwarded-for'] || req.connection.remoteAddress,
+      userAgent: req.headers['user-agent']
+    });
 
     return res.json({
       message: 'Login successful',

@@ -12,6 +12,8 @@
     "check-db": "node src/scripts/checkDatabase.js",
     "create-boleteria": "node src/scripts/createBoleteriaUser.js",
     "migrate": "node src/scripts/runMigration.js",
+    "add-columns": "node add-missing-columns.js",
+    "send-reminders": "node src/scripts/sendReminders.js",
     "fix-qr-column": "node src/scripts/fixQRColumn.js",
     "regen-qr": "node src/scripts/regenerateQRs.js",
     "lint": "echo 'No linter configured'"
@@ -25,6 +27,8 @@
     "jsonwebtoken": "9.0.2",
     "mercadopago": "^2.9.0",
     "mysql2": "3.11.3",
+    "nodemailer": "^7.0.10",
+    "pdfkit": "^0.15.0",
     "qrcode": "^1.5.4",
     "sequelize": "6.37.3",
     "socket.io": "4.7.5",

@@ -2,7 +2,8 @@ import { Sequelize } from 'sequelize';
 
 let sequelizeInstance = null;
 
-export const getSequelize = () => {
+// No crear la instancia hasta que se llame explícitamente
+export const initSequelize = () => {
   if (!sequelizeInstance) {
     sequelizeInstance = new Sequelize(
       process.env.DB_NAME || 'tep',
@@ -20,9 +21,13 @@ export const getSequelize = () => {
   return sequelizeInstance;
 };
 
-// Export for backward compatibility
+export const getSequelize = () => sequelizeInstance;
+
 export const sequelize = new Proxy({}, {
   get(target, prop) {
-    return getSequelize()[prop];
+    if (!sequelizeInstance) {
+      throw new Error('Sequelize not initialized. Call initSequelize() first.');
+    }
+    return sequelizeInstance[prop];
   }
 });

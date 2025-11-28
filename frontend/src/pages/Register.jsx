@@ -5,6 +5,8 @@ import { useAuth } from '../contexts/AuthContext';
 export default function Register() {
   const [name, setName] = useState('');
   const [email, setEmail] = useState('');
+  const [phone, setPhone] = useState('');
+  const [dni, setDni] = useState('');
   const [password, setPassword] = useState('');
   const [confirmPassword, setConfirmPassword] = useState('');
   const [error, setError] = useState('');
@@ -27,7 +29,7 @@ export default function Register() {
     }
 
     setLoading(true);
-    const result = await register(name, email, password);
+    const result = await register(name, email, password, phone, dni);
 
     if (result.success) {
       navigate('/cartelera');
@@ -68,6 +70,31 @@ export default function Register() {
             required
             style={{ width: '100%', padding: 8, border: '1px solid #ccc', borderRadius: 4 }}
           />
+        </div>
+
+        <div>
+          <label style={{ display: 'block', marginBottom: 4, fontWeight: 600 }}>Teléfono (opcional)</label>
+          <input
+            type="tel"
+            value={phone}
+            onChange={(e) => setPhone(e.target.value)}
+            placeholder="Ej: 2923456789"
+            style={{ width: '100%', padding: 8, border: '1px solid #ccc', borderRadius: 4 }}
+          />
+          <small style={{ color: '#666', fontSize: 12 }}>Código de área + número, sin espacios</small>
+        </div>
+
+        <div>
+          <label style={{ display: 'block', marginBottom: 4, fontWeight: 600 }}>DNI (opcional)</label>
+          <input
+            type="text"
+            value={dni}
+            onChange={(e) => setDni(e.target.value.replace(/\D/g, ''))}
+            placeholder="Ej: 12345678"
+            maxLength={8}
+            style={{ width: '100%', padding: 8, border: '1px solid #ccc', borderRadius: 4 }}
+          />
+          <small style={{ color: '#666', fontSize: 12 }}>Solo números, sin puntos</small>
         </div>
 
         <div>

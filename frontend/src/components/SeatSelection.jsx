@@ -3,6 +3,8 @@ import { useNavigate } from 'react-router-dom';
 import { io } from 'socket.io-client';
 import { apiFetch, API_URL } from '../lib/api';
 import SalaPrincipalGrid from './SalaPrincipalGrid';
+import matrix from './SalaPrincipalMatrix.js';
+import { TransformWrapper, TransformComponent } from 'react-zoom-pan-pinch';
 
 /**
  * Shared component for seat selection
@@ -16,23 +18,32 @@ import SalaPrincipalGrid from './SalaPrincipalGrid';
  * - onSelectionChange: callback when selection changes
  * - sidebarContent: JSX element for sidebar
  */
-export default function SeatSelection({ 
-  showId, 
-  sessionId, 
-  userId = null, 
+export default function SeatSelection({
+  showId,
+  sessionId,
+  userId = null,
   mode = 'spectator',
   onSelectionChange,
   sidebarContent
 }) {
   const navigate = useNavigate();
   const socketRef = useRef(null);
-  
+  const gridContainerRef = useRef(null);
+
   // Seat selection state
   const [selectedSeatIds, setSelectedSeatIds] = useState(new Set());
   const [selectedPalcosLabels, setSelectedPalcosLabels] = useState(new Set());
   const [pullmanSelected, setPullmanSelected] = useState(0);
   const [pullmanAvailable, setPullmanAvailable] = useState(92);
-  
+  const [isDesktop, setIsDesktop] = useState(() => {
+    if (typeof window === 'undefined') return false;
+    return window.innerWidth >= 1200;
+  });
+  const BASE_CELL_SIZE = 28;
+  const MIN_ZOOM = 0.32;
+  const MAX_ZOOM = 2.6;
+  const GRID_COLS = matrix[0].length;
+
   // Sold and held state
   const [soldSeatIds, setSoldSeatIds] = useState(new Set());
   const [soldPalcosLabels, setSoldPalcosLabels] = useState(new Set());
@@ -103,11 +114,12 @@ export default function SeatSelection({
   // Socket.IO connection for real-time updates
   useEffect(() => {
     if (!sessionId) return;
-    
+
     // Clear local selections when changing session
     setSelectedSeatIds(new Set());
     setSelectedPalcosLabels(new Set());
     setPullmanSelected(0);
+
     
     // Connect socket if not already connected
     if (!socketRef.current) {
@@ -171,6 +183,15 @@ export default function SeatSelection({
       setPullmanAvailable(available);
     };
     
+    const onPullmanSold = ({ sold }) => {
+      setPullmanAvailable(prev => Math.max(0, prev - sold));
+    };
+    
+    const onPullmanConfirmed = ({ selected, available }) => {
+      setPullmanSelected(selected);
+      setPullmanAvailable(available);
+    };
+    
     socket.on('seat_held', onSeatHeld);
     socket.on('seat_released', onSeatReleased);
     socket.on('palco_held', onPalcoHeld);
@@ -178,6 +199,8 @@ export default function SeatSelection({
     socket.on('seat_sold', onSeatSold);
     socket.on('palco_sold', onPalcoSold);
     socket.on('pullman_updated', onPullmanUpdated);
+    socket.on('pullman_sold', onPullmanSold);
+    socket.on('pullman_confirmed', onPullmanConfirmed);
     
     return () => {
       socket.off('seat_held', onSeatHeld);
@@ -187,8 +210,26 @@ export default function SeatSelection({
       socket.off('seat_sold', onSeatSold);
       socket.off('palco_sold', onPalcoSold);
       socket.off('pullman_updated', onPullmanUpdated);
+      socket.off('pullman_sold', onPullmanSold);
+      socket.off('pullman_confirmed', onPullmanConfirmed);
     };
   }, [sessionId, userId, mode]);
+
+  useEffect(() => {
+    const handleResize = () => {
+      if (typeof window === 'undefined') return;
+      setIsDesktop(window.innerWidth >= 1200);
+    };
+
+    handleResize();
+    window.addEventListener('resize', handleResize);
+    return () => window.removeEventListener('resize', handleResize);
+  }, []);
+
+  const allowHorizontalScroll = isDesktop; // horizontal scroll del contenedor lo maneja TransformWrapper
+  const isBoxOffice = mode === 'boxoffice';
+  const isHorizontalLayout = isDesktop;
+  const desktopScale = isBoxOffice ? 1 : 0.9;
 
   // Notify parent when selection changes
   useEffect(() => {
@@ -202,7 +243,7 @@ export default function SeatSelection({
         pricing  // Include pricing in callback
       });
     }
-  }, [selectedSeatIds, selectedPalcosLabels, pullmanSelected]);
+  }, [selectedSeatIds, selectedPalcosLabels, pullmanSelected, pricing]);
 
   const handleToggleSeat = ({ r, c, val, row }) => {
     const seatId = `${row || ''}${val}`;
@@ -252,18 +293,10 @@ export default function SeatSelection({
   const handlePullmanChange = (delta) => {
     if (!socketRef.current || !sessionId) return;
     
-    setPullmanSelected(prev => {
-      const newVal = prev + delta;
-      if (newVal < 0) return 0;
-      if (newVal > pullmanAvailable) return pullmanAvailable;
-      
-      // Emit socket event for real-time sync
-      socketRef.current.emit('pullman_select', {
-        sessionId,
-        selected: newVal
-      });
-      
-      return newVal;
+    // Emit socket event BEFORE updating state
+    socketRef.current.emit('pullman_change', {
+      sessionId,
+      delta
     });
   };
 
@@ -288,65 +321,167 @@ export default function SeatSelection({
       
       // Clear pullman
       if (pullmanSelected > 0) {
-        socketRef.current.emit('pullman_select', {
-          sessionId,
-          selected: 0
+        socketRef.current.emit('pullman_clear', {
+          sessionId
         });
       }
     }
     
-    setSelectedSeatIds(new Set());
-    setSelectedPalcosLabels(new Set());
-    setPullmanSelected(0);
   };
 
   if (!sessionId) {
     return (
       <div style={{ padding: 24, textAlign: 'center', color: '#666' }}>
-        Seleccioná una sesión para ver las butacas disponibles
+        Seleccioná una función para ver las butacas disponibles
       </div>
     );
   }
 
+  const hasSidebar = Boolean(sidebarContent);
+
   return (
-    <>
-      {/* Referencias arriba */}
-      <div style={{ marginBottom: 12, fontSize: 12 }}>
-        <div style={{ marginBottom: 6, fontWeight: 600 }}>Sectores</div>
-        <div style={{ marginTop: 4, marginBottom: 8 }}>
-          <span style={{ background:'#a8d8a8', padding:'2px 6px', borderRadius:4, marginRight:6 }}>Platea General</span>
-          <span style={{ background:'#8fbc8f', padding:'2px 6px', borderRadius:4, marginRight:6 }}>Palcos Bajos</span>
-          <span style={{ background:'#6b8e6b', padding:'2px 6px', borderRadius:4, marginRight:6, color:'#fff' }}>Palcos Altos</span>
-          <span style={{ background:'#c0c0c0', padding:'2px 6px', borderRadius:4, marginRight:6 }}>Pullman</span>
+    <div
+      style={{
+        width: '100%',
+        padding: (isBoxOffice || mode === 'spectator') ? 0 : (isDesktop ? '0 8px 0 0' : '0 12px'),
+        boxSizing: 'border-box',
+        display: 'flex',
+        flexDirection: 'column',
+        alignItems: 'flex-start'
+      }}
+    >
+      <div
+        style={{
+          display: 'flex',
+          flexDirection: isHorizontalLayout ? 'row' : 'column',
+          alignItems: isHorizontalLayout ? 'flex-start' : 'stretch',
+          gap: 24,
+          width: '100%'
+        }}
+      >
+        <div
+          style={{
+            flex: isHorizontalLayout ? '1 1 0%' : '1 1 auto',
+            minWidth: 0,
+            width: '100%',
+            margin: 0
+          }}
+        >
+          <TransformWrapper
+            initialScale={isDesktop ? desktopScale : MIN_ZOOM}
+            minScale={isDesktop ? desktopScale : MIN_ZOOM}
+            maxScale={isDesktop ? desktopScale : MAX_ZOOM}
+            centerOnInit
+            wheel={{ disabled: true }}
+            doubleClick={{ disabled: true }}
+            pinch={{ disabled: isDesktop && isBoxOffice }}
+          >
+            {({ zoomIn, zoomOut }) => (
+              <div style={{ position: 'relative' }}>
+                {!isDesktop && (
+                  <div
+                    style={{
+                      position: 'absolute',
+                      top: 6,
+                      right: 6,
+                      display: 'flex',
+                      alignItems: 'center',
+                      gap: 6,
+                      background: 'rgba(255,255,255,0.9)',
+                      borderRadius: 999,
+                      padding: '4px 6px',
+                      boxShadow: '0 2px 6px rgba(15,23,42,0.15)',
+                      zIndex: 2
+                    }}
+                  >
+                    <span style={{ fontSize: 11, color: '#6b7280' }}>Zoom</span>
+                    <button
+                      type="button"
+                      onClick={() => zoomOut()}
+                      style={{
+                        width: 26,
+                        height: 26,
+                        borderRadius: 999,
+                        border: '1px solid #d1d5db',
+                        background: '#ffffff',
+                        color: '#111827',
+                        fontSize: 16,
+                        fontWeight: 600,
+                        cursor: 'pointer'
+                      }}
+                    >
+                      −
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => zoomIn()}
+                      style={{
+                        width: 26,
+                        height: 26,
+                        borderRadius: 999,
+                        border: '1px solid #d1d5db',
+                        background: '#ffffff',
+                        color: '#111827',
+                        fontSize: 16,
+                        fontWeight: 600,
+                        cursor: 'pointer'
+                      }}
+                    >
+                      +
+                    </button>
+                  </div>
+                )}
+
+                <TransformComponent
+                  wrapperStyle={{
+                    width: '100%',
+                    maxWidth: '100%',
+                    height: 'fit-content',
+                    maxHeight: isDesktop ? undefined : '40vh',
+                    overflow: allowHorizontalScroll ? 'auto' : 'hidden'
+                  }}
+                  contentStyle={{
+                    width: 'fit-content',
+                    height: 'fit-content',
+                    margin: '0 auto'
+                  }}
+                >
+                  <SalaPrincipalGrid
+                    selectedSeatIds={selectedSeatIds}
+                    heldByOtherSeatIds={heldByOtherSeatIds}
+                    soldSeatIds={soldSeatIds}
+                    selectedPalcosLabels={selectedPalcosLabels}
+                    heldByOtherPalcosLabels={heldByOtherPalcosLabels}
+                    soldPalcosLabels={soldPalcosLabels}
+                    pullmanSelected={pullmanSelected}
+                    pullmanAvailable={pullmanAvailable}
+                    onPullmanChange={handlePullmanChange}
+                    onToggleSeat={handleToggleSeat}
+                    onTogglePalco={handleTogglePalco}
+                    cellSize={BASE_CELL_SIZE}
+                  />
+                </TransformComponent>
+              </div>
+            )}
+          </TransformWrapper>
         </div>
-        <div style={{ marginBottom: 6, fontWeight: 600 }}>Estado de butaca</div>
-        <div>
-          <span style={{ background:'#ffd700', padding:'2px 6px', borderRadius:4, marginRight:6 }}>Seleccionada</span>
-          <span style={{ background:'#9370db', padding:'2px 6px', borderRadius:4, marginRight:6, color:'#fff' }}>Reservada</span>
-          <span style={{ background:'#808080', padding:'2px 6px', borderRadius:4, marginRight:6, color:'#fff' }}>Vendida</span>
-        </div>
-      </div>
-      
-      <div style={{ display:'flex', gap:24, alignItems:'flex-start', flexWrap:'wrap' }}>
-        <div>
-          <SalaPrincipalGrid
-            selectedSeatIds={selectedSeatIds}
-            heldByOtherSeatIds={heldByOtherSeatIds}
-            soldSeatIds={soldSeatIds}
-            selectedPalcosLabels={selectedPalcosLabels}
-            heldByOtherPalcosLabels={heldByOtherPalcosLabels}
-            soldPalcosLabels={soldPalcosLabels}
-            pullmanSelected={pullmanSelected}
-            pullmanAvailable={pullmanAvailable}
-            onPullmanChange={handlePullmanChange}
-            onToggleSeat={handleToggleSeat}
-            onTogglePalco={handleTogglePalco}
-          />
-        </div>
-        
+
         {/* Render custom sidebar */}
-        {sidebarContent}
+        {hasSidebar && (
+          <div
+            style={{
+              flex: isDesktop ? '0 0 260px' : '1 1 auto',
+              maxWidth: isDesktop ? 280 : '100%',
+              width: isDesktop ? 260 : '100%',
+              alignSelf: 'stretch',
+              display: 'flex',
+              flexDirection: 'column'
+            }}
+          >
+            {sidebarContent}
+          </div>
+        )}
       </div>
-    </>
+    </div>
   );
 }

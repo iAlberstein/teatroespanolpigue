@@ -2,6 +2,7 @@ import { useParams, useNavigate } from 'react-router-dom';
 import { useEffect, useRef, useState } from 'react';
 import { useAuth } from '../contexts/AuthContext.jsx';
 import SeatSelection from '../components/SeatSelection.jsx';
+import BoxOfficeReferences from '../components/BoxOfficeReferences.jsx';
 import { apiFetch, apiAuthFetch } from '../lib/api';
 import { formatSeatLocation } from '../lib/seatFormatter';
 
@@ -17,6 +18,30 @@ export default function Detalle(){
   const expiredHandledRef = useRef(false);
   const creatingReservationRef = useRef(false);
   const syncSeqRef = useRef(0);
+  
+  // Discount state
+  const [discountCode, setDiscountCode] = useState('');
+  const [appliedDiscount, setAppliedDiscount] = useState(null);
+  const [discountError, setDiscountError] = useState('');
+  const [validatingDiscount, setValidatingDiscount] = useState(false);
+
+  // Responsive check
+  const isWideLayout = typeof window !== 'undefined' && window.innerWidth >= 1200;
+
+  const defaultPricing = {
+    platea_general: 5000,
+    palcos_bajos: 10000,
+    palcos_altos: 8000,
+    pullman: 3000
+  };
+
+  const formatCurrency = (amount) => {
+    return new Intl.NumberFormat('es-AR', {
+      style: 'currency',
+      currency: 'ARS',
+      minimumFractionDigits: 0
+    }).format(Number(amount || 0));
+  };
 
   // Check authentication before allowing reservations
   const checkAuth = () => {
@@ -108,7 +133,6 @@ export default function Detalle(){
   // Auto-reserve: on any selection change from SeatSelection, create or update reservation
   const handleSelectionChange = async (selectedSeatIds, selectedPalcosLabels, pullmanSelected, socketRef) => {
     const items = buildItems(selectedSeatIds, selectedPalcosLabels, pullmanSelected);
-    console.log('[DEBUG] Auto-reserve triggered. items:', items, 'selectedSession:', selectedSession, 'reservation:', reservation);
     
     if (!selectedSession) return;
     if (items.length === 0) {
@@ -155,7 +179,6 @@ export default function Detalle(){
         
         // Prevent multiple concurrent creation attempts
         if (creatingReservationRef.current) {
-          console.log('[DEBUG] Already creating reservation, skipping duplicate');
           return;
         }
         
@@ -169,7 +192,6 @@ export default function Detalle(){
               const existingReservations = await checkRes.json();
               if (Array.isArray(existingReservations) && existingReservations.length > 0) {
                 const existing = existingReservations[0];
-                console.log('[DEBUG] Found existing active reservation:', existing);
                 setReservation(existing);
                 creatingReservationRef.current = false;
                 // Update with current items
@@ -186,7 +208,6 @@ export default function Detalle(){
             }
           } catch (err) {
             // Ignore errors checking for existing reservations
-            console.log('[DEBUG] No existing reservation found or error checking:', err.message);
           }
         }
         
@@ -209,7 +230,6 @@ export default function Detalle(){
         if (res.status === 409) {
           const body = await res.json().catch(()=>({}));
           if (body?.reservation) {
-            console.log('[DEBUG] Using existing reservation:', body.reservation.id);
             setReservation(body.reservation);
             creatingReservationRef.current = false;
             // Update immediately with current items
@@ -223,19 +243,11 @@ export default function Detalle(){
             });
             return;
           }
-          
-          // Other 409 errors (seat conflicts, etc)
-          if (body.error === 'items_conflict' || body.error === 'items_sold') {
-            console.warn('[Reservation] Seat conflict:', body);
-            creatingReservationRef.current = false;
-            return;
-          }
         }
         
         if (!res.ok) {
           const e = await res.json().catch(()=>({}));
           if (e.error === 'seat_not_available') {
-            console.warn('[Reservation] Seat not available:', e);
             creatingReservationRef.current = false;
             return;
           }
@@ -245,7 +257,6 @@ export default function Detalle(){
         }
         
         const data = await res.json();
-        console.log('[DEBUG] Reservation created:', data.id);
         setReservation(data);
         creatingReservationRef.current = false;
       } catch(err) {
@@ -280,7 +291,6 @@ export default function Detalle(){
         clearSelectionRef.current();
       }
       
-      console.log('[Reservation] Cancelled and selection cleared');
     } catch (err) {
       console.error('[Reservation] Error cancelling:', err);
       alert('Error al cancelar la reserva');
@@ -293,13 +303,55 @@ export default function Detalle(){
     return `${m}:${r}`;
   };
 
+  const handleApplyDiscount = async () => {
+    if (!discountCode.trim()) return;
+    
+    setValidatingDiscount(true);
+    setDiscountError('');
+    
+    try {
+      const res = await apiFetch('/api/discounts/validate', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ 
+          code: discountCode.trim(),
+          show_id: id 
+        })
+      });
+      
+      if (res.ok) {
+        const discount = await res.json();
+        setAppliedDiscount(discount);
+        setDiscountError('');
+      } else {
+        const error = await res.json();
+        setDiscountError(error.message || 'Código inválido');
+        setAppliedDiscount(null);
+      }
+    } catch (err) {
+      setDiscountError('Error al validar cupón');
+      setAppliedDiscount(null);
+    } finally {
+      setValidatingDiscount(false);
+    }
+  };
+
+  const handleRemoveDiscount = () => {
+    setAppliedDiscount(null);
+    setDiscountCode('');
+    setDiscountError('');
+  };
+
   const payWithMP = async () => {
     if (!reservation) return;
     try {
       const r = await apiFetch('/api/payments/preference', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ reservation_id: reservation.id })
+        body: JSON.stringify({ 
+          reservation_id: reservation.id,
+          discount_id: appliedDiscount?.id || null
+        })
       });
       
       if (!r.ok) {
@@ -310,12 +362,10 @@ export default function Detalle(){
       }
       
       const data = await r.json();
-      console.log('[MP] Preference created:', data);
       
       if (data.init_point) {
         window.location.href = data.init_point;
       } else {
-        console.error('[MP] No init_point in response:', data);
         alert('No se pudo obtener la URL de pago. Verificá la configuración de Mercado Pago.');
       }
     } catch (e) {
@@ -359,12 +409,7 @@ export default function Detalle(){
 
   // Calculate prices and total
   const calculatePrices = () => {
-    const pricing = currentSelection.pricing || {
-      platea_general: 5000,
-      palcos_bajos: 10000,
-      palcos_altos: 8000,
-      pullman: 3000
-    };
+    const pricing = currentSelection.pricing || defaultPricing;
 
     const items = [];
     let subtotal = 0;
@@ -406,14 +451,29 @@ export default function Detalle(){
       subtotal += price * currentSelection.pullmanSelected;
     }
 
-    // Service charge 10% (only for spectators)
-    const serviceCharge = Math.round(subtotal * 0.10);
-    const total = subtotal + serviceCharge;
+    // Apply discount FIRST (before service charge)
+    let discountAmount = 0;
+    let subtotalAfterDiscount = subtotal;
+    
+    if (appliedDiscount) {
+      if (appliedDiscount.type === 'percentage') {
+        discountAmount = Math.round(subtotal * (appliedDiscount.value / 100));
+      } else if (appliedDiscount.type === 'fixed') {
+        discountAmount = Math.round(appliedDiscount.value);
+      }
+      // Ensure discount doesn't exceed subtotal
+      discountAmount = Math.min(discountAmount, subtotal);
+      subtotalAfterDiscount = subtotal - discountAmount;
+    }
+    
+    // Service charge 10% applied AFTER discount
+    const serviceCharge = Math.round(subtotalAfterDiscount * 0.10);
+    const total = subtotalAfterDiscount + serviceCharge;
 
-    return { items, subtotal, serviceCharge, total };
+    return { items, subtotal, serviceCharge, discountAmount, total };
   };
 
-  const { items: cartItems, subtotal: cartSubtotal, serviceCharge: cartServiceCharge, total: cartTotal } = calculatePrices();
+  const { items: cartItems, subtotal: cartSubtotal, serviceCharge: cartServiceCharge, discountAmount: cartDiscountAmount, total: cartTotal } = calculatePrices();
 
   // Sidebar content for spectator mode
   const spectatorSidebar = (
@@ -463,9 +523,110 @@ export default function Detalle(){
             <span>${cartSubtotal.toLocaleString('es-AR')}</span>
           </div>
           
+          {/* Discount section */}
+          {!appliedDiscount ? (
+            <div style={{ marginTop: 12, paddingTop: 12, borderTop: '1px solid #eee' }}>
+              <label style={{ display: 'block', fontSize: 12, marginBottom: 4, color: '#666' }}>
+                ¿Tenés un cupón de descuento?
+              </label>
+              <div style={{ display: 'flex', gap: 4 }}>
+                <input
+                  type="text"
+                  value={discountCode}
+                  onChange={(e) => setDiscountCode(e.target.value.toUpperCase())}
+                  placeholder="CÓDIGO"
+                  style={{
+                    flex: 1,
+                    padding: '6px 8px',
+                    border: '1px solid #ccc',
+                    borderRadius: 4,
+                    fontSize: 13,
+                    textTransform: 'uppercase'
+                  }}
+                />
+                <button
+                  onClick={handleApplyDiscount}
+                  disabled={!discountCode.trim() || validatingDiscount}
+                  style={{
+                    padding: '6px 12px',
+                    background: discountCode.trim() ? '#28a745' : '#ccc',
+                    color: '#fff',
+                    border: 'none',
+                    borderRadius: 4,
+                    fontSize: 13,
+                    cursor: discountCode.trim() ? 'pointer' : 'not-allowed',
+                    fontWeight: 600
+                  }}
+                >
+                  {validatingDiscount ? '...' : 'Aplicar'}
+                </button>
+              </div>
+              {discountError && (
+                <div style={{ marginTop: 4, fontSize: 11, color: '#dc3545' }}>
+                  {discountError}
+                </div>
+              )}
+            </div>
+          ) : (
+            <div style={{ 
+              marginTop: 12,
+              paddingTop: 12,
+              borderTop: '1px solid #eee'
+            }}>
+              <div style={{ 
+                padding: 8,
+                background: '#d1fae5',
+                border: '1px solid #a7f3d0',
+                borderRadius: 4
+              }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                  <div>
+                    <div style={{ fontSize: 12, color: '#065f46', fontWeight: 600 }}>
+                      🎫 {discountCode}
+                    </div>
+                    <div style={{ fontSize: 11, color: '#059669' }}>
+                      {appliedDiscount.type === 'percentage' 
+                        ? `${appliedDiscount.value}% descuento` 
+                        : `$${appliedDiscount.value} descuento`}
+                    </div>
+                  </div>
+                  <button
+                    onClick={handleRemoveDiscount}
+                    style={{
+                      background: 'none',
+                      border: 'none',
+                      color: '#059669',
+                      cursor: 'pointer',
+                      fontSize: 18,
+                      padding: 4
+                    }}
+                    title="Quitar cupón"
+                  >
+                    ×
+                  </button>
+                </div>
+              </div>
+            </div>
+          )}
+          
+          {/* Discount amount */}
+          {cartDiscountAmount > 0 && (
+            <div style={{ 
+              marginTop: 6,
+              display: 'flex',
+              justifyContent: 'space-between',
+              fontSize: 14,
+              color: '#059669',
+              fontWeight: 600
+            }}>
+              <span>Descuento:</span>
+              <span>-${cartDiscountAmount.toLocaleString('es-AR')}</span>
+            </div>
+          )}
+          
           {/* Service charge */}
           <div style={{ 
-            marginTop: 4,
+            marginTop: 6,
             display: 'flex',
             justifyContent: 'space-between',
             fontSize: 14,
@@ -528,8 +689,16 @@ export default function Detalle(){
   );
 
   return (
-    <div style={{ padding: 16 }}>
-      <h1>Detalle de espectáculo</h1>
+    <div
+      style={{
+        width: '100%',
+        padding: !isWideLayout ? '0 0 24px' : '0 5px 24px',
+        boxSizing: 'border-box',
+        margin: 0,
+        overflowX: 'hidden'
+      }}
+    >
+      <h1 style={{ marginBottom: 16 }}>Detalle de espectáculo</h1>
       
       {/* Session selector (only if multiple sessions) */}
       {sessions.length > 1 && (
@@ -571,16 +740,73 @@ export default function Detalle(){
           </select>
         </div>
       )}
-      
+
       {/* Use shared SeatSelection component */}
-      <SeatSelection
-        showId={id}
-        sessionId={selectedSession}
-        userId={user?.id}
-        mode="spectator"
-        onSelectionChange={handleSeatSelectionChange}
-        sidebarContent={spectatorSidebar}
-      />
+      <section style={{
+        padding: isWideLayout ? 24 : '24px 0',
+        background: '#ffffff',
+        borderRadius: 12,
+        border: '1px solid #e5e7eb',
+        boxShadow: '0 10px 25px rgba(15, 23, 42, 0.05)'
+      }}>
+        {selectedSession && (
+          <div
+            style={
+              isWideLayout
+                ? { marginBottom: 16 }
+                : { padding: '0 24px', marginBottom: 16 }
+            }
+          >
+            <BoxOfficeReferences
+              isWideLayout={isWideLayout}
+              pricing={currentSelection.pricing || defaultPricing}
+              formatCurrency={formatCurrency}
+            />
+          </div>
+        )}
+
+        <div
+          style={{
+            display: 'flex',
+            flexDirection: isWideLayout ? 'row' : 'column',
+            alignItems: isWideLayout ? 'flex-start' : 'stretch',
+            gap: 24,
+            width: '100%'
+          }}
+        >
+          <div
+            style={{
+              flex: isWideLayout ? '1 1 0%' : '1 1 auto',
+              minWidth: 0,
+              width: '100%',
+              margin: 0
+            }}
+          >
+            <SeatSelection
+              showId={id}
+              sessionId={selectedSession}
+              userId={user?.id}
+              mode="spectator"
+              onSelectionChange={handleSeatSelectionChange}
+              sidebarContent={null}
+            />
+          </div>
+
+          <div
+            style={{
+              flex: isWideLayout ? '0 0 260px' : '1 1 auto',
+              maxWidth: isWideLayout ? 280 : '100%',
+              width: isWideLayout ? 260 : '100%',
+              alignSelf: 'stretch',
+              display: 'flex',
+              flexDirection: 'column',
+              padding: isWideLayout ? 0 : '0 16px'
+            }}
+          >
+            {spectatorSidebar}
+          </div>
+        </div>
+      </section>
     </div>
   );
 }
