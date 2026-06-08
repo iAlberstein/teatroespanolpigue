@@ -146,7 +146,7 @@ export default function UserTicketsModal({ user, onClose }) {
       `Total: ${selectedSale.tickets.length} entrada${selectedSale.tickets.length > 1 ? 's' : ''}\n\n` +
       `Mostrá este código QR en la entrada del teatro: ${window.location.origin}/api/tickets/qr/${selectedSale.sale_id}`;
 
-    const whatsappUrl = `https://wa.me/${phone.replace(/\D/g, '')}?text=${encodeURIComponent(message)}`;
+    const whatsappUrl = `https://wa.me/549${phone.replace(/\D/g, '')}?text=${encodeURIComponent(message)}`;
     window.open(whatsappUrl, '_blank');
 
     setSuccess('Redirigiendo a WhatsApp...');
@@ -303,7 +303,7 @@ export default function UserTicketsModal({ user, onClose }) {
                           
                           {sale.any_validated && sale.validated_at && (
                             <div style={{ fontSize: 12, color: '#059669', marginTop: 4 }}>
-                              ✓ Validada: {new Date(sale.validated_at).toLocaleString('es-AR')}
+                               Validada: {new Date(sale.validated_at).toLocaleString('es-AR')}
                             </div>
                           )}
                         </div>
@@ -424,7 +424,7 @@ export default function UserTicketsModal({ user, onClose }) {
                             fontSize: 12,
                             marginTop: 8
                           }}>
-                            ✓ {success}
+                             {success}
                           </div>
                         )}
                         {error && (

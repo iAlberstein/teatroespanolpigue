@@ -59,11 +59,11 @@ export function AuthProvider({ children }) {
     }
   };
 
-  const register = async (name, email, password, phone = '', dni = '') => {
+  const register = async (name, email, password, phone = '', dni = '', provincia = '', localidad = '') => {
     try {
       const res = await apiFetch('/api/auth/register', {
         method: 'POST',
-        body: JSON.stringify({ name, email, password, phone, dni })
+        body: JSON.stringify({ name, email, password, phone, dni, provincia, localidad })
       });
 
       const data = await res.json();
@@ -89,11 +89,18 @@ export function AuthProvider({ children }) {
     localStorage.removeItem('user_id'); // Clean old system
   };
 
+  const hasRole = (...roleNames) => {
+    if (!user) return false;
+    const userRoles = user.roles || (user.role ? [user.role] : []);
+    return roleNames.some(r => userRoles.includes(r));
+  };
+
   const value = {
     user,
     token,
     loading,
     isAuthenticated: !!user,
+    hasRole,
     login,
     register,
     logout

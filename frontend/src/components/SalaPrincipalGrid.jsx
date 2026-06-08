@@ -47,17 +47,21 @@ export default function SalaPrincipalGrid({
   selectedSeatIds = new Set(),
   heldByOtherSeatIds = new Set(),
   soldSeatIds = new Set(),
+  blockedSeatIds = new Set(),
   onToggleSeat,
   selectedPalcosLabels = new Set(),
   heldByOtherPalcosLabels = new Set(),
   soldPalcosLabels = new Set(),
+  blockedPalcosLabels = new Set(),
   onTogglePalco,
   pullmanSelected = 0,
   pullmanAvailable = 92,
   onPullmanChange,
   showPullmanCounter = true,
-  cellSize = 28
+  cellSize = 28,
+  mode = 'spectator'
 }) {
+  const isBlockingMode = mode === 'blocking';
   const rows = matrix.length;
   const cols = matrix[0].length;
   const blocks = useMemo(() => computeBlocks(matrix), []);
@@ -157,15 +161,18 @@ export default function SalaPrincipalGrid({
                       onClick={() => onPullmanChange && onPullmanChange(-1)}
                       disabled={pullmanSelected <= 0}
                       style={{
-                        width: pullmanButtonSize,
-                        height: pullmanButtonSize,
-                        borderRadius: Math.round(pullmanButtonSize / 2),
+                        width: Math.max(36, Math.round(cellSize * 1.3)),
+                        height: Math.max(36, Math.round(cellSize * 1.3)),
+                        borderRadius: Math.max(10, Math.round(cellSize * 0.4)),
                         background: pullmanSelected <= 0 ? '#fcdada' : '#f87171',
                         border: '1px solid rgba(220,38,38,0.4)',
                         color: '#fff',
-                        fontSize: pullmanButtonFont,
+                        fontSize: Math.max(18, Math.round(cellSize * 0.7)),
                         fontWeight: 700,
-                        cursor: pullmanSelected <= 0 ? 'not-allowed' : 'pointer'
+                        cursor: pullmanSelected <= 0 ? 'not-allowed' : 'pointer',
+                        display: 'flex',
+                        alignItems: 'center',
+                        justifyContent: 'center'
                       }}
                     >
                       −
@@ -173,13 +180,15 @@ export default function SalaPrincipalGrid({
                     <span
                       style={{
                         background: '#ffffff',
-                        padding: `${pullmanBadgePadding}px ${pullmanBadgePadding + 6}px`,
+                        width: Math.max(44, Math.round(cellSize * 1.6)),
+                        height: Math.max(36, Math.round(cellSize * 1.3)),
                         borderRadius: Math.max(10, Math.round(cellSize * 0.4)),
                         fontSize: pullmanBadgeFont,
                         fontWeight: 700,
                         color: '#111827',
-                        minWidth: Math.max(44, Math.round(cellSize * 1.6)),
-                        textAlign: 'center',
+                        display: 'flex',
+                        alignItems: 'center',
+                        justifyContent: 'center',
                         border: '1px solid #9ca3af'
                       }}
                     >
@@ -190,15 +199,18 @@ export default function SalaPrincipalGrid({
                       onClick={() => onPullmanChange && onPullmanChange(1)}
                       disabled={pullmanAvailable <= 0}
                       style={{
-                        width: pullmanButtonSize,
-                        height: pullmanButtonSize,
-                        borderRadius: Math.round(pullmanButtonSize / 2),
+                        width: Math.max(36, Math.round(cellSize * 1.3)),
+                        height: Math.max(36, Math.round(cellSize * 1.3)),
+                        borderRadius: Math.max(10, Math.round(cellSize * 0.4)),
                         background: pullmanAvailable <= 0 ? '#d1fae5' : '#34d399',
                         border: '1px solid rgba(16,185,129,0.4)',
                         color: '#065f46',
-                        fontSize: pullmanButtonFont,
+                        fontSize: Math.max(18, Math.round(cellSize * 0.7)),
                         fontWeight: 700,
-                        cursor: pullmanAvailable <= 0 ? 'not-allowed' : 'pointer'
+                        cursor: pullmanAvailable <= 0 ? 'not-allowed' : 'pointer',
+                        display: 'flex',
+                        alignItems: 'center',
+                        justifyContent: 'center'
                       }}
                     >
                       +
@@ -258,23 +270,38 @@ export default function SalaPrincipalGrid({
             const label = token;
             const isSelectedPalco = selectedPalcosLabels.has(label);
             const isSold = soldPalcosLabels.has(label);
-            const isBlocked = !isSold && heldByOtherPalcosLabels.has(label) && !isSelectedPalco;
+            const isAdminBlocked = blockedPalcosLabels.has(label);
+            const isHeldByOther = !isSold && !isAdminBlocked && heldByOtherPalcosLabels.has(label) && !isSelectedPalco;
+            
+            // Determine background color based on state
+            let bgColor = isPA ? '#6b8e6b' : '#8fbc8f'; // default available
+            if (isSold) bgColor = '#808080'; // sold - gray
+            else if (isAdminBlocked && isBlockingMode) bgColor = '#dc2626'; // blocked - red for admin
+            else if (isAdminBlocked && !isBlockingMode) bgColor = '#808080'; // blocked - gray for regular users
+            else if (isSelectedPalco) bgColor = '#ffd700'; // selected - yellow
+            else if (isHeldByOther) bgColor = '#9370db'; // held by other - purple
+            
+            // In blocking mode, admin can click on blocked palcos to unblock them
+            const isClickable = isBlockingMode 
+              ? !isSold // Can click on available or blocked (but not sold)
+              : !isSold && !isAdminBlocked && !isHeldByOther; // Regular mode - only available
+            
             return (
               <button key={key}
                 onClick={() => onTogglePalco && onTogglePalco({ label })}
                 style={{
                   ...style,
-                  background: isSold ? '#808080' : (isSelectedPalco ? '#ffd700' : (isBlocked ? '#9370db' : (isPA ? '#6b8e6b' : '#8fbc8f'))),
-                  color: isPA ? '#fff' : '#333',
+                  background: bgColor,
+                  color: (isPA || (isAdminBlocked && isBlockingMode)) ? '#fff' : '#333',
                   fontWeight: 600,
-                  cursor: (isSold || isBlocked) ? 'not-allowed' : 'pointer',
+                  cursor: isClickable ? 'pointer' : 'not-allowed',
                   border: isSelectedPalco ? `${Math.max(2, Math.round(cellSize * 0.08))}px solid #e0b200` : '1px solid rgba(0,0,0,0.2)',
                   opacity: isSold ? 0.9 : 1,
                   fontSize: `${palcoFontSize}px`
                 }}
                 aria-pressed={isSelectedPalco}
-                disabled={isSold || isBlocked}
-                title={`${token} (pack ${isPA ? 2 : 4})`}
+                disabled={!isClickable}
+                title={`${token} (pack ${isPA ? 2 : 4})${isAdminBlocked ? ' - BLOQUEADO' : ''}`}
               >{token}</button>
             );
           }
@@ -299,22 +326,37 @@ export default function SalaPrincipalGrid({
             const seatId = `${row || ''}${token}`;
             const seatKey = `${b.r}:${b.c}:${row || ''}:${token}`;
             const isSold = soldSeatIds.has(seatId);
+            const isAdminBlocked = blockedSeatIds.has(seatId);
             const isSelected = !isSold && selectedSeatIds.has(seatId);
-            const isBlocked = !isSold && heldByOtherSeatIds.has(seatId);
+            const isHeldByOther = !isSold && !isAdminBlocked && heldByOtherSeatIds.has(seatId);
+            
+            // Determine background color based on state
+            let bgColor = '#a8d8a8'; // default available - green
+            if (isSold) bgColor = '#808080'; // sold - gray
+            else if (isAdminBlocked && isBlockingMode) bgColor = '#dc2626'; // blocked - red for admin
+            else if (isAdminBlocked && !isBlockingMode) bgColor = '#808080'; // blocked - gray for regular users
+            else if (isSelected) bgColor = '#ffd700'; // selected - yellow
+            else if (isHeldByOther) bgColor = '#9370db'; // held by other - purple
+            
+            // In blocking mode, admin can click on blocked seats to unblock them
+            const isClickable = isBlockingMode 
+              ? !isSold // Can click on available or blocked (but not sold)
+              : !isSold && !isAdminBlocked && !isHeldByOther; // Regular mode - only available
+            
             return (
               <button key={key}
                 onClick={() => onToggleSeat && onToggleSeat({ r:b.r, c:b.c, val: token, row })}
                 style={{
                   ...style,
                   ...singleCellDimensions,
-                  cursor: (isSold || isBlocked) ? 'not-allowed' : 'pointer',
-                  background: isSold ? '#808080' : (isSelected ? '#ffd700' : (isBlocked ? '#9370db' : '#a8d8a8')),
+                  cursor: isClickable ? 'pointer' : 'not-allowed',
+                  background: bgColor,
                   border: '1px solid #7fbf7f',
-                  opacity: (isSold || isBlocked) ? 0.9 : 1
+                  opacity: isSold ? 0.9 : 1
                 }}
                 aria-pressed={isSelected}
-                disabled={isSold || isBlocked}
-                title={row ? `Fila ${row} - Asiento ${token}` : `Asiento ${token}`}
+                disabled={!isClickable}
+                title={row ? `Fila ${row} - Asiento ${token}${isAdminBlocked ? ' - BLOQUEADO' : ''}` : `Asiento ${token}${isAdminBlocked ? ' - BLOQUEADO' : ''}`}
               >{token}</button>
             );
           }

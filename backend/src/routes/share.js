@@ -1,12 +1,40 @@
 import express from 'express';
 import { sequelize } from '../lib/sequelize.js';
 
+function parseServiceItems(raw) {
+  if (!raw) return [];
+  try {
+    let val = raw;
+    if (typeof val === 'string') val = JSON.parse(val);
+    if (typeof val === 'string') val = JSON.parse(val);
+    return Array.isArray(val) ? val : [];
+  } catch { return []; }
+}
+
 const router = express.Router();
 
 // HTML template for ticket sharing
-function generateTicketHTML(ticket, sessionInfo, customerName) {
+function generateTicketHTML(ticket, sessionInfo, customerName, { instructions = [], infoLines = [] } = {}) {
   const location = ticket.location || 'Entrada';
-  
+
+  const defaultInstructions = [
+    'Presentá este QR en la entrada del teatro',
+    'Recordá llegar al menos 30 minutos antes, las funciones comienzan puntual',
+    'Una vez comenzada la función, la ubicación pierde validez (el personal de la sala te asignará un nuevo lugar)',
+    'Guardá esta página o hacé una captura',
+    'Las entradas no tienen cambio ni devolución, excepto en casos de cancelación/modificación del espectáculo'
+  ];
+  const instrList = (instructions.length > 0 ? instructions : defaultInstructions)
+    .map(i => `<li>${i}</li>`).join('');
+
+  const infoLinesHTML = infoLines.length > 0
+    ? infoLines.map(l => `
+      <div class="info-line">
+        <div class="info-line-title">${l.title}</div>
+        ${l.description ? `<div class="info-line-desc">${l.description}</div>` : ''}
+      </div>`).join('')
+    : '';
+
   return `
 <!DOCTYPE html>
 <html lang="es">
@@ -103,6 +131,24 @@ function generateTicketHTML(ticket, sessionInfo, customerName) {
     .instructions li {
       margin: 6px 0;
     }
+    .info-line {
+      background: #f0fdf4;
+      border: 1px solid #bbf7d0;
+      border-radius: 8px;
+      padding: 10px 14px;
+      margin: 8px 0;
+      text-align: left;
+    }
+    .info-line-title {
+      font-weight: 700;
+      font-size: 14px;
+      color: #166534;
+    }
+    .info-line-desc {
+      font-size: 13px;
+      color: #166534;
+      margin-top: 2px;
+    }
     .footer {
       margin-top: 24px;
       color: #999;
@@ -128,12 +174,12 @@ function generateTicketHTML(ticket, sessionInfo, customerName) {
       <img src="${ticket.qr_code}" alt="QR Code" />
     </div>
     
+    ${infoLinesHTML}
+
     <div class="instructions">
       <strong>Instrucciones:</strong>
       <ul>
-        <li>Presentá este QR en la entrada del teatro</li>
-        <li>Recordá llegar al menos 30 minutos antes</li>
-        <li>Guardá esta página o hacé una captura</li>
+        ${instrList}
       </ul>
       <p style="margin-top: 12px; font-style: italic;">¡Nos vemos en el teatro!</p>
     </div>
@@ -148,10 +194,24 @@ function generateTicketHTML(ticket, sessionInfo, customerName) {
 }
 
 // HTML template for container QR sharing
-function generateContainerHTML(sale, tickets, sessionInfo, options = {}) {
+function generateContainerHTML(sale, tickets, sessionInfo, options = {}, { instructions = [], infoLines = [] } = {}) {
   const mode = options.mode || 'view';
   const isPrint = mode === 'print';
   const ticketsList = tickets.map(t => `<li>${t.location}</li>`).join('');
+  
+  // Parse service_items from sale
+  const serviceItems = parseServiceItems(sale.service_items);
+  const servicesList = Array.isArray(serviceItems) ? serviceItems.map(s => `<li>${s.name} × ${s.quantity} persona${s.quantity > 1 ? 's' : ''}</li>`).join('') : '';
+
+  const defaultInstructions = [
+    'Presentá este QR en la entrada del teatro',
+    'Se pueden validar entradas individuales, compartile el QR a quien llegue después',
+    'Recordá llegar al menos 30 minutos antes, las funciones comienzan puntual',
+    'Una vez comenzada la función, la ubicación pierde validez (el personal de la sala te asignará un nuevo lugar)',
+    'Las entradas no tienen cambio ni devolución, excepto en casos de cancelación/modificación del espectáculo'
+  ];
+  const instrList = (instructions.length > 0 ? instructions : defaultInstructions)
+    .map(i => `<p>• ${i}</p>`).join('');
 
   const bodyBackground = isPrint ? '#ffffff' : 'linear-gradient(135deg, #667eea 0%, #764ba2 100%)';
   const bodyPadding = isPrint ? '12px' : '20px';
@@ -166,6 +226,14 @@ function generateContainerHTML(sale, tickets, sessionInfo, options = {}) {
   const instructionBg = isPrint ? '#fef3c7' : '#fff3cd';
   const instructionBorder = isPrint ? '1px solid #fbbf24' : 'none';
   const fontScale = isPrint ? 0.92 : 1;
+
+  const infoLinesHTML = infoLines.length > 0
+    ? `<div style="margin: 16px 0;">${infoLines.map(l => `
+      <div style="background:#f0fdf4;border:1px solid #bbf7d0;border-radius:8px;padding:10px 14px;margin-bottom:8px;text-align:left;">
+        <div style="font-weight:700;font-size:${13 * fontScale}px;color:#166534;">${l.title}</div>
+        ${l.description ? `<div style="font-size:${12 * fontScale}px;color:#166534;margin-top:2px;">${l.description}</div>` : ''}
+      </div>`).join('')}</div>`
+    : '';
 
   const printStyles = isPrint ? `
     @media print {
@@ -183,6 +251,37 @@ function generateContainerHTML(sale, tickets, sessionInfo, options = {}) {
         box-shadow: none !important;
         border: none !important;
         margin: 0 !important;
+      }
+      h1 {
+        font-size: 14px !important;
+        white-space: nowrap !important;
+        margin-bottom: 4px !important;
+      }
+      .event-info,
+      .tickets-list {
+        background: #ffffff !important;
+        border-radius: 0 !important;
+        padding: 0 !important;
+        margin: 0 !important;
+      }
+      .event-title {
+        text-align: center !important;
+        margin-bottom: 4px !important;
+      }
+      .event-detail {
+        text-align: center !important;
+        margin: 2px 0 !important;
+      }
+      .tickets-list h3 {
+        margin-top: 4px !important;
+        margin-bottom: 2px !important;
+        text-align: left !important;
+      }
+      .tickets-list ul {
+        margin-top: 0 !important;
+      }
+      .footer {
+        display: none !important;
       }
       .instructions {
         border-left: 3px solid #f59e0b !important;
@@ -252,6 +351,7 @@ function generateContainerHTML(sale, tickets, sessionInfo, options = {}) {
       font-weight: 700;
       color: #333;
       margin-bottom: 10px;
+      text-align: center;
     }
     .event-detail {
       color: #666;
@@ -328,14 +428,12 @@ function generateContainerHTML(sale, tickets, sessionInfo, options = {}) {
 </head>
 <body>
   <div class="container">
-    <h1>🎭 Teatro Español Pigüé</h1>
-    <p class="subtitle">QR General de Entradas</p>
+    <h1>TEATRO ESPAÑOL PIGÜÉ</h1>
     
     <div class="event-info">
       <div class="event-title">${sessionInfo.showName}</div>
-      <div class="event-detail">📅 ${sessionInfo.date}</div>
-      <div class="event-detail">🕐 ${sessionInfo.time}</div>
-      <div class="event-detail">📍 ${sessionInfo.sala || 'Sala Principal'}</div>
+      <div class="event-detail">${sessionInfo.date}</div>
+      <div class="event-detail">${sessionInfo.time} - ${sessionInfo.sala || 'Sala Principal'}</div>
     </div>
     
     <div class="tickets-list">
@@ -344,27 +442,47 @@ function generateContainerHTML(sale, tickets, sessionInfo, options = {}) {
         ${ticketsList}
       </ul>
     </div>
+    ${servicesList ? `
+    <div class="tickets-list">
+      <h3>Servicios asociados:</h3>
+      <ul>
+        ${servicesList}
+      </ul>
+    </div>
+    ` : ''}
     
     <div class="qr-container">
       <img src="${sale.container_qr_code}" alt="QR Code" />
     </div>
+
+    ${infoLinesHTML}
     
     <div class="instructions">
       <strong>Instrucciones:</strong>
-      <p>• Presentá este QR en la entrada del teatro</p>
-      <p>• Se pueden validar entradas individuales</p>
-      <p>• Recordá llegar al menos 30 minutos antes</p>
+      ${instrList}
       <p style="margin-top: 10px; font-style: italic;">¡Nos vemos en el teatro!</p>
-    </div>
-    
-    <div class="footer">
-      Teatro Español Pigüé
     </div>
   </div>
   ${printScript}
 </body>
 </html>
   `;
+}
+
+// Helper: load ticket display settings from DB
+async function loadTicketSettings() {
+  try {
+    const { system_settings: SystemSettings } = sequelize.models;
+    const [instrSetting, linesSetting] = await Promise.all([
+      SystemSettings.findOne({ where: { key: 'ticket_instructions' } }),
+      SystemSettings.findOne({ where: { key: 'ticket_info_lines' } })
+    ]);
+    const instructions = instrSetting?.value ? JSON.parse(instrSetting.value) : [];
+    const infoLines = linesSetting?.value ? JSON.parse(linesSetting.value) : [];
+    return { instructions, infoLines };
+  } catch {
+    return { instructions: [], infoLines: [] };
+  }
 }
 
 // Get ticket HTML page
@@ -409,14 +527,16 @@ router.get('/ticket/:ticket_id', async (req, res) => {
       }),
       time: new Date(session.starts_at).toLocaleTimeString('es-AR', { 
         hour: '2-digit', 
-        minute: '2-digit' 
+        minute: '2-digit',
+        hour12: false
       }),
       sala: session.sala || 'Sala Principal'
     };
     
     const customerName = ticket.sale?.customer_name || 'Cliente';
     
-    const html = generateTicketHTML(ticketData, sessionInfo, customerName);
+    const settings = await loadTicketSettings();
+    const html = generateTicketHTML(ticketData, sessionInfo, customerName, settings);
     res.setHeader('Content-Type', 'text/html; charset=utf-8');
     res.send(html);
   } catch (e) {
@@ -450,13 +570,27 @@ router.get('/sale/:sale_id', async (req, res) => {
     
     const { formatSeatLocation, sortTicketsBySection } = await import('../lib/seatFormatter.js');
     
+    // Separate service tickets from regular tickets
+    const plainTickets = tickets.map(t => t.get ? t.get({ plain: true }) : t);
+    const regularTickets = plainTickets.filter(t => t.type !== 'service');
+    const serviceTickets = plainTickets.filter(t => t.type === 'service');
+    
     // Ordenar tickets antes de formatear
-    const sortedTickets = sortTicketsBySection(tickets.map(t => t.get ? t.get({ plain: true }) : t));
+    const sortedTickets = sortTicketsBySection(regularTickets);
     
     const formattedTickets = sortedTickets.map(t => ({
       id: t.id,
       location: formatSeatLocation(t.type, t.section, t.seat_code, t.capacity || 1)
     }));
+    
+    // Inject service tickets into sale object for generateContainerHTML
+    if (serviceTickets.length > 0) {
+      sale.service_items = JSON.stringify(serviceTickets.map(st => ({
+        name: st.seat_code || 'Servicio',
+        quantity: st.capacity || 1,
+        price: st.price || 0
+      })));
+    }
     
     const sessionInfo = {
       showName: session.show?.title || 'Espectáculo',
@@ -468,13 +602,15 @@ router.get('/sale/:sale_id', async (req, res) => {
       }),
       time: new Date(session.starts_at).toLocaleTimeString('es-AR', { 
         hour: '2-digit', 
-        minute: '2-digit' 
+        minute: '2-digit',
+        hour12: false
       }),
       sala: session.sala || 'Sala Principal'
     };
     
     const mode = req.query.mode === 'print' ? 'print' : 'view';
-    const html = generateContainerHTML(sale, formattedTickets, sessionInfo, { mode });
+    const settings = await loadTicketSettings();
+    const html = generateContainerHTML(sale, formattedTickets, sessionInfo, { mode }, settings);
     res.setHeader('Content-Type', 'text/html; charset=utf-8');
     res.send(html);
   } catch (e) {

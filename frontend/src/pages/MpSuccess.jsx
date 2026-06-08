@@ -18,6 +18,12 @@ export default function MpSuccess(){
   const [whatsappSent, setWhatsappSent] = useState(false);
   const [appliedDiscount, setAppliedDiscount] = useState(null);
   const [saleId, setSaleId] = useState(null);
+  const [serviceFeePercent, setServiceFeePercent] = useState(10); // Default 10%, will be fetched
+  const [emailAutoSent, setEmailAutoSent] = useState(false);
+  const [autoSentEmail, setAutoSentEmail] = useState('');
+  const [saleServiceItems, setSaleServiceItems] = useState([]);
+  const [servicesSubtotal, setServicesSubtotal] = useState(0);
+  const [saleBreakdown, setSaleBreakdown] = useState(null);
 
   // If reservation_id is missing but we have payment_id, fetch payment to get metadata.reservation_id
   useEffect(() => {
@@ -48,6 +54,43 @@ export default function MpSuccess(){
       .catch(()=>setReservation(null));
   }, [reservationId]);
 
+  // Poll for sale_id if not available yet
+  useEffect(() => {
+    if (!reservationId || saleId) return;
+    
+    let attempts = 0;
+    const maxAttempts = 10;
+    const interval = setInterval(async () => {
+      attempts++;
+      try {
+        const res = await apiFetch(`/api/payments/sale/${reservationId}`);
+        const data = await res.json();
+        if (data.sale_id) {
+          console.log('[MP_SUCCESS] Sale ID found:', data.sale_id);
+          setSaleId(data.sale_id);
+          setSaleBreakdown(data);
+          if (data.discount) setAppliedDiscount(data.discount);
+          if (data.service_fee_percent !== undefined) setServiceFeePercent(data.service_fee_percent);
+          if (Array.isArray(data.service_items)) { setSaleServiceItems(data.service_items); setServicesSubtotal(data.services_subtotal || 0); }
+          if (data.customer_email) {
+            setEmail(prev => prev || data.customer_email);
+            setAutoSentEmail(data.customer_email);
+          }
+          if (data.email_auto_sent) setEmailAutoSent(true);
+          clearInterval(interval);
+        } else if (attempts >= maxAttempts) {
+          console.log('[MP_SUCCESS] Sale ID not found after', maxAttempts, 'attempts');
+          clearInterval(interval);
+        }
+      } catch (err) {
+        console.error('[MP_SUCCESS] Error fetching sale_id:', err);
+        if (attempts >= maxAttempts) clearInterval(interval);
+      }
+    }, 1000); // Check every second
+    
+    return () => clearInterval(interval);
+  }, [reservationId, saleId]);
+
   // Load discount info when reservation is available
   useEffect(() => {
     if (!reservationId) return;
@@ -63,6 +106,21 @@ export default function MpSuccess(){
     })();
     return () => { aborted = true; };
   }, [reservationId]);
+
+  // Load service fee from system settings
+  useEffect(() => {
+    let aborted = false;
+    (async () => {
+      try {
+        const r = await apiFetch('/api/settings');
+        const settings = await r.json();
+        if (!aborted && settings.service_fee_percent !== undefined) {
+          setServiceFeePercent(Number(settings.service_fee_percent));
+        }
+      } catch {}
+    })();
+    return () => { aborted = true; };
+  }, []);
 
   // Confirm payment on mount (fallback if webhook fails)
   useEffect(() => {
@@ -121,15 +179,24 @@ export default function MpSuccess(){
   };
 
   const calculateTotals = () => {
-    if (!reservation?.items) return { subtotal: 0, discountAmount: 0, serviceCharge: 0, total: 0 };
+    // Use backend-computed breakdown if available (authoritative source)
+    if (saleBreakdown && saleBreakdown.subtotal !== undefined) {
+      return {
+        subtotal: saleBreakdown.subtotal,
+        discountAmount: saleBreakdown.discount_amount || 0,
+        serviceCharge: saleBreakdown.service_fee_amount || 0,
+        servicesSubtotal: saleBreakdown.services_subtotal || 0,
+        total: saleBreakdown.total || 0
+      };
+    }
+    if (!reservation?.items) return { subtotal: 0, discountAmount: 0, serviceCharge: 0, servicesSubtotal: 0, total: 0 };
     
     const subtotal = reservation.items.reduce((sum, it) => {
       if (it.type === 'butaca' || it.type === 'palco') return sum + Number(it.price || 0);
-      if (it.type === 'pullman') return sum + (Number(it.price || it.unit_price || 0) * Number(it.quantity || 1));
+      if (it.type === 'pullman' || it.type === 'general') return sum + (Number(it.price || it.unit_price || 0) * Number(it.quantity || 1));
       return sum;
     }, 0);
     
-    // Apply discount FIRST (before service charge)
     let discountAmount = 0;
     let subtotalAfterDiscount = subtotal;
     
@@ -143,17 +210,21 @@ export default function MpSuccess(){
       subtotalAfterDiscount = subtotal - discountAmount;
     }
     
-    // Service charge applied AFTER discount
-    const serviceCharge = Math.round(subtotalAfterDiscount * 0.10);
-    const total = subtotalAfterDiscount + serviceCharge;
+    const svcSubtotal = servicesSubtotal;
+    const serviceCharge = Math.round((subtotalAfterDiscount + svcSubtotal) * (serviceFeePercent / 100));
+    const total = subtotalAfterDiscount + serviceCharge + svcSubtotal;
     
-    return { subtotal, discountAmount, serviceCharge, total };
+    return { subtotal, discountAmount, serviceCharge, servicesSubtotal: svcSubtotal, total };
   };
   
-  const { subtotal, discountAmount, serviceCharge, total } = calculateTotals();
+  const { subtotal, discountAmount, serviceCharge, servicesSubtotal: calcServicesSubtotal, total } = calculateTotals();
 
   const onSendEmail = async () => {
-    if (!reservationId || !email) return;
+    if (!reservationId || !email) {
+      console.log('[EMAIL] Missing data:', { reservationId, email });
+      return;
+    }
+    console.log('[EMAIL] Sending to:', email, 'for reservation:', reservationId);
     setSendingEmail(true);
     try {
       const res = await apiFetch('/api/payments/email', {
@@ -161,14 +232,32 @@ export default function MpSuccess(){
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ reservation_id: reservationId, email })
       });
+      console.log('[EMAIL] Response:', res.status, res.ok);
+      if (res.ok) {
+        alert('✅ Email enviado correctamente');
+      } else {
+        const error = await res.json();
+        console.error('[EMAIL] Error:', error);
+        alert('❌ Error al enviar email: ' + (error.error || 'Error desconocido'));
+      }
       setEmailSent(res.ok);
+    } catch (err) {
+      console.error('[EMAIL] Exception:', err);
+      alert('❌ Error al enviar email: ' + err.message);
     } finally {
       setSendingEmail(false);
     }
   };
 
   const onSendWhatsapp = () => {
-    if (!whatsapp || !saleId) return;
+    if (!whatsapp || !saleId) {
+      console.log('[WHATSAPP] Missing data:', { whatsapp, saleId });
+      if (!saleId) {
+        alert('❌ No se puede enviar por WhatsApp: falta el ID de venta');
+      }
+      return;
+    }
+    console.log('[WHATSAPP] Opening for:', whatsapp, 'sale:', saleId);
     
     // Remove spaces, dashes and other characters
     const cleanPhone = whatsapp.replace(/[\s\-()]/g, '');
@@ -188,7 +277,7 @@ export default function MpSuccess(){
     const shareUrl = `${window.location.origin}/api/share/sale/${saleId}`;
     
     // Build message
-    const message = `Hola! Te comparto tus entradas para el show ${showName}${sessionDate ? ` del día ${sessionDate}` : ''}${sessionTime ? ` a las ${sessionTime}` : ''}.\n\n🎭 Ver entradas: ${shareUrl}\n\nRecordá llegar al menos 30 minutos antes y mostrar el QR en el acceso.\n\n(Si no podés acceder al link, es porque no tenés agendado este número. Una vez que lo hagas, podrás acceder)\n\n¡Nos vemos!`;
+    const message = `Hola! Te comparto tus entradas para el show ${showName}${sessionDate ? ` del día ${sessionDate}` : ''}${sessionTime ? ` a las ${sessionTime}` : ''}.\n\n Ver entradas: ${shareUrl}\n\nRecordá llegar al menos 30 minutos antes y mostrar el QR en el acceso. Una vez comenzada la función, la ubicación pierde validez (el personal de la sala te asignará un nuevo lugar).\n\nLas entradas no tienen cambio ni devolución, excepto en casos de cancelación/modificación del espectáculo.\n\n(Si no podés acceder al link, es porque no tenés agendado este número. Una vez que lo hagas, podrás acceder)\n\n¡Nos vemos!`;
     
     // Open WhatsApp with pre-filled message
     const waUrl = `https://wa.me/549${cleanPhone}?text=${encodeURIComponent(message)}`;
@@ -199,7 +288,7 @@ export default function MpSuccess(){
 
   return (
     <div style={{ padding: 24, maxWidth: 600, margin: '0 auto' }}>
-      <h1 style={{ color: '#28a745', marginBottom: 8 }}>🎉 ¡Compra confirmada!</h1>
+      <h1 style={{ color: '#28a745', marginBottom: 8 }}> ¡Compra confirmada!</h1>
       <p style={{ fontSize: 16, marginBottom: 16 }}>Gracias por tu compra. Tu pago fue aprobado exitosamente.</p>
       
       <div style={{ 
@@ -212,8 +301,14 @@ export default function MpSuccess(){
         textAlign: 'center',
         marginBottom: 24
       }}>
-        ✓ Tus entradas ya están guardadas en tu perfil
+         Tus entradas ya están guardadas en tu perfil
       </div>
+
+      {emailAutoSent && autoSentEmail && (
+        <div style={{ padding: 12, background: '#d1fae5', border: '1px solid #a7f3d0', borderRadius: 8, color: '#065f46', fontSize: 14, textAlign: 'center', marginBottom: 24 }}>
+          ✅ Tus entradas fueron enviadas automáticamente a <strong>{autoSentEmail}</strong>
+        </div>
+      )}
       
       <div style={{ 
         marginTop: 24, 
@@ -222,7 +317,30 @@ export default function MpSuccess(){
         borderRadius: 8,
         background: '#fff'
       }}>
-        <h2 style={{ fontSize: 18, marginTop: 0, marginBottom: 16 }}>📋 Detalle de tu compra</h2>
+        <h2 style={{ fontSize: 18, marginTop: 0, marginBottom: 16 }}> Detalle de tu compra</h2>
+        
+        {/* Show Info */}
+        {reservation?.session?.show && (
+          <div style={{ 
+            background: '#f8fafc', 
+            borderLeft: '4px solid #3b82f6', 
+            padding: 16, 
+            marginBottom: 20,
+            borderRadius: '0 8px 8px 0'
+          }}>
+            <h3 style={{ margin: '0 0 8px 0', fontSize: 17, color: '#1e293b' }}>
+              {reservation.session.show.title}
+            </h3>
+            <p style={{ margin: 0, fontSize: 14, color: '#64748b' }}>
+              📅 Fecha: {new Date(reservation.session.starts_at).toLocaleDateString('es-AR', { 
+                weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' 
+              })}<br/>
+              🕐 Hora: {new Date(reservation.session.starts_at).toLocaleTimeString('es-AR', { 
+                hour: '2-digit', minute: '2-digit', hour12: false 
+              })}
+            </p>
+          </div>
+        )}
         
         <div style={{ marginBottom: 16 }}>
           <div style={{ fontWeight: 600, marginBottom: 12, fontSize: 15 }}>Entradas:</div>
@@ -248,7 +366,21 @@ export default function MpSuccess(){
             ))}
           </ul>
         </div>
-        
+
+        {saleServiceItems.length > 0 && (
+          <div style={{ marginBottom: 16 }}>
+            <div style={{ fontWeight: 600, marginBottom: 12, fontSize: 15 }}>Servicios adicionales:</div>
+            <ul style={{ listStyle: 'none', padding: 0, margin: 0 }}>
+              {saleServiceItems.map((svc, idx) => (
+                <li key={idx} style={{ padding: '10px 0', borderBottom: idx < saleServiceItems.length - 1 ? '1px solid #eee' : 'none', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                  <span style={{ flex: 1 }}>{svc.name} x{svc.quantity} persona{svc.quantity > 1 ? 's' : ''}</span>
+                  <span style={{ fontWeight: 600, fontSize: 15 }}>${(Number(svc.price || 0) * Number(svc.quantity || 1)).toLocaleString('es-AR')}</span>
+                </li>
+              ))}
+            </ul>
+          </div>
+        )}
+
         {/* Subtotal */}
         <div style={{ 
           marginTop: 12,
@@ -262,6 +394,13 @@ export default function MpSuccess(){
           <span>${subtotal.toLocaleString('es-AR')}</span>
         </div>
         
+        {calcServicesSubtotal > 0 && (
+          <div style={{ marginTop: 6, display: 'flex', justifyContent: 'space-between', fontSize: 15, color: '#1e40af' }}>
+            <span>Subtotal servicios:</span>
+            <span>${calcServicesSubtotal.toLocaleString('es-AR')}</span>
+          </div>
+        )}
+
         {/* Discount */}
         {discountAmount > 0 && appliedDiscount && (
           <div style={{ 
@@ -272,7 +411,7 @@ export default function MpSuccess(){
             color: '#059669',
             fontWeight: 600
           }}>
-            <span>Descuento ({appliedDiscount.code}):</span>
+            <span>Descuento ({appliedDiscount.alias || appliedDiscount.code}):</span>
             <span>-${discountAmount.toLocaleString('es-AR')}</span>
           </div>
         )}
@@ -285,7 +424,7 @@ export default function MpSuccess(){
           fontSize: 15,
           color: '#666'
         }}>
-          <span>Cargo por servicio (10%):</span>
+          <span>Cargo por servicio:</span>
           <span>${serviceCharge.toLocaleString('es-AR')}</span>
         </div>
         
@@ -310,9 +449,9 @@ export default function MpSuccess(){
         background: '#f8f9fa', 
         borderRadius: 8 
       }}>
-        <div style={{ fontWeight: 600, marginBottom: 8, fontSize: 15 }}>📧 Enviar entradas</div>
+        <div style={{ fontWeight: 600, marginBottom: 8, fontSize: 15 }}> Enviar entradas</div>
         <p style={{ fontSize: 14, color: '#666', marginBottom: 16 }}>
-          Recibí una copia de tus entradas por email o WhatsApp
+          {emailAutoSent ? 'Si necesitás reenviar tus entradas, podés hacerlo por email o WhatsApp' : 'Recibí una copia de tus entradas por email o WhatsApp'}
         </p>
         
         {/* Email */}
@@ -348,7 +487,7 @@ export default function MpSuccess(){
                 fontWeight: 600
               }}
             >
-              {sendingEmail ? 'Enviando...' : emailSent ? '✓ Enviado' : 'Enviar'}
+              {sendingEmail ? 'Enviando...' : emailSent ? ' Enviado' : 'Enviar'}
             </button>
           </div>
         </div>
@@ -386,7 +525,7 @@ export default function MpSuccess(){
                 fontWeight: 600
               }}
             >
-              {whatsappSent ? '✓ Abierto' : 'Abrir WhatsApp'}
+              {whatsappSent ? ' Abierto' : 'Abrir WhatsApp'}
             </button>
           </div>
         </div>

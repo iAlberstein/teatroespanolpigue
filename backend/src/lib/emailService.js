@@ -3,20 +3,22 @@ import { formatDateTime } from './dateFormatter.js';
 
 // Create email transporter
 const createTransporter = () => {
-  // Check if credentials are configured
-  if (!process.env.EMAIL_HOST || !process.env.EMAIL_USER) {
+  const host = process.env.TICKETS_EMAIL_HOST || process.env.EMAIL_HOST;
+  const user = process.env.TICKETS_EMAIL_USER || process.env.EMAIL_USER;
+  const pass = process.env.TICKETS_EMAIL_PASS || process.env.EMAIL_PASS;
+  const port = parseInt(process.env.TICKETS_EMAIL_PORT || process.env.EMAIL_PORT || '465');
+  const secure = (process.env.TICKETS_EMAIL_SECURE || process.env.EMAIL_SECURE || 'true') === 'true';
+
+  if (!host || !user) {
     console.warn('[EMAIL] SMTP not configured. Emails will be logged only.');
     return null;
   }
 
   return nodemailer.createTransport({
-    host: process.env.EMAIL_HOST,
-    port: parseInt(process.env.EMAIL_PORT || '587'),
-    secure: process.env.EMAIL_SECURE === 'true',
-    auth: {
-      user: process.env.EMAIL_USER,
-      pass: process.env.EMAIL_PASS
-    }
+    host,
+    port,
+    secure,
+    auth: { user, pass }
   });
 };
 
@@ -34,7 +36,7 @@ async function sendEmail({ to, subject, html, attachments = [] }) {
 
   try {
     const mailOptions = {
-      from: process.env.EMAIL_FROM || `"Teatro Español" <${process.env.EMAIL_USER}>`,
+      from: process.env.TICKETS_EMAIL_FROM || process.env.EMAIL_FROM || `"Teatro Español" <${process.env.TICKETS_EMAIL_USER || process.env.EMAIL_USER}>`,
       to,
       subject,
       html,
@@ -53,11 +55,11 @@ async function sendEmail({ to, subject, html, attachments = [] }) {
 /**
  * Send purchase confirmation email with tickets QR
  */
-export async function sendPurchaseConfirmation({ 
-  customerEmail, 
-  customerName, 
-  showTitle, 
-  sessionDate, 
+export async function sendPurchaseConfirmation({
+  customerEmail,
+  customerName,
+  showTitle,
+  sessionDate,
   sessionTime,
   tickets,
   saleId,
@@ -65,19 +67,44 @@ export async function sendPurchaseConfirmation({
   paymentMethod,
   subtotal,
   discountCode,
-  discountAmount
+  discountAmount,
+  serviceFeePercent,
+  serviceFeeAmount,
+  serviceItems,
+  servicesSubtotal
 }) {
   const baseUrl = process.env.FRONTEND_URL || 'http://localhost:5173';
   const ticketsUrl = `${baseUrl}/api/share/sale/${saleId}`;
-  
-  // Format tickets list
-  const ticketsList = tickets.map((ticket, index) => `
+
+  // Format tickets list (exclude service tickets)
+  const regularTickets = tickets.filter(t => t.type !== 'service');
+  const ticketsList = regularTickets.map((ticket, index) => `
     <tr>
       <td style="padding: 12px; border-bottom: 1px solid #e5e7eb;">${index + 1}</td>
       <td style="padding: 12px; border-bottom: 1px solid #e5e7eb;">${ticket.location || ticket.type}</td>
       <td style="padding: 12px; border-bottom: 1px solid #e5e7eb; text-align: right;">$${Number(ticket.price || 0).toLocaleString('es-AR')}</td>
     </tr>
   `).join('');
+
+  // Calculate subtotal for regular tickets only (exclude services)
+  const ticketsSubtotal = regularTickets.reduce((sum, t) => sum + Number(t.price || 0), 0);
+
+  // Calculate correct total (ticketsSubtotal - discount + service fee + services)
+  const calculatedTotal = (Number(ticketsSubtotal) || 0) - (Number(discountAmount) || 0) + (Number(serviceFeeAmount) || 0) + (Number(servicesSubtotal) || 0);
+
+  // Format services list
+  const servicesList = (serviceItems || []).map((service, index) => {
+    const qty = Number(service.quantity || 1);
+    const price = Number(service.price || 0);
+    const total = qty * price;
+    return `
+    <tr>
+      <td style="padding: 12px; border-bottom: 1px solid #e5e7eb;">${index + 1}</td>
+      <td style="padding: 12px; border-bottom: 1px solid #e5e7eb;">${service.name || 'Servicio'} (x${qty})</td>
+      <td style="padding: 12px; border-bottom: 1px solid #e5e7eb; text-align: right;">$${total.toLocaleString('es-AR')}</td>
+    </tr>
+  `;
+  }).join('');
 
   const html = `
     <!DOCTYPE html>
@@ -97,7 +124,7 @@ export async function sendPurchaseConfirmation({
 
         <!-- Content -->
         <div style="padding: 40px 20px;">
-          <h2 style="color: #1f2937; margin: 0 0 20px 0; font-size: 24px;">¡Hola ${customerName}!</h2>
+          <h2 style="color: #1f2937; margin: 0 0 20px 0; font-size: 24px;">¡Hola${customerName && customerName !== 'Cliente' ? ` ${customerName}` : ''}!</h2>
           
           <p style="color: #4b5563; font-size: 16px; line-height: 1.6; margin: 0 0 24px 0;">
             Tu compra se ha realizado con éxito. A continuación encontrarás los detalles de tus entradas:
@@ -125,19 +152,58 @@ export async function sendPurchaseConfirmation({
               ${ticketsList}
             </tbody>
             <tfoot>
-              ${subtotal && discountAmount ? `
+              ${ticketsSubtotal ? `
               <tr style="background-color: #f9fafb;">
                 <td colspan="2" style="padding: 12px; color: #6b7280;">Subtotal</td>
-                <td style="padding: 12px; text-align: right; color: #6b7280;">$${Number(subtotal).toLocaleString('es-AR')}</td>
+                <td style="padding: 12px; text-align: right; color: #6b7280;">$${Number(ticketsSubtotal).toLocaleString('es-AR')}</td>
               </tr>
+              ` : ''}
+            </tfoot>
+          </table>
+
+          ${servicesList ? `
+          <!-- Services Table -->
+          <h3 style="color: #1f2937; margin: 0 0 16px 0; font-size: 18px;">Servicios Adicionales</h3>
+          <table style="width: 100%; border-collapse: collapse; margin-bottom: 24px;">
+            <thead>
+              <tr style="background-color: #f3f4f6;">
+                <th style="padding: 12px; text-align: left; color: #1f2937; font-weight: 600; border-bottom: 2px solid #e5e7eb;">#</th>
+                <th style="padding: 12px; text-align: left; color: #1f2937; font-weight: 600; border-bottom: 2px solid #e5e7eb;">Servicio</th>
+                <th style="padding: 12px; text-align: right; color: #1f2937; font-weight: 600; border-bottom: 2px solid #e5e7eb;">Total</th>
+              </tr>
+            </thead>
+            <tbody>
+              ${servicesList}
+            </tbody>
+            <tfoot>
+              ${servicesSubtotal ? `
+              <tr style="background-color: #f9fafb;">
+                <td colspan="2" style="padding: 12px; color: #6b7280;">Subtotal Servicios</td>
+                <td style="padding: 12px; text-align: right; color: #6b7280;">$${Number(servicesSubtotal).toLocaleString('es-AR')}</td>
+              </tr>
+              ` : ''}
+            </tfoot>
+          </table>
+          ` : ''}
+
+          <!-- Totals Table -->
+          <table style="width: 100%; border-collapse: collapse; margin-bottom: 24px;">
+            <tfoot>
+              ${discountAmount ? `
               <tr style="background-color: #fef3c7;">
                 <td colspan="2" style="padding: 12px; color: #92400e; font-weight: 600;">Descuento ${discountCode ? `(${discountCode})` : ''}</td>
                 <td style="padding: 12px; text-align: right; color: #92400e; font-weight: 600;">-$${Number(discountAmount).toLocaleString('es-AR')}</td>
               </tr>
               ` : ''}
+              ${serviceFeeAmount ? `
+              <tr style="background-color: #f9fafb;">
+                <td colspan="2" style="padding: 12px; color: #6b7280;">Cargo por servicio</td>
+                <td style="padding: 12px; text-align: right; color: #6b7280;">$${Number(serviceFeeAmount).toLocaleString('es-AR')}</td>
+              </tr>
+              ` : ''}
               <tr style="background-color: #f9fafb;">
                 <td colspan="2" style="padding: 16px; font-weight: 600; color: #1f2937;">TOTAL</td>
-                <td style="padding: 16px; text-align: right; font-weight: 700; color: #059669; font-size: 18px;">$${Number(totalAmount).toLocaleString('es-AR')}</td>
+                <td style="padding: 16px; text-align: right; font-weight: 700; color: #059669; font-size: 18px;">$${Number(calculatedTotal).toLocaleString('es-AR')}</td>
               </tr>
             </tfoot>
           </table>
@@ -147,9 +213,9 @@ export async function sendPurchaseConfirmation({
             <p style="color: #92400e; margin: 0; font-size: 14px; line-height: 1.6;">
               <strong>⚠️ Importante:</strong><br>
               • Llegá al menos 30 minutos antes de la función.<br>
-              • Recordá llevar tu DNI para validar tu identidad.<br>
               • Mostrá el código QR de tus entradas al ingresar.<br>
-              • Podés ver tus entradas en cualquier momento desde tu perfil.
+              • Se puede validar ingresos parciales de una misma compra (compartile el QR a quienes llegan después)<br>
+              • Las funciones comienzan puntual. Una vez comenzada, la ubicación pierde validez. El personal del teatro te indicará tu nuevo lugar.<br>
             </p>
           </div>
 
@@ -160,11 +226,15 @@ export async function sendPurchaseConfirmation({
             </a>
           </div>
 
+          <p style="color: #6b7280; font-size: 13px; text-align: center; margin: 0 0 24px 0; font-style: italic;">
+            Las entradas no tienen cambio ni devolución, excepto en casos de cancelación/modificación del espectáculo.
+          </p>
+
           <!-- Sale Info -->
           <div style="border-top: 1px solid #e5e7eb; padding-top: 20px; margin-top: 20px;">
             <p style="color: #9ca3af; font-size: 12px; margin: 0;">
               <strong>ID de Compra:</strong> ${saleId}<br>
-              <strong>Método de Pago:</strong> ${paymentMethod === 'mp' ? 'Mercado Pago' : paymentMethod === 'cash' ? 'Efectivo' : 'Otro'}
+              <strong>Método de Pago:</strong> ${paymentMethod === 'mp' ? 'Mercado Pago' : paymentMethod === 'cash' ? 'Efectivo' : paymentMethod === 'card' ? 'Tarjeta' : 'Otro'}
             </p>
           </div>
         </div>
@@ -358,10 +428,10 @@ export async function sendShowReminder({
           <div style="background-color: #f0fdf4; border: 2px solid #10b981; border-radius: 8px; padding: 20px; margin-bottom: 24px;">
             <h4 style="color: #065f46; margin: 0 0 12px 0; font-size: 16px;">✅ Recordá:</h4>
             <ul style="color: #065f46; margin: 0; padding-left: 20px; font-size: 14px; line-height: 1.8;">
-              <li>Llegá <strong>30 minutos antes</strong> de la función</li>
-              <li>Traé tu <strong>DNI</strong> para validar tu identidad</li>
+              <li>Llegá al menos <strong>30 minutos antes</strong> de la función</li>
               <li>Mostrá el <strong>código QR</strong> de tus entradas</li>
-              <li>Las puertas cierran al inicio de la función</li>
+              <li>Se puede validar ingresos parciales de una misma compra (compartile el QR a quienes llegan después)</li>
+              <li>La funcion comienza puntual. Una vez comenzada, la ubicación pierde validez. El personal del teatro te indicará tu nuevo lugar.</li>
             </ul>
           </div>
 

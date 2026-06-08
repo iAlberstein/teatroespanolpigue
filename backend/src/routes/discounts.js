@@ -42,7 +42,7 @@ router.post('/', authenticateToken, async (req, res) => {
         return res.status(403).json({ message: 'No autorizado' });
       }
 
-      const { code, show_id, type, value, usage_limit, active } = req.body;
+      const { code, alias, show_id, type, value, usage_limit, active, min_seats, max_seats, require_even } = req.body;
 
       // Validate required fields
       if (!code || !type) {
@@ -78,11 +78,37 @@ router.post('/', authenticateToken, async (req, res) => {
         }
       }
 
+      let minSeatsValue = null;
+      if (min_seats !== undefined && min_seats !== null && min_seats !== '') {
+        const parsedMin = parseInt(min_seats, 10);
+        if (Number.isNaN(parsedMin) || parsedMin < 1) {
+          return res.status(400).json({ message: 'El mínimo de localidades debe ser un entero mayor o igual a 1' });
+        }
+        minSeatsValue = parsedMin;
+      }
+
+      let maxSeatsValue = null;
+      if (max_seats !== undefined && max_seats !== null && max_seats !== '') {
+        const parsedMax = parseInt(max_seats, 10);
+        if (Number.isNaN(parsedMax) || parsedMax < 1) {
+          return res.status(400).json({ message: 'El máximo de localidades debe ser un entero mayor o igual a 1' });
+        }
+        maxSeatsValue = parsedMax;
+      }
+
+      if (minSeatsValue && maxSeatsValue && maxSeatsValue < minSeatsValue) {
+        return res.status(400).json({ message: 'El máximo de localidades no puede ser menor al mínimo' });
+      }
+
       const discount = await Discount.create({
         code: code.trim().toUpperCase(),
+        alias: alias ? alias.trim() : null,
         show_id: show_id || null,
         type,
         value: value || null,
+        min_seats: minSeatsValue,
+        max_seats: maxSeatsValue,
+        require_even: !!require_even,
         usage_limit: usage_limit || null,
         used_count: 0,
         active: active !== undefined ? active : true
@@ -116,7 +142,7 @@ router.put('/:id', authenticateToken, async (req, res) => {
       }
 
       const { id } = req.params;
-      const { code, show_id, type, value, usage_limit, active } = req.body;
+      const { code, alias, show_id, type, value, usage_limit, active, min_seats, max_seats, require_even } = req.body;
 
       const discount = await Discount.findByPk(id);
       if (!discount) {
@@ -155,7 +181,38 @@ router.put('/:id', authenticateToken, async (req, res) => {
       if (type !== undefined) discount.type = type;
       if (value !== undefined) discount.value = value;
       if (usage_limit !== undefined) discount.usage_limit = usage_limit;
+      if (min_seats !== undefined) {
+        if (min_seats === null || min_seats === '') {
+          discount.min_seats = null;
+        } else {
+          const parsedMin = parseInt(min_seats, 10);
+          if (Number.isNaN(parsedMin) || parsedMin < 1) {
+            return res.status(400).json({ message: 'El mínimo de localidades debe ser un entero mayor o igual a 1' });
+          }
+          discount.min_seats = parsedMin;
+        }
+      }
+      if (max_seats !== undefined) {
+        if (max_seats === null || max_seats === '') {
+          discount.max_seats = null;
+        } else {
+          const parsedMax = parseInt(max_seats, 10);
+          if (Number.isNaN(parsedMax) || parsedMax < 1) {
+            return res.status(400).json({ message: 'El máximo de localidades debe ser un entero mayor o igual a 1' });
+          }
+          discount.max_seats = parsedMax;
+        }
+      }
+      if (require_even !== undefined) discount.require_even = !!require_even;
+      if (alias !== undefined) discount.alias = alias ? alias.trim() : null;
       if (active !== undefined) discount.active = active;
+
+      // Cross-validate min/max
+      const finalMin = discount.min_seats;
+      const finalMax = discount.max_seats;
+      if (finalMin && finalMax && finalMax < finalMin) {
+        return res.status(400).json({ message: 'El máximo de localidades no puede ser menor al mínimo' });
+      }
 
       await discount.save();
 
@@ -215,7 +272,7 @@ router.delete('/:id', authenticateToken, async (req, res) => {
 router.post('/validate', async (req, res) => {
   try {
     const { discounts: Discount } = sequelize.models;
-    const { code, show_id } = req.body;
+    const { code, show_id, seat_count } = req.body;
 
       if (!code) {
         return res.status(400).json({ message: 'Código es obligatorio' });
@@ -244,13 +301,57 @@ router.post('/validate', async (req, res) => {
         return res.status(400).json({ message: 'Este código de descuento no es válido para este show' });
       }
 
+      if (discount.min_seats) {
+        const seatCountNumber = Number(seat_count || 0);
+        if (!seatCountNumber || seatCountNumber < discount.min_seats) {
+          return res.status(400).json({ 
+            error: 'min_seats_required', 
+            message: `Debes seleccionar ${discount.min_seats} localidades como mínimo`
+          });
+        }
+      }
+
+      if (discount.max_seats) {
+        const seatCountNumber = Number(seat_count || 0);
+        if (seatCountNumber > discount.max_seats) {
+          return res.status(400).json({ 
+            error: 'max_seats_exceeded', 
+            message: `No podés seleccionar más de ${discount.max_seats} localidades con este cupón`
+          });
+        }
+      }
+
+      if (discount.require_even) {
+        const seatCountNumber = Number(seat_count || 0);
+        if (seatCountNumber % 2 !== 0) {
+          return res.status(400).json({ 
+            error: 'even_seats_required', 
+            message: 'Este cupón requiere seleccionar un número par de localidades'
+          });
+        }
+      }
+
+      let multiplierHint = 1;
+      if (discount.type === 'fixed' && discount.min_seats) {
+        const seatCountNumber = Number(seat_count || 0);
+        multiplierHint = Math.max(1, Math.floor(seatCountNumber / discount.min_seats));
+      }
+
       // Return discount info without exposing sensitive data
+      const remainingUses = discount.usage_limit ? Math.max(0, discount.usage_limit - (discount.used_count || 0)) : null;
       res.json({
         valid: true,
         id: discount.id,
         type: discount.type,
         value: discount.value,
-        show_id: discount.show_id
+        alias: discount.alias || null,
+        show_id: discount.show_id,
+        min_seats: discount.min_seats,
+        max_seats: discount.max_seats,
+        require_even: discount.require_even,
+        usage_limit: discount.usage_limit || null,
+        remaining_uses: remainingUses,
+        multiplier_hint: multiplierHint
       });
     } catch (error) {
       console.error('Error validating discount:', error);

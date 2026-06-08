@@ -3,6 +3,7 @@ import { apiAuthFetch } from '../../lib/api.js';
 import { useAuth } from '../../contexts/AuthContext.jsx';
 import theme from '../../styles/theme.js';
 import Button from '../ui/Button.jsx';
+import isologoBdx from '../../assets/images/NUEVO_ISOLOGO_bdx.png';
 
 export default function BordereauxModal({ showId, onClose }) {
   const { token, user } = useAuth();
@@ -15,6 +16,7 @@ export default function BordereauxModal({ showId, onClose }) {
   const [theaterPercentage, setTheaterPercentage] = useState(20);
   const [userPercentage, setUserPercentage] = useState(80);
   const [deductionsB, setDeductionsB] = useState([]);
+  const [authorName, setAuthorName] = useState('');
   const [saving, setSaving] = useState(false);
   const [closing, setClosing] = useState(false);
   const [printing, setPrinting] = useState(false);
@@ -45,6 +47,7 @@ export default function BordereauxModal({ showId, onClose }) {
       setTheaterPercentage(response.contract?.theater_percentage || 20);
       setUserPercentage(response.contract?.user_percentage || 80);
       setDeductionsB(response.deductions_b?.items || []);
+      setAuthorName(response.show?.author_name || '');
     } catch (error) {
       console.error('Error loading bordereaux:', error);
       alert('Error al cargar el bordereaux. Asegúrate de que la tabla "bordereaux" existe en la base de datos.');
@@ -70,7 +73,8 @@ export default function BordereauxModal({ showId, onClose }) {
           deductions_a: deductionsA,
           contract_theater_percentage: theaterPercentage,
           contract_user_percentage: userPercentage,
-          deductions_b: deductionsB
+          deductions_b: deductionsB,
+          author_name: authorName
         })
       }, token);
       
@@ -124,7 +128,7 @@ export default function BordereauxModal({ showId, onClose }) {
   };
 
   const addDeductionA = () => {
-    setDeductionsA([...deductionsA, { name: '', percentage: 0, description: 'del Bruto' }]);
+    setDeductionsA([...deductionsA, { name: '', type: 'percentage', percentage: 0, fixedAmount: 0, description: 'del Bruto' }]);
   };
 
   const removeDeductionA = (index) => {
@@ -314,7 +318,7 @@ export default function BordereauxModal({ showId, onClose }) {
             <div style={{ display: 'flex', alignItems: 'center', gap: theme.spacing.md, flex: 1 }}>
               {/* Logo */}
               <img 
-                src="/media/images/NUEVO_ISOLOGO_bdx.png" 
+                src={isologoBdx} 
                 alt="Teatro Español"
                 style={{
                   height: '80px',
@@ -326,8 +330,23 @@ export default function BordereauxModal({ showId, onClose }) {
               <div>
                 <h2 style={{ margin: 0, marginBottom: theme.spacing.sm }}>BORDEREAUX</h2>
                 <div><strong>OBRA:</strong> {data.show.title}</div>
-                <div><strong>AUTOR:</strong> {data.show.description || '-'}</div>
-                <div><strong>FECHA:</strong> {new Date().toLocaleDateString('es-AR', { day: 'numeric', month: 'long', year: 'numeric' })}</div>
+                <div style={{ display: 'flex', alignItems: 'center', gap: theme.spacing.sm }}>
+                  <strong>AUTOR:</strong> 
+                  {editMode ? (
+                    <input
+                      type="text"
+                      value={authorName}
+                      onChange={(e) => setAuthorName(e.target.value)}
+                      placeholder="Nombre del autor"
+                      style={{ padding: '4px 8px', border: '1px solid #ccc', borderRadius: 4, minWidth: 200 }}
+                    />
+                  ) : (
+                    <span>{data.show.author_name || '-'}</span>
+                  )}
+                </div>
+                <div><strong>FECHA:</strong> {data.show.session_date 
+                  ? new Date(data.show.session_date).toLocaleDateString('es-AR', { day: 'numeric', month: 'long', year: 'numeric' })
+                  : 'Sin fecha'}</div>
               </div>
             </div>
             <button 
@@ -346,72 +365,9 @@ export default function BordereauxModal({ showId, onClose }) {
           </div>
 
           {/* Botones de acción */}
-          {!isClosed && (
-            <div className="no-print" style={{ display: 'flex', gap: theme.spacing.sm, marginBottom: theme.spacing.lg, flexWrap: 'wrap' }}>
-              {/* Productores solo pueden ver, no editar ni cerrar */}
-              {user?.role === 'productor' ? (
-                <div style={{
-                  padding: theme.spacing.md,
-                  background: '#eff6ff',
-                  borderRadius: theme.borderRadius.md,
-                  color: '#1e40af',
-                  fontSize: theme.typography.small,
-                  width: '100%'
-                }}>
-                  ℹ️ Solo podés descargar el PDF una vez que el administrador cierre la venta.
-                </div>
-              ) : (
-                <>
-                  <Button
-                    variant={editMode ? 'secondary' : 'primary'}
-                    size="sm"
-                    onClick={() => editMode ? handleSave() : setEditMode(true)}
-                    disabled={saving}
-                  >
-                    {saving ? 'Guardando...' : editMode ? 'Guardar Cambios' : 'Editar'}
-                  </Button>
-                  
-                  {editMode && (
-                    <Button
-                      variant="ghost"
-                      size="sm"
-                      onClick={() => {
-                        setEditMode(false);
-                        loadBordereaux();
-                      }}
-                    >
-                      Cancelar
-                    </Button>
-                  )}
-                  
-                  {!editMode && (
-                    <>
-                      <Button
-                        variant="success"
-                        size="sm"
-                        onClick={handleDownloadPDF}
-                        disabled={printing}
-                      >
-                        {printing ? '📄 Generando...' : '📥 Descargar PDF'}
-                      </Button>
-                      
-                      <Button
-                        variant="danger"
-                        size="sm"
-                        onClick={handleClose}
-                        disabled={closing}
-                      >
-                        {closing ? 'Cerrando...' : 'Cerrar Venta'}
-                      </Button>
-                    </>
-                  )}
-                </>
-              )}
-            </div>
-          )}
-
-          {isClosed && (
-            <div className="no-print">
+          <div className="no-print" style={{ marginBottom: theme.spacing.lg }}>
+            {/* Banner de estado cerrado */}
+            {isClosed && (
               <div style={{
                 background: theme.colors.success,
                 color: 'white',
@@ -420,24 +376,113 @@ export default function BordereauxModal({ showId, onClose }) {
                 marginBottom: theme.spacing.sm,
                 textAlign: 'center'
               }}>
-                ✓ Bordereaux cerrado el {new Date(data.bordereaux.closed_at).toLocaleString('es-AR')}
+                 Bordereaux cerrado el {new Date(data.bordereaux.closed_at).toLocaleString('es-AR')}
               </div>
-              <div style={{ display: 'flex', gap: theme.spacing.sm, marginBottom: theme.spacing.lg, justifyContent: 'center' }}>
+            )}
+
+            {/* Productores solo pueden ver, no editar ni cerrar */}
+            {user?.role === 'productor' ? (
+              !isClosed && (
+                <div style={{
+                  padding: theme.spacing.md,
+                  background: '#eff6ff',
+                  borderRadius: theme.borderRadius.md,
+                  color: '#1e40af',
+                  fontSize: theme.typography.small,
+                  width: '100%'
+                }}>
+                   Solo podés descargar el PDF una vez que el administrador cierre la venta.
+                </div>
+              )
+            ) : (
+              <div style={{ display: 'flex', gap: theme.spacing.sm, flexWrap: 'wrap', justifyContent: isClosed ? 'center' : 'flex-start' }}>
                 <Button
-                  variant="primary"
-                  size="md"
-                  onClick={handleDownloadPDF}
-                  disabled={printing}
+                  variant={editMode ? 'secondary' : 'primary'}
+                  size="sm"
+                  onClick={() => editMode ? handleSave() : setEditMode(true)}
+                  disabled={saving}
                 >
-                  {printing ? '📄 Generando...' : '📥 Descargar PDF'}
+                  {saving ? 'Guardando...' : editMode ? 'Guardar Cambios' : 'Editar'}
                 </Button>
+
+                {editMode && (
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    onClick={() => {
+                      setEditMode(false);
+                      loadBordereaux();
+                    }}
+                  >
+                    Cancelar
+                  </Button>
+                )}
+
+                {!editMode && (
+                  <>
+                    <Button
+                      variant="success"
+                      size={isClosed ? 'md' : 'sm'}
+                      onClick={handleDownloadPDF}
+                      disabled={printing}
+                    >
+                      {printing ? ' Generando...' : ' Descargar PDF'}
+                    </Button>
+
+                    {!isClosed && (
+                      <Button
+                        variant="danger"
+                        size="sm"
+                        onClick={handleClose}
+                        disabled={closing}
+                      >
+                        {closing ? 'Cerrando...' : 'Cerrar Venta'}
+                      </Button>
+                    )}
+                  </>
+                )}
               </div>
+            )}
+          </div>
+
+          {/* Consolidado por Sector */}
+          {Array.isArray(data.sales.sectorTotals) && data.sales.sectorTotals.length > 0 && (
+            <div style={{ marginBottom: theme.spacing.lg }}>
+              <h3>CONSOLIDADO POR SECTOR</h3>
+              <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: theme.typography.small }}>
+                <thead>
+                  <tr style={{ borderBottom: `2px solid ${theme.colors.border}` }}>
+                    <th style={{ padding: theme.spacing.xs, textAlign: 'left' }}>SECTOR</th>
+                    <th style={{ padding: theme.spacing.xs, textAlign: 'right' }}>VALOR</th>
+                    <th style={{ padding: theme.spacing.xs, textAlign: 'right' }}>PERSONAS</th>
+                    <th style={{ padding: theme.spacing.xs, textAlign: 'right' }}>TOTAL</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {data.sales.sectorTotals.map((sector, idx) => (
+                    <tr key={idx} style={{ borderBottom: `1px solid ${theme.colors.border}` }}>
+                      <td style={{ padding: theme.spacing.xs }}>
+                        {sector.location}
+                        {sector.discountCode && <span style={{ fontSize: '0.85em', color: '#666', marginLeft: 4 }}>({sector.discountCode})</span>}
+                      </td>
+                      <td style={{ padding: theme.spacing.xs, textAlign: 'right' }}>{formatCurrency(sector.price)}</td>
+                      <td style={{ padding: theme.spacing.xs, textAlign: 'right' }}>{sector.people || sector.quantity}</td>
+                      <td style={{ padding: theme.spacing.xs, textAlign: 'right' }}>{formatCurrency(sector.total)}</td>
+                    </tr>
+                  ))}
+                  <tr style={{ borderTop: `2px solid ${theme.colors.border}`, fontWeight: 'bold', background: theme.colors.surfaceAlt }}>
+                    <td style={{ padding: theme.spacing.xs }} colSpan="2">TOTAL</td>
+                    <td style={{ padding: theme.spacing.xs, textAlign: 'right' }}>{data.sales.totals.people || data.sales.totals.tickets}</td>
+                    <td style={{ padding: theme.spacing.xs, textAlign: 'right' }}>{formatCurrency(data.sales.totals.amount)}</td>
+                  </tr>
+                </tbody>
+              </table>
             </div>
           )}
 
           {/* Tabla de entradas */}
           <div style={{ marginBottom: theme.spacing.lg }}>
-            <h3>ENTRADAS</h3>
+            <h3>DETALLE DE VENTAS</h3>
             <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: theme.typography.small }}>
               <thead>
                 <tr style={{ borderBottom: `2px solid ${theme.colors.border}` }}>
@@ -448,14 +493,6 @@ export default function BordereauxModal({ showId, onClose }) {
                 </tr>
               </thead>
               <tbody>
-                {/* Cortesías */}
-                <tr>
-                  <td style={{ padding: theme.spacing.xs }}>Cortesía</td>
-                  <td style={{ padding: theme.spacing.xs, textAlign: 'right' }}>{formatCurrency(0)}</td>
-                  <td style={{ padding: theme.spacing.xs, textAlign: 'right' }}>{data.sales.cortesias.quantity}</td>
-                  <td style={{ padding: theme.spacing.xs, textAlign: 'right' }}>{formatCurrency(0)}</td>
-                </tr>
-
                 {/* Venta Online */}
                 <tr>
                   <td colSpan="4" style={{ padding: theme.spacing.xs, fontWeight: 'bold', background: theme.colors.surfaceAlt }}>
@@ -466,7 +503,11 @@ export default function BordereauxModal({ showId, onClose }) {
                   <tr key={idx}>
                     <td style={{ padding: theme.spacing.xs }}>{sale.location}</td>
                     <td style={{ padding: theme.spacing.xs, textAlign: 'right' }}>{formatCurrency(sale.price)}</td>
-                    <td style={{ padding: theme.spacing.xs, textAlign: 'right' }}>{sale.quantity}</td>
+                    <td style={{ padding: theme.spacing.xs, textAlign: 'right' }}>
+                      {sale.people && sale.people !== sale.quantity
+                        ? <>{sale.quantity} <span style={{ fontSize: '0.85em', color: '#666' }}>({sale.people} entradas)</span></>
+                        : sale.quantity}
+                    </td>
                     <td style={{ padding: theme.spacing.xs, textAlign: 'right' }}>{formatCurrency(sale.total)}</td>
                   </tr>
                 ))}
@@ -474,9 +515,11 @@ export default function BordereauxModal({ showId, onClose }) {
                 {/* Subtotal Online */}
                 <tr style={{ borderTop: `1px solid ${theme.colors.border}`, fontWeight: 'bold', background: theme.colors.successLight }}>
                   <td style={{ padding: theme.spacing.xs }} colSpan="2">SUBTOTAL ONLINE</td>
-                  <td style={{ padding: theme.spacing.xs, textAlign: 'right' }}>{data.sales.totals.onlineTickets}</td>
+                  <td style={{ padding: theme.spacing.xs, textAlign: 'right' }}>{data.sales.totals.onlinePeople || data.sales.totals.onlineTickets}</td>
                   <td style={{ padding: theme.spacing.xs, textAlign: 'right' }}>{formatCurrency(data.sales.totals.onlineAmount)}</td>
                 </tr>
+
+                {/* NO incluir servicios en detalle de ventas (se muestran debajo de deducciones A) */}
 
                 {/* Boletería */}
                 <tr>
@@ -488,7 +531,11 @@ export default function BordereauxModal({ showId, onClose }) {
                   <tr key={idx}>
                     <td style={{ padding: theme.spacing.xs }}>{sale.location}</td>
                     <td style={{ padding: theme.spacing.xs, textAlign: 'right' }}>{formatCurrency(sale.price)}</td>
-                    <td style={{ padding: theme.spacing.xs, textAlign: 'right' }}>{sale.quantity}</td>
+                    <td style={{ padding: theme.spacing.xs, textAlign: 'right' }}>
+                      {sale.people && sale.people !== sale.quantity
+                        ? <>{sale.quantity} <span style={{ fontSize: '0.85em', color: '#666' }}>({sale.people} entradas)</span></>
+                        : sale.quantity}
+                    </td>
                     <td style={{ padding: theme.spacing.xs, textAlign: 'right' }}>{formatCurrency(sale.total)}</td>
                   </tr>
                 ))}
@@ -496,15 +543,17 @@ export default function BordereauxModal({ showId, onClose }) {
                 {/* Subtotal Boletería */}
                 <tr style={{ borderTop: `1px solid ${theme.colors.border}`, fontWeight: 'bold', background: theme.colors.infoLight }}>
                   <td style={{ padding: theme.spacing.xs }} colSpan="2">SUBTOTAL BOLETERÍA</td>
-                  <td style={{ padding: theme.spacing.xs, textAlign: 'right' }}>{data.sales.totals.boleteriaTickets}</td>
+                  <td style={{ padding: theme.spacing.xs, textAlign: 'right' }}>{data.sales.totals.boleteriaPeople || data.sales.totals.boleteriaTickets}</td>
                   <td style={{ padding: theme.spacing.xs, textAlign: 'right' }}>{formatCurrency(data.sales.totals.boleteriaAmount)}</td>
                 </tr>
+
+                {/* NO incluir servicios en detalle de ventas (se muestran debajo de deducciones A) */}
 
                 {/* Totales */}
                 <tr style={{ borderTop: `2px solid ${theme.colors.border}`, fontWeight: 'bold' }}>
                   <td style={{ padding: theme.spacing.xs }}>TOTALES</td>
                   <td style={{ padding: theme.spacing.xs }}></td>
-                  <td style={{ padding: theme.spacing.xs, textAlign: 'right' }}>{data.sales.totals.tickets}</td>
+                  <td style={{ padding: theme.spacing.xs, textAlign: 'right' }}>{data.sales.totals.people || data.sales.totals.tickets}</td>
                   <td style={{ padding: theme.spacing.xs, textAlign: 'right' }}>{formatCurrency(data.sales.totals.amount)}</td>
                 </tr>
               </tbody>
@@ -518,7 +567,7 @@ export default function BordereauxModal({ showId, onClose }) {
               <strong>{formatCurrency(data.recaudacion.efectivo)}</strong>
             </div>
             <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: theme.spacing.xs }}>
-              <span>RECAUDADO EN VENTA ONLINE (Transfiere directo a CBU/CVU del Usuario):</span>
+              <span>RECAUDADO EN VENTA ONLINE (plataforma web):</span>
               <strong>{formatCurrency(data.recaudacion.online)}</strong>
             </div>
             <div style={{ display: 'flex', justifyContent: 'space-between', borderTop: `2px solid ${theme.colors.border}`, paddingTop: theme.spacing.xs, fontWeight: 'bold', fontSize: theme.typography.body }}>
@@ -554,12 +603,24 @@ export default function BordereauxModal({ showId, onClose }) {
                           />
                         </td>
                         <td style={{ padding: theme.spacing.xs, textAlign: 'center' }}>
-                          <input
-                            type="number"
-                            value={ded.percentage}
-                            onChange={(e) => updateDeductionA(idx, 'percentage', parseFloat(e.target.value) || 0)}
-                            style={{ width: '60px', padding: '4px', textAlign: 'center' }}
-                          />%
+                          <div style={{ display: 'flex', alignItems: 'center', gap: '4px', justifyContent: 'center' }}>
+                            <select
+                              value={ded.type || 'percentage'}
+                              onChange={(e) => updateDeductionA(idx, 'type', e.target.value)}
+                              style={{ padding: '4px', borderRadius: '4px', border: '1px solid #ccc' }}
+                            >
+                              <option value="percentage">%</option>
+                              <option value="fixed">Fijo</option>
+                            </select>
+                            {(ded.type || 'percentage') === 'percentage' && (
+                              <input
+                                type="number"
+                                value={ded.percentage}
+                                onChange={(e) => updateDeductionA(idx, 'percentage', parseFloat(e.target.value) || 0)}
+                                style={{ width: '60px', padding: '4px', textAlign: 'center', MozAppearance: 'textfield', appearance: 'textfield' }}
+                              />
+                            )}
+                          </div>
                         </td>
                         <td style={{ padding: theme.spacing.xs }}>
                           <input
@@ -570,7 +631,16 @@ export default function BordereauxModal({ showId, onClose }) {
                           />
                         </td>
                         <td style={{ padding: theme.spacing.xs, textAlign: 'right' }}>
-                          {formatCurrency((parseFloat(data.recaudacion.bruto) * (ded.percentage / 100)))}
+                          {(ded.type || 'percentage') === 'fixed' ? (
+                            <input
+                              type="number"
+                              value={ded.fixedAmount || 0}
+                              onChange={(e) => updateDeductionA(idx, 'fixedAmount', parseFloat(e.target.value) || 0)}
+                              style={{ width: '100px', padding: '4px', textAlign: 'right', MozAppearance: 'textfield', appearance: 'textfield' }}
+                            />
+                          ) : (
+                            formatCurrency((parseFloat(data.recaudacion.bruto) * (ded.percentage / 100)))
+                          )}
                         </td>
                         <td style={{ padding: theme.spacing.xs, textAlign: 'center' }}>
                           <button
@@ -594,20 +664,147 @@ export default function BordereauxModal({ showId, onClose }) {
                   data.deductions_a.items.map((ded, idx) => (
                     <tr key={idx}>
                       <td style={{ padding: theme.spacing.xs }}>{ded.name}</td>
-                      <td style={{ padding: theme.spacing.xs, textAlign: 'center' }}>{ded.percentage}%</td>
+                      <td style={{ padding: theme.spacing.xs, textAlign: 'center' }}>
+                        {(ded.type || 'percentage') === 'fixed' ? 'Fijo' : `${Math.round(ded.percentage)}%`}
+                      </td>
                       <td style={{ padding: theme.spacing.xs }}>{ded.description}</td>
                       <td style={{ padding: theme.spacing.xs, textAlign: 'right' }}>{formatCurrency(ded.amount)}</td>
                     </tr>
                   ))
                 )}
+                <tr style={{ borderTop: `1px solid ${theme.colors.border}`, fontWeight: 'bold' }}>
+                  <td colSpan="3" style={{ padding: theme.spacing.xs }}>TOTAL DEDUCCIONES (A)</td>
+                  <td style={{ padding: theme.spacing.xs, textAlign: 'right' }}>
+                    {(() => {
+                      const bruto = parseFloat(data.recaudacion.bruto) || 0;
+                      const currentDedA = editMode ? deductionsA : (data.deductions_a?.items || []);
+                      const totalDedA = currentDedA.reduce((sum, ded) => {
+                        if (ded.type === 'fixed') return sum + (parseFloat(ded.fixedAmount) || 0);
+                        return sum + (bruto * ((parseFloat(ded.percentage) || 0) / 100));
+                      }, 0);
+                      return formatCurrency(totalDedA);
+                    })()}
+                  </td>
+                  {editMode && <td></td>}
+                </tr>
                 <tr style={{ borderTop: `2px solid ${theme.colors.border}`, fontWeight: 'bold' }}>
                   <td colSpan="3" style={{ padding: theme.spacing.xs }}>NETO 1</td>
-                  <td style={{ padding: theme.spacing.xs, textAlign: 'right' }}>{formatCurrency(data.deductions_a.neto1)}</td>
+                  <td style={{ padding: theme.spacing.xs, textAlign: 'right' }}>
+                    {(() => {
+                      const bruto = parseFloat(data.recaudacion.bruto) || 0;
+                      const currentDedA = editMode ? deductionsA : (data.deductions_a?.items || []);
+                      const totalDedA = currentDedA.reduce((sum, ded) => {
+                        if (ded.type === 'fixed') return sum + (parseFloat(ded.fixedAmount) || 0);
+                        return sum + (bruto * ((parseFloat(ded.percentage) || 0) / 100));
+                      }, 0);
+                      return formatCurrency(bruto - totalDedA);
+                    })()}
+                  </td>
                   {editMode && <td></td>}
                 </tr>
               </tbody>
             </table>
           </div>
+
+          {/* Servicios */}
+          {data.services && (data.services.online?.length > 0 || data.services.boleteria?.length > 0) && (
+            <div style={{ marginBottom: theme.spacing.lg }}>
+              <h3>SERVICIOS</h3>
+              <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: theme.typography.small }}>
+                <thead>
+                  <tr style={{ borderBottom: `2px solid ${theme.colors.border}` }}>
+                    <th style={{ padding: theme.spacing.xs, textAlign: 'left' }}>SERVICIO</th>
+                    <th style={{ padding: theme.spacing.xs, textAlign: 'center' }}>CANTIDAD</th>
+                    <th style={{ padding: theme.spacing.xs, textAlign: 'right' }}>TOTAL</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {data.services.online.map((svc, idx) => (
+                    <tr key={`online-${idx}`}>
+                      <td style={{ padding: theme.spacing.xs }}>{svc.name} (Online)</td>
+                      <td style={{ padding: theme.spacing.xs, textAlign: 'center' }}>{svc.quantity}</td>
+                      <td style={{ padding: theme.spacing.xs, textAlign: 'right' }}>{formatCurrency(svc.total)}</td>
+                    </tr>
+                  ))}
+                  {data.services.boleteria.map((svc, idx) => (
+                    <tr key={`bole-${idx}`}>
+                      <td style={{ padding: theme.spacing.xs }}>{svc.name} (Boletería)</td>
+                      <td style={{ padding: theme.spacing.xs, textAlign: 'center' }}>{svc.quantity}</td>
+                      <td style={{ padding: theme.spacing.xs, textAlign: 'right' }}>{formatCurrency(svc.total)}</td>
+                    </tr>
+                  ))}
+                  <tr style={{ borderTop: `2px solid ${theme.colors.border}`, fontWeight: 'bold' }}>
+                    <td style={{ padding: theme.spacing.xs }}>TOTAL SERVICIOS</td>
+                    <td style={{ padding: theme.spacing.xs, textAlign: 'center' }}>
+                      {(data.services.online?.reduce((sum, s) => sum + s.quantity, 0) || 0) +
+                       (data.services.boleteria?.reduce((sum, s) => sum + s.quantity, 0) || 0)}
+                    </td>
+                    <td style={{ padding: theme.spacing.xs, textAlign: 'right' }}>
+                      {formatCurrency(data.services.total || 0)}
+                    </td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+          )}
+
+          {/* Servicios a Bordereaux */}
+          {Array.isArray(data.sales.onlineBordereauxServices) && data.sales.onlineBordereauxServices.length > 0 && (
+            <div style={{ marginBottom: theme.spacing.lg }}>
+              <h3>SERVICIOS A BORDEREAUX</h3>
+              <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: theme.typography.small }}>
+                <thead>
+                  <tr style={{ borderBottom: `2px solid ${theme.colors.border}` }}>
+                    <th style={{ padding: theme.spacing.xs, textAlign: 'left' }}>SERVICIO</th>
+                    <th style={{ padding: theme.spacing.xs, textAlign: 'right' }}>VALOR</th>
+                    <th style={{ padding: theme.spacing.xs, textAlign: 'right' }}>CANTIDAD</th>
+                    <th style={{ padding: theme.spacing.xs, textAlign: 'right' }}>TOTAL</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {data.sales.onlineBordereauxServices.map((svc, idx) => (
+                    <tr key={idx}>
+                      <td style={{ padding: theme.spacing.xs }}>{svc.name}</td>
+                      <td style={{ padding: theme.spacing.xs, textAlign: 'right' }}>{formatCurrency(svc.price)}</td>
+                      <td style={{ padding: theme.spacing.xs, textAlign: 'right' }}>{svc.quantity}</td>
+                      <td style={{ padding: theme.spacing.xs, textAlign: 'right' }}>{formatCurrency(svc.total)}</td>
+                    </tr>
+                  ))}
+                  {data.sales.boleteriaBordereauxServices.map((svc, idx) => (
+                    <tr key={`bole-${idx}`}>
+                      <td style={{ padding: theme.spacing.xs }}>{svc.name}</td>
+                      <td style={{ padding: theme.spacing.xs, textAlign: 'right' }}>{formatCurrency(svc.price)}</td>
+                      <td style={{ padding: theme.spacing.xs, textAlign: 'right' }}>{svc.quantity}</td>
+                      <td style={{ padding: theme.spacing.xs, textAlign: 'right' }}>{formatCurrency(svc.total)}</td>
+                    </tr>
+                  ))}
+                  <tr style={{ borderTop: `2px solid ${theme.colors.border}`, fontWeight: 'bold' }}>
+                    <td style={{ padding: theme.spacing.xs }} colSpan="2">TOTAL SERVICIOS BORDEREAUX</td>
+                    <td style={{ padding: theme.spacing.xs, textAlign: 'right' }}>
+                      {data.sales.onlineBordereauxServices.reduce((sum, s) => sum + s.quantity, 0) +
+                       data.sales.boleteriaBordereauxServices.reduce((sum, s) => sum + s.quantity, 0)}
+                    </td>
+                    <td style={{ padding: theme.spacing.xs, textAlign: 'right' }}>
+                      {formatCurrency(
+                        data.sales.onlineBordereauxServices.reduce((sum, s) => sum + s.total, 0) +
+                        data.sales.boleteriaBordereauxServices.reduce((sum, s) => sum + s.total, 0)
+                      )}
+                    </td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+          )}
+
+          {/* NETO 2 */}
+          {data.neto2 && (
+            <div style={{ marginBottom: theme.spacing.lg, padding: theme.spacing.md, background: '#f3f4f6', borderRadius: theme.borderRadius.md }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', fontSize: theme.typography.h3, fontWeight: 'bold' }}>
+                <span>NETO 2 (NETO 1 + Servicios):</span>
+                <span>{formatCurrency(data.neto2)}</span>
+              </div>
+            </div>
+          )}
 
           {/* Contrato */}
           <div style={{ marginBottom: theme.spacing.lg }}>
@@ -629,22 +826,25 @@ export default function BordereauxModal({ showId, onClose }) {
                       <>
                         <input
                           type="number"
-                          value={theaterPercentage}
+                          value={Math.round(theaterPercentage)}
                           onChange={(e) => {
-                            const val = parseFloat(e.target.value) || 0;
+                            const val = parseInt(e.target.value) || 0;
                             setTheaterPercentage(val);
                             setUserPercentage(100 - val);
                           }}
-                          style={{ width: '60px', padding: '4px', textAlign: 'center' }}
+                          style={{ width: '60px', padding: '4px', textAlign: 'center', MozAppearance: 'textfield', appearance: 'textfield' }}
                         />%
                       </>
                     ) : (
-                      `${data.contract.theater_percentage}%`
+                      `${Math.round(data.contract.theater_percentage)}%`
                     )}
                   </td>
-                  <td style={{ padding: theme.spacing.xs }}>del NETO 1</td>
+                  <td style={{ padding: theme.spacing.xs }}>del NETO 2</td>
                   <td style={{ padding: theme.spacing.xs, textAlign: 'right' }}>
-                    {formatCurrency((parseFloat(data.deductions_a.neto1) * (theaterPercentage / 100)))}
+                    {(() => {
+                      const neto2 = parseFloat(data.neto2) || 0;
+                      return formatCurrency(neto2 * (theaterPercentage / 100));
+                    })()}
                   </td>
                 </tr>
                 <tr>
@@ -654,22 +854,25 @@ export default function BordereauxModal({ showId, onClose }) {
                       <>
                         <input
                           type="number"
-                          value={userPercentage}
+                          value={Math.round(userPercentage)}
                           onChange={(e) => {
-                            const val = parseFloat(e.target.value) || 0;
+                            const val = parseInt(e.target.value) || 0;
                             setUserPercentage(val);
                             setTheaterPercentage(100 - val);
                           }}
-                          style={{ width: '60px', padding: '4px', textAlign: 'center' }}
+                          style={{ width: '60px', padding: '4px', textAlign: 'center', MozAppearance: 'textfield', appearance: 'textfield' }}
                         />%
                       </>
                     ) : (
-                      `${data.contract.user_percentage}%`
+                      `${Math.round(data.contract.user_percentage)}%`
                     )}
                   </td>
-                  <td style={{ padding: theme.spacing.xs }}>del NETO 1</td>
+                  <td style={{ padding: theme.spacing.xs }}>del NETO 2</td>
                   <td style={{ padding: theme.spacing.xs, textAlign: 'right' }}>
-                    {formatCurrency((parseFloat(data.deductions_a.neto1) * (userPercentage / 100)))}
+                    {(() => {
+                      const neto2 = parseFloat(data.neto2) || 0;
+                      return formatCurrency(neto2 * (userPercentage / 100));
+                    })()}
                   </td>
                 </tr>
               </tbody>
@@ -705,7 +908,7 @@ export default function BordereauxModal({ showId, onClose }) {
                             type="number"
                             value={ded.amount}
                             onChange={(e) => updateDeductionB(idx, 'amount', parseFloat(e.target.value) || 0)}
-                            style={{ width: '120px', padding: '4px', textAlign: 'right' }}
+                            style={{ width: '120px', padding: '4px', textAlign: 'right', MozAppearance: 'textfield', appearance: 'textfield' }}
                           />
                         </td>
                         <td style={{ padding: theme.spacing.xs, textAlign: 'center' }}>
@@ -745,21 +948,45 @@ export default function BordereauxModal({ showId, onClose }) {
 
           {/* Liquidación Final */}
           <div style={{ padding: theme.spacing.md, background: theme.colors.primaryLight, borderRadius: theme.borderRadius.md }}>
-            <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: theme.spacing.xs, fontSize: theme.typography.body, fontWeight: 'bold' }}>
-              <span>TOTAL A LIQUIDAR AL USUARIO (EFECTIVO):</span>
-              <span>{formatCurrency(data.liquidacion.user_cash)}</span>
-            </div>
-            <div style={{ fontSize: theme.typography.tiny, color: theme.colors.textSecondary, marginBottom: theme.spacing.sm }}>
-              (Recaudado Boletería - % Teatro - Deducciones B)
-            </div>
-            
-            <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: theme.spacing.xs, fontSize: theme.typography.body, fontWeight: 'bold' }}>
-              <span>TOTAL A LIQUIDAR AL USUARIO (TRANSFERENCIA):</span>
-              <span>{formatCurrency(data.liquidacion.user_transfer)}</span>
-            </div>
-            <div style={{ fontSize: theme.typography.tiny, color: theme.colors.textSecondary }}>
-              Recaudado por venta online mediante plataforma
-            </div>
+            {(() => {
+              // Calcular valores en tiempo real considerando deducciones editadas
+              const bruto = parseFloat(data.recaudacion.bruto) || 0;
+              
+              // Calcular total deducciones A (considerando tipo % o fijo)
+              const currentDeductionsA = editMode ? deductionsA : (data.deductions_a?.items || []);
+              const totalDeductionsA = currentDeductionsA.reduce((sum, ded) => {
+                if (ded.type === 'fixed') {
+                  return sum + (parseFloat(ded.fixedAmount) || 0);
+                }
+                return sum + (bruto * ((parseFloat(ded.percentage) || 0) / 100));
+              }, 0);
+              
+              // NETO 1 = Bruto - Deducciones A
+              const neto1 = bruto - totalDeductionsA;
+
+              // NETO 2 = NETO 1 + Servicios
+              const neto2 = parseFloat(data.neto2) || neto1;
+
+              // Calcular total deducciones B
+              const currentDeductionsB = editMode ? deductionsB : (data.deductions_b?.items || []);
+              const totalDeductionsB = currentDeductionsB.reduce((sum, ded) => sum + (parseFloat(ded.amount) || 0), 0);
+
+              // Porcentajes del contrato
+              const currentUserPercentage = editMode ? userPercentage : (data.contract?.user_percentage || 0);
+
+              // Parte del usuario del NETO 2
+              const userShare = neto2 * (currentUserPercentage / 100);
+              
+              // Total a liquidar = parte del usuario - deducciones B
+              const userTotal = Math.max(0, userShare - totalDeductionsB);
+              
+              return (
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', fontSize: theme.typography.h4, fontWeight: 'bold' }}>
+                  <span>TOTAL A LIQUIDAR AL USUARIO:</span>
+                  <span>{formatCurrency(userTotal)}</span>
+                </div>
+              );
+            })()}
           </div>
 
           {/* Firmas */}

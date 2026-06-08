@@ -17,10 +17,14 @@ export default function Discounts({ shows }) {
   const [editingDiscount, setEditingDiscount] = useState(null);
   const [formData, setFormData] = useState({
     code: '',
+    alias: '',
     show_id: '',
     type: 'percentage',
     value: '',
     usage_limit: '',
+    min_seats: '',
+    max_seats: '',
+    require_even: false,
     active: true
   });
 
@@ -49,10 +53,14 @@ export default function Discounts({ shows }) {
   const resetForm = () => {
     setFormData({
       code: '',
+      alias: '',
       show_id: '',
       type: 'percentage',
       value: '',
       usage_limit: '',
+      min_seats: '',
+      max_seats: '',
+      require_even: false,
       active: true
     });
     setEditingDiscount(null);
@@ -77,16 +85,26 @@ export default function Discounts({ shows }) {
     }
 
     if (formData.type === 'percentage' && (formData.value <= 0 || formData.value > 100)) {
-      setError('El porcentaje debe estar entre 1 y 100');
+      setError('El porcentaje debe estar entre 0.01 y 100');
+      return;
+    }
+
+    // Validate max_seats >= min_seats
+    if (formData.min_seats && formData.max_seats && parseInt(formData.max_seats) < parseInt(formData.min_seats)) {
+      setError('El máximo de localidades no puede ser menor al mínimo');
       return;
     }
 
     const payload = {
       code: formData.code.trim(),
+      alias: formData.alias ? formData.alias.trim() : null,
       show_id: formData.show_id || null,
       type: formData.type,
       value: formData.value ? parseFloat(formData.value) : null,
       usage_limit: formData.usage_limit ? parseInt(formData.usage_limit) : null,
+      min_seats: formData.min_seats ? parseInt(formData.min_seats) : null,
+      max_seats: formData.max_seats ? parseInt(formData.max_seats) : null,
+      require_even: formData.require_even,
       active: formData.active
     };
 
@@ -121,10 +139,14 @@ export default function Discounts({ shows }) {
     setEditingDiscount(discount);
     setFormData({
       code: discount.code,
+      alias: discount.alias || '',
       show_id: discount.show_id || '',
       type: discount.type,
       value: discount.value || '',
       usage_limit: discount.usage_limit || '',
+      min_seats: discount.min_seats || '',
+      max_seats: discount.max_seats || '',
+      require_even: !!discount.require_even,
       active: discount.active
     });
     setShowForm(true);
@@ -193,7 +215,7 @@ export default function Discounts({ shows }) {
         marginBottom: theme.spacing.lg 
       }}>
         <div>
-          <h2 style={{ margin: 0, color: theme.colors.textPrimary }}>🎫 Cupones y Descuentos</h2>
+          <h2 style={{ margin: 0, color: theme.colors.textPrimary }}> Cupones y Descuentos</h2>
           <p style={{ color: theme.colors.textSecondary, fontSize: theme.typography.small, marginTop: theme.spacing.xs }}>
             Gestión de códigos promocionales
           </p>
@@ -203,7 +225,7 @@ export default function Discounts({ shows }) {
             variant="primary"
             onClick={() => setShowForm(true)}
           >
-            ➕ Nuevo Cupón
+             Nuevo Cupón
           </Button>
         )}
       </div>
@@ -270,6 +292,34 @@ export default function Discounts({ shows }) {
                 />
                 <small style={{ fontSize: theme.typography.tiny, color: theme.colors.textMuted }}>
                   Será convertido a mayúsculas
+                </small>
+              </div>
+
+              {/* Alias */}
+              <div>
+                <label style={{ 
+                  display: 'block', 
+                  marginBottom: theme.spacing.xs,
+                  fontWeight: theme.typography.semibold,
+                  fontSize: theme.typography.small
+                }}>
+                  Alias (nombre visible)
+                </label>
+                <input
+                  type="text"
+                  value={formData.alias}
+                  onChange={(e) => setFormData({ ...formData, alias: e.target.value })}
+                  placeholder="ej: Promo 2x1 Verano"
+                  style={{
+                    width: '100%',
+                    padding: theme.spacing.sm,
+                    border: `1px solid ${theme.colors.border}`,
+                    borderRadius: theme.borderRadius.md,
+                    fontSize: theme.typography.body
+                  }}
+                />
+                <small style={{ fontSize: theme.typography.tiny, color: theme.colors.textMuted }}>
+                  Se mostrará al usuario en lugar del código real
                 </small>
               </div>
 
@@ -347,9 +397,9 @@ export default function Discounts({ shows }) {
                     value={formData.value}
                     onChange={(e) => setFormData({ ...formData, value: e.target.value })}
                     placeholder={formData.type === 'percentage' ? '20' : '1000'}
-                    min={formData.type === 'percentage' ? '1' : '0'}
+                    min={formData.type === 'percentage' ? '0.01' : '0'}
                     max={formData.type === 'percentage' ? '100' : undefined}
-                    step={formData.type === 'percentage' ? '1' : '0.01'}
+                    step="any"
                     style={{
                       width: '100%',
                       padding: theme.spacing.sm,
@@ -360,7 +410,7 @@ export default function Discounts({ shows }) {
                     required
                   />
                   <small style={{ fontSize: theme.typography.tiny, color: theme.colors.textMuted }}>
-                    {formData.type === 'percentage' ? 'Entre 1 y 100' : 'Monto en pesos'}
+                    {formData.type === 'percentage' ? 'Entre 0.01 y 100 (admite decimales)' : 'Monto en pesos'}
                   </small>
                 </div>
               )}
@@ -391,6 +441,86 @@ export default function Discounts({ shows }) {
                 />
                 <small style={{ fontSize: theme.typography.tiny, color: theme.colors.textMuted }}>
                   Dejar vacío para ilimitado
+                </small>
+              </div>
+
+              {/* Mínimo de localidades */}
+              <div>
+                <label style={{ 
+                  display: 'block', 
+                  marginBottom: theme.spacing.xs,
+                  fontWeight: theme.typography.semibold,
+                  fontSize: theme.typography.small
+                }}>
+                  Mínimo de localidades
+                </label>
+                <input
+                  type="number"
+                  value={formData.min_seats}
+                  onChange={(e) => setFormData({ ...formData, min_seats: e.target.value })}
+                  placeholder="Sin mínimo"
+                  min="1"
+                  style={{
+                    width: '100%',
+                    padding: theme.spacing.sm,
+                    border: `1px solid ${theme.colors.border}`,
+                    borderRadius: theme.borderRadius.md,
+                    fontSize: theme.typography.body
+                  }}
+                />
+                <small style={{ fontSize: theme.typography.tiny, color: theme.colors.textMuted }}>
+                  Dejar vacío para no requerir mínimo. Butacas=1, Palcos Bajos=4, Palcos Altos=2, Pullman/General=1.
+                  {formData.type === 'fixed' && formData.min_seats && ' En monto fijo, el descuento se multiplica por cada múltiplo del mínimo alcanzado.'}
+                </small>
+              </div>
+
+              {/* Máximo de localidades */}
+              <div>
+                <label style={{ 
+                  display: 'block', 
+                  marginBottom: theme.spacing.xs,
+                  fontWeight: theme.typography.semibold,
+                  fontSize: theme.typography.small
+                }}>
+                  Máximo de localidades
+                </label>
+                <input
+                  type="number"
+                  value={formData.max_seats}
+                  onChange={(e) => setFormData({ ...formData, max_seats: e.target.value })}
+                  placeholder="Sin máximo"
+                  min="1"
+                  style={{
+                    width: '100%',
+                    padding: theme.spacing.sm,
+                    border: `1px solid ${theme.colors.border}`,
+                    borderRadius: theme.borderRadius.md,
+                    fontSize: theme.typography.body
+                  }}
+                />
+                <small style={{ fontSize: theme.typography.tiny, color: theme.colors.textMuted }}>
+                  Dejar vacío para no limitar. Misma lógica de conteo que el mínimo.
+                </small>
+              </div>
+
+              {/* Requiere selección par */}
+              <div style={{ display: 'flex', alignItems: 'center', paddingTop: theme.spacing.lg }}>
+                <label style={{ 
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: theme.spacing.xs,
+                  cursor: 'pointer'
+                }}>
+                  <input
+                    type="checkbox"
+                    checked={formData.require_even}
+                    onChange={(e) => setFormData({ ...formData, require_even: e.target.checked })}
+                    style={{ width: 18, height: 18, cursor: 'pointer' }}
+                  />
+                  <span style={{ fontWeight: theme.typography.semibold }}>Requiere selección par</span>
+                </label>
+                <small style={{ fontSize: theme.typography.tiny, color: theme.colors.textMuted, marginLeft: theme.spacing.sm }}>
+                  El comprador deberá seleccionar un número par de localidades
                 </small>
               </div>
 
@@ -469,6 +599,18 @@ export default function Discounts({ shows }) {
                     }}>
                       {discount.code}
                     </h3>
+                    {discount.alias && (
+                      <span style={{
+                        padding: `${theme.spacing.xs} ${theme.spacing.sm}`,
+                        background: '#ede9fe',
+                        color: '#6d28d9',
+                        borderRadius: theme.borderRadius.sm,
+                        fontSize: theme.typography.tiny,
+                        fontWeight: theme.typography.semibold
+                      }}>
+                        Alias: {discount.alias}
+                      </span>
+                    )}
                     <span style={{
                       padding: `${theme.spacing.xs} ${theme.spacing.sm}`,
                       background: discount.active ? '#d1fae5' : '#fee',
@@ -494,14 +636,33 @@ export default function Discounts({ shows }) {
                     gap: theme.spacing.md,
                     fontSize: theme.typography.small,
                     color: theme.colors.textSecondary,
-                    marginTop: theme.spacing.sm
+                    marginTop: theme.spacing.sm,
+                    flexWrap: 'wrap'
                   }}>
                     <span>
-                      📺 {discount.show ? discount.show.title : 'Todos los shows'}
+                       {discount.show ? discount.show.title : 'Todos los shows'}
                     </span>
                     <span>
-                      📊 Usos: {discount.used_count}{discount.usage_limit ? ` / ${discount.usage_limit}` : ' (ilimitado)'}
+                       Usos: {discount.used_count}{discount.usage_limit ? ` / ${discount.usage_limit}` : ' (ilimitado)'}
                     </span>
+                    {discount.min_seats && (
+                      <span> Mín: {discount.min_seats}</span>
+                    )}
+                    {discount.max_seats && (
+                      <span> Máx: {discount.max_seats}</span>
+                    )}
+                    {discount.require_even && (
+                      <span style={{
+                        padding: `${theme.spacing.xs} ${theme.spacing.sm}`,
+                        background: '#fef3c7',
+                        color: '#92400e',
+                        borderRadius: theme.borderRadius.sm,
+                        fontSize: theme.typography.tiny,
+                        fontWeight: theme.typography.semibold
+                      }}>
+                        Par requerido
+                      </span>
+                    )}
                   </div>
                 </div>
 
@@ -522,7 +683,7 @@ export default function Discounts({ shows }) {
                     }}
                     title={discount.active ? 'Desactivar' : 'Activar'}
                   >
-                    {discount.active ? '🔴' : '🟢'}
+                    {discount.active ? '' : ''}
                   </button>
                   <button
                     onClick={() => handleEdit(discount)}
@@ -536,7 +697,7 @@ export default function Discounts({ shows }) {
                     }}
                     title="Editar"
                   >
-                    ✏️
+                    
                   </button>
                   <button
                     onClick={() => handleDelete(discount.id)}
@@ -551,7 +712,7 @@ export default function Discounts({ shows }) {
                     title="Eliminar"
                     disabled={discount.used_count > 0}
                   >
-                    🗑️
+                    
                   </button>
                 </div>
               </div>

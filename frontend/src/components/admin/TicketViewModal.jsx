@@ -16,6 +16,12 @@ export default function TicketViewModal({ sale, tickets, onClose }) {
   const refundReason = sale?.refund_reason || null;
   const refundedAt = sale?.refunded_at ? new Date(sale.refunded_at) : null;
 
+  const handleReprintTickets = () => {
+    if (!sale?.id) return;
+    const printUrl = `/api/share/sale/${sale.id}?mode=print`;
+    window.open(printUrl, '_blank');
+  };
+
   const handleSendEmail = async () => {
     if (!email) {
       setError('Ingresá un email válido');
@@ -190,18 +196,18 @@ export default function TicketViewModal({ sale, tickets, onClose }) {
           {/* Tickets list */}
           {!isDetailsOnly && (
             <div style={{ marginBottom: 24 }}>
-              <h3 style={{ fontSize: 16, marginBottom: 12 }}>Entradas ({tickets.length})</h3>
+              <h3 style={{ fontSize: 16, marginBottom: 12 }}>Entradas ({tickets.filter(t => t.type !== 'service').length})</h3>
               <div style={{
                 border: '1px solid #e5e7eb',
                 borderRadius: 8,
                 overflow: 'hidden'
               }}>
-                {tickets.map((ticket, index) => (
+                {tickets.filter(t => t.type !== 'service').map((ticket, index) => (
                   <div
                     key={ticket.id || index}
                     style={{
                       padding: 12,
-                      borderBottom: index < tickets.length - 1 ? '1px solid #e5e7eb' : 'none',
+                      borderBottom: index < tickets.filter(t => t.type !== 'service').length - 1 ? '1px solid #e5e7eb' : 'none',
                       display: 'flex',
                       justifyContent: 'space-between',
                       alignItems: 'center'
@@ -222,6 +228,46 @@ export default function TicketViewModal({ sale, tickets, onClose }) {
             </div>
           )}
 
+          {/* Servicios adicionales */}
+          {(() => {
+            let serviceItems = sale?.service_items;
+            // Forzar parseo si viene como string
+            if (typeof serviceItems === 'string') {
+              try {
+                serviceItems = JSON.parse(serviceItems);
+              } catch { serviceItems = []; }
+            }
+            if (Array.isArray(serviceItems) && serviceItems.length > 0) {
+              return (
+                <div style={{ marginBottom: 24 }}>
+                  <h3 style={{ fontSize: 16, marginBottom: 12 }}>Servicios asociados</h3>
+                  <div style={{ border: '1px solid #e5e7eb', borderRadius: 8, overflow: 'hidden' }}>
+                    {serviceItems.map((svc, index) => (
+                      <div
+                        key={index}
+                        style={{
+                          padding: 12,
+                          borderBottom: index < serviceItems.length - 1 ? '1px solid #e5e7eb' : 'none',
+                          display: 'flex',
+                          justifyContent: 'space-between',
+                          alignItems: 'center'
+                        }}
+                      >
+                        <div style={{ fontWeight: 500 }}>
+                          {svc.name} ×{svc.quantity} (${Number(svc.price || 0).toLocaleString('es-AR')} c/u)
+                        </div>
+                        <div style={{ fontSize: 14, color: '#6b7280' }}>
+                          ${(Number(svc.price || 0) * Number(svc.quantity || 1)).toLocaleString('es-AR')}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              );
+            }
+            return null;
+          })()}
+
           {/* Resend form */}
           {!isDetailsOnly && (
             <div style={{
@@ -231,6 +277,16 @@ export default function TicketViewModal({ sale, tickets, onClose }) {
               border: '1px solid #3b82f6'
             }}>
               <h3 style={{ fontSize: 16, marginTop: 0, marginBottom: 16 }}>Reenviar Entradas</h3>
+
+              <div style={{ marginBottom: 16 }}>
+                <Button
+                  onClick={handleReprintTickets}
+                  variant="secondary"
+                  style={{ minWidth: 180 }}
+                >
+                  Reimprimir entradas
+                </Button>
+              </div>
 
               {/* Email */}
               <div style={{ marginBottom: 16 }}>

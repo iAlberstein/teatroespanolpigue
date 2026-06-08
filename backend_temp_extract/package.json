@@ -1,0 +1,40 @@
+{
+  "name": "tep-backend",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "nodemon src/index.js",
+    "start": "node src/index.js",
+    "seed": "node src/scripts/seed.js",
+    "reseed": "node src/scripts/reseed.js",
+    "add-sessions": "node src/scripts/addSessions.js",
+    "check-db": "node src/scripts/checkDatabase.js",
+    "create-boleteria": "node src/scripts/createBoleteriaUser.js",
+    "migrate": "node src/scripts/runMigration.js",
+    "add-columns": "node add-missing-columns.js",
+    "send-reminders": "node src/scripts/sendReminders.js",
+    "fix-qr-column": "node src/scripts/fixQRColumn.js",
+    "regen-qr": "node src/scripts/regenerateQRs.js",
+    "lint": "echo 'No linter configured'"
+  },
+  "dependencies": {
+    "bcrypt": "5.1.1",
+    "cors": "2.8.5",
+    "dayjs": "1.11.13",
+    "dotenv": "16.4.5",
+    "express": "4.19.2",
+    "jsonwebtoken": "9.0.2",
+    "mercadopago": "^2.9.0",
+    "mysql2": "3.11.3",
+    "nodemailer": "^7.0.10",
+    "pdfkit": "^0.15.0",
+    "qrcode": "^1.5.4",
+    "sequelize": "6.37.3",
+    "socket.io": "4.7.5",
+    "uuid": "9.0.1"
+  },
+  "devDependencies": {
+    "nodemon": "3.1.7"
+  }
+}

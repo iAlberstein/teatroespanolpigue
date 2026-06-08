@@ -71,7 +71,7 @@ export default function NotificationSettings() {
 
   return (
     <div>
-      <h2 style={{ marginBottom: 24 }}>⚙️ Configuración de Notificaciones</h2>
+      <h2 style={{ marginBottom: 24 }}> Configuración de Notificaciones</h2>
 
       {/* SMTP Status */}
       <div style={{
@@ -91,7 +91,7 @@ export default function NotificationSettings() {
         }} />
         <div>
           <div style={{ fontWeight: 600, marginBottom: 4 }}>
-            {settings.smtp_configured ? '✓ SMTP Configurado' : '⚠️ SMTP No Configurado'}
+            {settings.smtp_configured ? ' SMTP Configurado' : ' SMTP No Configurado'}
           </div>
           <div style={{ fontSize: 14 }}>
             {settings.smtp_configured 
@@ -110,7 +110,7 @@ export default function NotificationSettings() {
         border: '1px solid #3b82f6'
       }}>
         <h3 style={{ marginTop: 0, marginBottom: 12, fontSize: 16 }}>
-          📖 Instrucciones de Configuración
+           Instrucciones de Configuración
         </h3>
         <div style={{ fontSize: 14, lineHeight: 1.6 }}>
           <p style={{ margin: '0 0 12px 0' }}>
@@ -240,7 +240,7 @@ ADMIN_NOTIFICATION_EMAILS=admin1@mail.com,admin2@mail.com`}
           }}>
             <div>
               <div style={{ fontWeight: 600, marginBottom: 4 }}>
-                📧 Email de Confirmación
+                 Email de Confirmación
               </div>
               <div style={{ fontSize: 13, color: '#6b7280' }}>
                 Se envía al cliente después de cada compra (online o boletería)
@@ -268,7 +268,7 @@ ADMIN_NOTIFICATION_EMAILS=admin1@mail.com,admin2@mail.com`}
           }}>
             <div>
               <div style={{ fontWeight: 600, marginBottom: 4 }}>
-                ⏰ Email de Recordatorio
+                Email de Recordatorio
               </div>
               <div style={{ fontSize: 13, color: '#6b7280' }}>
                 Se envía 24 horas antes de la función (ejecutar: npm run send-reminders)
@@ -296,7 +296,7 @@ ADMIN_NOTIFICATION_EMAILS=admin1@mail.com,admin2@mail.com`}
           }}>
             <div>
               <div style={{ fontWeight: 600, marginBottom: 4 }}>
-                👥 Notificación a Administradores
+                 Notificación a Administradores
               </div>
               <div style={{ fontSize: 13, color: '#6b7280' }}>
                 Se envía a los admins después de cada venta
@@ -324,7 +324,7 @@ ADMIN_NOTIFICATION_EMAILS=admin1@mail.com,admin2@mail.com`}
         marginBottom: 24,
         border: '1px solid #e5e7eb'
       }}>
-        <h3 style={{ marginTop: 0, marginBottom: 16 }}>⏰ Automatización de Recordatorios</h3>
+        <h3 style={{ marginTop: 0, marginBottom: 16 }}>Automatización de Recordatorios</h3>
         
         <p style={{ fontSize: 14, color: '#6b7280', marginBottom: 16 }}>
           Para enviar recordatorios automáticamente, configurá un cron job en el servidor:

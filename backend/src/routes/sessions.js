@@ -23,20 +23,53 @@ router.get('/:id/availability', async (req, res) => {
   const soldSeats = io.soldSeats || new Map();
   const soldPalcos = io.soldPalcos || new Map();
   const pullmanSold = io.pullmanSold || new Map();
+  
+  // Get blocked seats from memory or database
+  const blockedSeats = io.blockedSeats || new Map();
+  const blockedPalcos = io.blockedPalcos || new Map();
+  const blockedGeneral = io.blockedGeneral || new Map();
 
   const seatMap = seatHolds.get(sessionId) || new Map();
   const palcoMap = palcoHolds.get(sessionId) || new Map();
   const pull = pullmanState.get(sessionId) || { capacity: 92, heldBySocket: new Map() };
   const totalHeld = Array.from(pull.heldBySocket?.values?.() || []).reduce((a,b)=>a+b,0);
   const soldCount = pullmanSold.get(sessionId) || 0;
-  const available = Math.max(0, (pull.capacity || 92) - totalHeld - soldCount);
+  const blockedGeneralCount = blockedGeneral.get(sessionId) || 0;
+  const available = Math.max(0, (pull.capacity || 92) - totalHeld - soldCount - blockedGeneralCount);
+  
+  // Helper to get guestId from hold (now stored directly in hold structure)
+  const getHoldGuestId = (hold) => {
+    if (!hold) return null;
+    // New structure: { socketId, guestId, userId }
+    if (typeof hold === 'object' && hold.guestId) return hold.guestId;
+    // Legacy: just socketId - try to get from socket
+    const socketId = typeof hold === 'string' ? hold : hold.socketId;
+    const socket = io.sockets?.sockets?.get(socketId);
+    return socket?.data?.guestId || null;
+  };
+  
+  // Helper to get socketId from hold (handles both old and new structure)
+  const getHoldSocketId = (hold) => {
+    if (!hold) return null;
+    return typeof hold === 'string' ? hold : hold.socketId;
+  };
 
   // Load pricing from session (with fallback to show)
-  let pricing = {
-    platea_general: 5000,
-    palcos_bajos: 10000,
-    palcos_altos: 8000,
-    pullman: 3000
+  let pricing = null;
+  
+  // Helper to parse pricing_json (handles string or object)
+  const parsePricing = (pricingData) => {
+    if (!pricingData) return null;
+    if (typeof pricingData === 'string') {
+      try {
+        const parsed = JSON.parse(pricingData);
+        return (parsed && typeof parsed === 'object' && Object.keys(parsed).length > 0) ? parsed : null;
+      } catch { return null; }
+    }
+    if (typeof pricingData === 'object' && Object.keys(pricingData).length > 0) {
+      return pricingData;
+    }
+    return null;
   };
   
   try {
@@ -46,27 +79,96 @@ router.get('/:id/availability', async (req, res) => {
     });
     
     if (session) {
-      // Priority 1: Session-specific pricing
-      if (session.pricing_json && Object.keys(session.pricing_json).length > 0) {
-        pricing = { ...pricing, ...session.pricing_json };
+      // Priority 1: Session-specific pricing (override)
+      pricing = parsePricing(session.pricing_json);
+      // Priority 2: Show default pricing (base)
+      if (!pricing && session.show) {
+        pricing = parsePricing(session.show.pricing_json);
       }
-      // Priority 2: Show default pricing
-      else if (session.show && session.show.pricing_json) {
-        pricing = { ...pricing, ...session.show.pricing_json };
-      }
+    }
+    
+    if (!pricing) {
+      console.error('[SESSIONS] No pricing found for session:', sessionId);
+      return res.status(500).json({ error: 'pricing_not_configured', message: 'Precios no configurados para esta sesión' });
     }
   } catch (err) {
     console.error('[SESSIONS] Error loading pricing:', err);
+    return res.status(500).json({ error: 'internal_error' });
   }
 
   res.json({
-    heldSeats: Array.from(seatMap.entries()).map(([seatId, by]) => ({ seatId, by })),
-    heldPalcos: Array.from(palcoMap.entries()).map(([palco, by]) => ({ palco, by })),
+    heldSeats: Array.from(seatMap.entries()).map(([seatId, hold]) => ({ 
+      seatId, 
+      by: getHoldSocketId(hold),
+      guestId: getHoldGuestId(hold) 
+    })),
+    heldPalcos: Array.from(palcoMap.entries()).map(([palco, hold]) => ({ 
+      palco, 
+      by: getHoldSocketId(hold),
+      guestId: getHoldGuestId(hold)
+    })),
     soldSeats: Array.from(soldSeats.get(sessionId) || []),
     soldPalcos: Array.from(soldPalcos.get(sessionId) || []),
-    pullman: { capacity: pull.capacity || 92, available, sold: soldCount },
+    blockedSeats: Array.from(blockedSeats.get(sessionId) || []),
+    blockedPalcos: Array.from(blockedPalcos.get(sessionId) || []),
+    blockedGeneral: blockedGeneralCount,
+    pullman: { capacity: pull.capacity || 92, available, sold: soldCount, blocked: blockedGeneralCount },
     pricing  // Include pricing in response
   });
+});
+
+// Get general admission availability for non-numbered venues
+router.get('/:id/general-admission-availability', async (req, res) => {
+  try {
+    const sessionId = req.params.id;
+    const { sessions: Session, shows: Show, tickets: Ticket } = sequelize.models;
+    
+    // Get session and show info
+    const session = await Session.findByPk(sessionId, {
+      include: [{ model: Show, as: 'show' }]
+    });
+    
+    if (!session) {
+      return res.status(404).json({ error: 'session_not_found', message: 'Sesión no encontrada' });
+    }
+    
+    // Check if this is a general admission venue
+    if (session.show.venue_type === 'sala_principal') {
+      return res.status(400).json({ 
+        error: 'invalid_venue_type', 
+        message: 'Esta sesión no es de entrada general' 
+      });
+    }
+    
+    // Get capacity (from session override or show default)
+    const capacity = session.capacity_override || session.show.general_capacity;
+    
+    if (!capacity) {
+      return res.status(500).json({ 
+        error: 'capacity_not_configured', 
+        message: 'Capacidad no configurada para esta sesión' 
+      });
+    }
+    
+    // Count sold tickets for this session
+    const soldCount = await Ticket.count({
+      where: {
+        session_id: sessionId,
+        status: 'sold'
+      }
+    });
+    
+    const available = Math.max(0, capacity - soldCount);
+    
+    res.json({
+      capacity,
+      sold: soldCount,
+      available
+    });
+  } catch (error) {
+    console.error('[SESSIONS] Error getting general admission availability:', error);
+    res.status(500).json({ error: 'internal_error', message: 'Error al obtener disponibilidad' });
+  }
 });
 
 // Mark items as sold (dev/test utility). Body: { seats?: string[], palcos?: string[], pullman?: number }
@@ -114,7 +216,7 @@ router.post('/', authenticateToken, requireRole('admin'), async (req, res) => {
   try {
     const Session = sequelize.models.sessions;
     const Show = sequelize.models.shows;
-    const { show_id, starts_at, capacity_override, pricing_json } = req.body;
+    const { show_id, starts_at, capacity_override, pricing_json, palcos_individual_seats } = req.body;
     
     if (!show_id || !starts_at) {
       return res.status(400).json({ 
@@ -139,13 +241,61 @@ router.post('/', authenticateToken, requireRole('admin'), async (req, res) => {
       starts_at: startsAt,
       ends_at: endsAt,
       capacity_override: capacity_override || null,
-      pricing_json: pricing_json || null  // Allow session-specific pricing
+      pricing_json: pricing_json || null,
+      palcos_individual_seats: palcos_individual_seats !== undefined ? palcos_individual_seats : null
     });
     
     res.status(201).json(session);
   } catch (error) {
     console.error('[SESSIONS] Error creating session:', error);
     res.status(500).json({ error: 'internal_error', message: 'Error al crear sesión' });
+  }
+});
+
+// Update a session (admin only)
+router.put('/:id', authenticateToken, requireRole('admin'), async (req, res) => {
+  try {
+    const Session = sequelize.models.sessions;
+    const Show = sequelize.models.shows;
+    const { starts_at, capacity_override, pricing_json, palcos_individual_seats } = req.body;
+    
+    const session = await Session.findByPk(req.params.id, {
+      include: [{ model: Show, as: 'show' }]
+    });
+    
+    if (!session) {
+      return res.status(404).json({ error: 'not_found', message: 'Sesión no encontrada' });
+    }
+    
+    // Build update object
+    const updateData = {};
+    
+    if (starts_at) {
+      const duration_minutes = session.show?.duration_minutes || 120;
+      const startsAt = new Date(starts_at);
+      const endsAt = new Date(startsAt.getTime() + duration_minutes * 60000);
+      updateData.starts_at = startsAt;
+      updateData.ends_at = endsAt;
+    }
+    
+    if (capacity_override !== undefined) {
+      updateData.capacity_override = capacity_override || null;
+    }
+    
+    if (pricing_json !== undefined) {
+      updateData.pricing_json = pricing_json || null;
+    }
+    
+    if (palcos_individual_seats !== undefined) {
+      updateData.palcos_individual_seats = palcos_individual_seats;
+    }
+    
+    await session.update(updateData);
+    
+    res.json(session);
+  } catch (error) {
+    console.error('[SESSIONS] Error updating session:', error);
+    res.status(500).json({ error: 'internal_error', message: 'Error al actualizar sesión' });
   }
 });
 

@@ -1,0 +1,41 @@
+# ===== Node =====
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-lock.yaml
+
+# ===== Environment Variables =====
+.env
+.env.local
+.env.production
+.env.development
+
+# ===== Logs =====
+logs/
+*.log
+log.txt
+
+# ===== Build =====
+dist/
+build/
+
+# ===== Editor =====
+.vscode/
+.idea/
+
+# ===== OS =====
+.DS_Store
+Thumbs.db
+
+# ===== Uploads =====
+uploads/
+public/uploads/
+
+# ===== Server Specific =====
+pm2.log
+pm2.pid
+
+# ===== Cache =====
+.cache/
+*.cache

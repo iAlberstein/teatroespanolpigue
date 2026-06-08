@@ -443,11 +443,135 @@ npm run preview    # sirve el build localmente
 
 ---
 
+## 📧 Configuración de Email
+
+### Variables de Entorno
+
+Agregar en `backend/.env`:
+
+```env
+EMAIL_HOST=smtp.gmail.com
+EMAIL_PORT=587
+EMAIL_USER=tu-email@gmail.com
+EMAIL_PASS=tu-app-password
+EMAIL_FROM=Teatro Español Pigüé <tu-email@gmail.com>
+ADMIN_NOTIFICATION_EMAILS=admin@example.com
+```
+
+### Configuración Gmail
+
+1. Ir a [Cuenta de Google](https://myaccount.google.com/)
+2. Seguridad → Verificación en 2 pasos (activar)
+3. Seguridad → Contraseñas de aplicaciones
+4. Crear contraseña para "Correo"
+5. Usar esa contraseña en `EMAIL_PASS`
+
+**⚠️ Importante:** NO usar contraseña normal de Gmail, siempre usar contraseña de aplicación.
+
+### Tipos de Emails
+
+- **Confirmación de compra**: Automático después de cada venta (online y boletería)
+- **Recordatorio 24h**: Script diario ejecutado con cron job
+- **Notificación a admin**: Automático en cada venta
+
+### Automatización de Recordatorios
+
+Configurar cron job para ejecutar diariamente:
+
+```bash
+crontab -e
+# Agregar línea (ejecuta a las 10:00 AM):
+0 10 * * * cd /path/to/backend && npm run send-reminders >> /var/log/teatro-reminders.log 2>&1
+```
+
+---
+
+## 🔐 Sistema de Autenticación
+
+### Roles y Permisos
+
+| Rol | Descripción | Permisos |
+|-----|-------------|----------|
+| `admin` | Administrador | Acceso total al sistema |
+| `boleteria` | Personal de venta | Boletería, validación, reportes, caja |
+| `productor` | Gestor de espectáculos | Reportes de sus shows |
+| `espectador` | Usuario general | Comprar entradas, ver perfil |
+| `premium` | Usuario premium | (a definir) |
+
+### Endpoints Principales
+
+- `POST /api/auth/register` - Registro de usuario
+- `POST /api/auth/login` - Login (devuelve JWT)
+- `GET /api/auth/me` - Obtener usuario actual
+
+### Middleware de Autenticación
+
+```javascript
+import { authenticateToken, requireRole } from '../middleware/auth.js';
+
+// Ruta protegida
+router.get('/admin', authenticateToken, requireRole('admin'), handler);
+
+// Ruta con autenticación opcional
+router.post('/reservations', optionalAuth, handler);
+```
+
+---
+
+## 🎫 Sistema de QR y Validación
+
+### Generación de QR
+
+- Cada ticket tiene un QR único generado con `qrcode` library
+- QR contiene: `ticket_id`, `session_id`, `user_id`, `type`, `seat_code`, `salt`, `timestamp`
+- Salt único previene duplicación
+- Alta corrección de errores (nivel H)
+
+### Validación de Entradas
+
+**Endpoint:** `POST /api/tickets/validate-tickets`
+
+**Flujo:**
+1. Personal escanea QR con `/validar` (html5-qrcode)
+2. Backend verifica datos del QR contra ticket en DB
+3. Valida estado (sold, validated, blocked)
+4. Soporta validación parcial para palcos y pullman (por capacidad)
+5. Registra validación con timestamp y validador
+
+**Casos especiales:**
+- Palcos: Validación parcial por persona (capacity_validated)
+- Pullman: Validación parcial por asiento
+- Ya validado: Retorna 409 con mensaje
+
+---
+
+## 🎨 Sistema de Diseño
+
+### Paleta de Colores
+
+- **Primary**: `#A78BFA` (Lavanda suave)
+- **Accent**: `#FCA5A5` (Rosa coral)
+- **Background**: `#FAFAFA`
+- **Surface**: `#FFFFFF`
+- **Text Primary**: `#1F2937`
+
+### Espaciado
+
+Sistema basado en múltiplos de 4px:
+- xs: 4px, sm: 8px, md: 16px, lg: 24px, xl: 32px
+
+### Tipografía
+
+- Font: Sistema nativo (-apple-system, BlinkMacSystemFont, Segoe UI, Roboto)
+- Tamaños: h1 (40px), h2 (32px), h3 (24px), body (16px), small (14px)
+
+---
+
 ## Notas de trabajo
 
 - Se recomienda crear un branch por feature (`feature/<nombre>`) y PR hacia `main`.
-- Documentar cambios relevantes en este README o en docs adicionales.
-- Mantener consistencia en nombres de rutas y contratos de API para facilitar futuras generaciones de código.
+- Documentar cambios relevantes en este README.
+- Mantener consistencia en nombres de rutas y contratos de API.
 
 Este README actúa como **referencia de arquitectura y flujos** para futuros desarrollos sobre el sistema de ticketing del Teatro Español Pigüé.
 

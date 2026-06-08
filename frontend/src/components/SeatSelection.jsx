@@ -18,6 +18,16 @@ import { TransformWrapper, TransformComponent } from 'react-zoom-pan-pinch';
  * - onSelectionChange: callback when selection changes
  * - sidebarContent: JSX element for sidebar
  */
+// Generate or retrieve a guest identifier for tracking across refreshes
+const getGuestId = () => {
+  let guestId = sessionStorage.getItem('guestSocketId');
+  if (!guestId) {
+    guestId = 'guest_' + Math.random().toString(36).substring(2, 15) + Date.now().toString(36);
+    sessionStorage.setItem('guestSocketId', guestId);
+  }
+  return guestId;
+};
+
 export default function SeatSelection({
   showId,
   sessionId,
@@ -29,6 +39,12 @@ export default function SeatSelection({
   const navigate = useNavigate();
   const socketRef = useRef(null);
   const gridContainerRef = useRef(null);
+  
+  // Guest identifier for tracking across refreshes
+  const guestId = !userId ? getGuestId() : null;
+  
+  // Socket connection state
+  const [socketConnected, setSocketConnected] = useState(false);
 
   // Seat selection state
   const [selectedSeatIds, setSelectedSeatIds] = useState(new Set());
@@ -44,19 +60,25 @@ export default function SeatSelection({
   const MAX_ZOOM = 2.6;
   const GRID_COLS = matrix[0].length;
 
-  // Sold and held state
+  // Sold, held, and blocked state
   const [soldSeatIds, setSoldSeatIds] = useState(new Set());
   const [soldPalcosLabels, setSoldPalcosLabels] = useState(new Set());
   const [heldByOtherSeatIds, setHeldByOtherSeatIds] = useState(new Set());
   const [heldByOtherPalcosLabels, setHeldByOtherPalcosLabels] = useState(new Set());
+  const [blockedSeatIds, setBlockedSeatIds] = useState(new Set());
+  const [blockedPalcosLabels, setBlockedPalcosLabels] = useState(new Set());
   
-  // Pricing state (loaded from backend)
+  // Pricing state (loaded from backend - no defaults, must come from session)
   const [pricing, setPricing] = useState({
-    platea_general: 5000,
-    palcos_bajos: 10000,
-    palcos_altos: 8000,
-    pullman: 3000
+    platea_general: 0,
+    palcos_bajos: 0,
+    palcos_altos: 0,
+    pullman: 0
   });
+
+  // Limit message state (for online purchases)
+  const [limitMessage, setLimitMessage] = useState(null);
+  const MAX_TICKETS = 10; // Maximum tickets per online purchase
 
   // Load availability immediately when session changes (don't wait for socket)
   useEffect(() => {
@@ -75,36 +97,42 @@ export default function SeatSelection({
     
     (async () => {
       try {
-        console.log(`[${mode.toUpperCase()}] Loading availability for session:`, sessionId);
         const r = await apiFetch(`/api/sessions/${sessionId}/availability`);
         if (!r.ok) return;
         const data = await r.json();
-        console.log(`[${mode.toUpperCase()}] Availability loaded:`, data);
         
         // Always set sold seats/palcos immediately (they don't depend on socket)
         setSoldSeatIds(new Set(data.soldSeats || []));
         setSoldPalcosLabels(new Set(data.soldPalcos || []));
         setPullmanAvailable(data.pullman?.available ?? 92);
         
+        // Set blocked seats/palcos
+        setBlockedSeatIds(new Set(data.blockedSeats || []));
+        setBlockedPalcosLabels(new Set(data.blockedPalcos || []));
+        
         // Set pricing if available
         if (data.pricing) {
           setPricing(data.pricing);
         }
         
-        // Filter held items by socket ID if available
+        // Filter held items by socket ID or guest ID
         const myId = socketRef.current?.id;
-        if (myId) {
-          const otherHeldSeats = new Set((data.heldSeats || []).filter(x => x && x.by !== myId).map(x => x.seatId));
-          const otherHeldPalcos = new Set((data.heldPalcos || []).filter(x => x && x.by !== myId).map(x => x.palco));
-          setHeldByOtherSeatIds(otherHeldSeats);
-          setHeldByOtherPalcosLabels(otherHeldPalcos);
-        } else {
-          // Socket not ready yet, show all holds (we'll filter later when socket connects)
-          const allHeldSeats = new Set((data.heldSeats || []).map(x => x.seatId));
-          const allHeldPalcos = new Set((data.heldPalcos || []).map(x => x.palco));
-          setHeldByOtherSeatIds(allHeldSeats);
-          setHeldByOtherPalcosLabels(allHeldPalcos);
-        }
+        const myGuestId = guestId;
+        
+        const isMyHold = (hold) => {
+          if (!hold) return false;
+          if (myId && hold.by === myId) return true;
+          if (myGuestId && hold.guestId === myGuestId) return true;
+          return false;
+        };
+        
+        const otherHeldSeats = new Set((data.heldSeats || []).filter(x => !isMyHold(x)).map(x => x.seatId));
+        const otherHeldPalcos = new Set((data.heldPalcos || []).filter(x => !isMyHold(x)).map(x => x.palco));
+        setHeldByOtherSeatIds(otherHeldSeats);
+        setHeldByOtherPalcosLabels(otherHeldPalcos);
+        
+        // Don't restore selections on page refresh - start fresh
+        // User requested clean slate behavior instead of unreliable restoration
       } catch (err) {
         console.error(`[${mode.toUpperCase()}] Error loading availability:`, err);
       }
@@ -119,18 +147,65 @@ export default function SeatSelection({
     setSelectedSeatIds(new Set());
     setSelectedPalcosLabels(new Set());
     setPullmanSelected(0);
+    setSocketConnected(false);
 
-    
     // Connect socket if not already connected
     if (!socketRef.current) {
-      socketRef.current = io(API_URL);
+      socketRef.current = io(API_URL, {
+        transports: ['websocket', 'polling'],
+        reconnection: true,
+        reconnectionAttempts: 10,
+        reconnectionDelay: 1000
+      });
     }
     
     const socket = socketRef.current;
     
-    // Join session room
-    socket.emit('join_session', { sessionId, userId });
-    console.log(`[${mode.toUpperCase()}] Joined session:`, sessionId);
+    // When socket connects, re-filter holds to exclude our own
+    const onConnect = async () => {
+      console.log('[SeatSelection] Socket connected with id:', socket.id);
+      setSocketConnected(true);
+      
+      // Join session room immediately on connect
+      // Include guestId for guests to help track across refreshes
+      socket.emit('join_session', { sessionId, userId, guestId });
+      
+      try {
+        const r = await apiFetch(`/api/sessions/${sessionId}/availability`);
+        if (!r.ok) return;
+        const data = await r.json();
+        
+        // Filter out our own holds (by socket ID or guest ID)
+        const myId = socket.id;
+        const myGuestId = guestId;
+        const isMyHold = (hold) => {
+          if (!hold) return false;
+          if (hold.by === myId) return true;
+          if (myGuestId && hold.guestId === myGuestId) return true;
+          return false;
+        };
+        
+        const otherHeldSeats = new Set((data.heldSeats || []).filter(x => !isMyHold(x)).map(x => x.seatId));
+        const otherHeldPalcos = new Set((data.heldPalcos || []).filter(x => !isMyHold(x)).map(x => x.palco));
+        setHeldByOtherSeatIds(otherHeldSeats);
+        setHeldByOtherPalcosLabels(otherHeldPalcos);
+      } catch (err) {
+        console.error('[SeatSelection] Error re-filtering holds:', err);
+      }
+    };
+    
+    const onDisconnect = (reason) => {
+      console.log('[SeatSelection] Socket disconnected:', reason);
+      setSocketConnected(false);
+    };
+    
+    socket.on('connect', onConnect);
+    socket.on('disconnect', onDisconnect);
+    
+    // If already connected, join immediately
+    if (socket.connected) {
+      onConnect();
+    }
     
     // Listen for seat holds from others
     const onSeatHeld = ({ seatId, by }) => {
@@ -139,10 +214,13 @@ export default function SeatSelection({
       }
     };
     
-    const onSeatReleased = ({ seatId }) => {
+    const onSeatReleased = ({ seatId, by, reason }) => {
+      console.log('[SeatSelection] seat_released event:', { seatId, by, reason });
       setHeldByOtherSeatIds(prev => {
         const updated = new Set(prev);
+        const wasHeld = updated.has(seatId);
         updated.delete(seatId);
+        console.log('[SeatSelection] Removed from holds:', seatId, 'wasHeld:', wasHeld);
         return updated;
       });
     };
@@ -153,10 +231,13 @@ export default function SeatSelection({
       }
     };
     
-    const onPalcoReleased = ({ palco }) => {
+    const onPalcoReleased = ({ palco, by, reason }) => {
+      console.log('[SeatSelection] palco_released event:', { palco, by, reason });
       setHeldByOtherPalcosLabels(prev => {
         const updated = new Set(prev);
+        const wasHeld = updated.has(palco);
         updated.delete(palco);
+        console.log('[SeatSelection] Removed palco from holds:', palco, 'wasHeld:', wasHeld);
         return updated;
       });
     };
@@ -203,6 +284,8 @@ export default function SeatSelection({
     socket.on('pullman_confirmed', onPullmanConfirmed);
     
     return () => {
+      socket.off('connect', onConnect);
+      socket.off('disconnect', onDisconnect);
       socket.off('seat_held', onSeatHeld);
       socket.off('seat_released', onSeatReleased);
       socket.off('palco_held', onPalcoHeld);
@@ -228,8 +311,30 @@ export default function SeatSelection({
 
   const allowHorizontalScroll = isDesktop; // horizontal scroll del contenedor lo maneja TransformWrapper
   const isBoxOffice = mode === 'boxoffice';
+  const isBlocking = mode === 'blocking';
   const isHorizontalLayout = isDesktop;
   const desktopScale = isBoxOffice ? 1 : 0.9;
+
+  // Calculate total tickets considering palco multipliers
+  const calculateTotalTickets = () => {
+    const regularSeats = selectedSeatIds.size;
+    let palcoTickets = 0;
+    for (const label of selectedPalcosLabels) {
+      if (/^PB/i.test(label)) {
+        palcoTickets += 4; // Palcos bajos = 4 entradas
+      } else if (/^PA/i.test(label)) {
+        palcoTickets += 2; // Palcos altos = 2 entradas
+      }
+    }
+    const pullmanTickets = pullmanSelected;
+    return regularSeats + palcoTickets + pullmanTickets;
+  };
+
+  // Show limit message with auto-clear
+  const showLimitMessage = () => {
+    setLimitMessage('Se permiten 10 localidades por compra');
+    setTimeout(() => setLimitMessage(null), 3000);
+  };
 
   // Notify parent when selection changes
   useEffect(() => {
@@ -240,23 +345,42 @@ export default function SeatSelection({
         pullmanSelected,
         clearSelection,
         socketRef,
-        pricing  // Include pricing in callback
+        pricing,
+        socketConnected
       });
     }
-  }, [selectedSeatIds, selectedPalcosLabels, pullmanSelected, pricing]);
+  }, [selectedSeatIds, selectedPalcosLabels, pullmanSelected, pricing, socketConnected]);
 
   const handleToggleSeat = ({ r, c, val, row }) => {
     const seatId = `${row || ''}${val}`;
     if (soldSeatIds.has(seatId)) return;
+    // In blocking mode, allow selecting blocked seats (for unblocking)
+    // In other modes, blocked seats should be treated as unavailable
+    if (mode !== 'blocking' && blockedSeatIds.has(seatId)) return;
+    if (heldByOtherSeatIds.has(seatId)) return; // Don't allow selecting seats held by others
     if (!socketRef.current || !sessionId) return;
-    
+
+    // Check if adding this seat would exceed the limit (only for online purchases, not blocking)
+    const isAdding = !selectedSeatIds.has(seatId);
+    if (!isBoxOffice && !isBlocking && isAdding) {
+      const currentTotal = calculateTotalTickets();
+      if (currentTotal >= MAX_TICKETS) {
+        showLimitMessage();
+        return;
+      }
+    }
+
+    // Warn if socket not connected
+    if (!socketConnected) {
+      console.warn('[SeatSelection] Socket not connected, selection may not sync');
+    }
+
     // Emit socket event for real-time sync
-    console.log(`[${mode.toUpperCase()}] Emitting seat_toggle:`, { sessionId, seatId });
     socketRef.current.emit('seat_toggle', {
       sessionId,
       seatId
     });
-    
+
     setSelectedSeatIds(prev => {
       const updated = new Set(prev);
       if (updated.has(seatId)) {
@@ -270,15 +394,33 @@ export default function SeatSelection({
 
   const handleTogglePalco = ({ label }) => {
     if (soldPalcosLabels.has(label)) return;
+    // In blocking mode, allow selecting blocked palcos (for unblocking)
+    if (mode !== 'blocking' && blockedPalcosLabels.has(label)) return;
+    if (heldByOtherPalcosLabels.has(label)) return; // Don't allow selecting palcos held by others
     if (!socketRef.current || !sessionId) return;
-    
+
+    // Check if adding this palco would exceed the limit (only for online purchases, not blocking)
+    const isAdding = !selectedPalcosLabels.has(label);
+    if (!isBoxOffice && !isBlocking && isAdding) {
+      const palcoTickets = /^PB/i.test(label) ? 4 : 2;
+      const currentTotal = calculateTotalTickets();
+      if (currentTotal + palcoTickets > MAX_TICKETS) {
+        showLimitMessage();
+        return;
+      }
+    }
+
+    // Warn if socket not connected
+    if (!socketConnected) {
+      console.warn('[SeatSelection] Socket not connected, selection may not sync');
+    }
+
     // Emit socket event for real-time sync
-    console.log(`[${mode.toUpperCase()}] Emitting palco_toggle:`, { sessionId, palco: label });
     socketRef.current.emit('palco_toggle', {
       sessionId,
       palco: label
     });
-    
+
     setSelectedPalcosLabels(prev => {
       const updated = new Set(prev);
       if (updated.has(label)) {
@@ -292,7 +434,16 @@ export default function SeatSelection({
 
   const handlePullmanChange = (delta) => {
     if (!socketRef.current || !sessionId) return;
-    
+
+    // Check if adding pullman tickets would exceed the limit (only for online purchases)
+    if (!isBoxOffice && delta > 0) {
+      const currentTotal = calculateTotalTickets();
+      if (currentTotal + delta > MAX_TICKETS) {
+        showLimitMessage();
+        return;
+      }
+    }
+
     // Emit socket event BEFORE updating state
     socketRef.current.emit('pullman_change', {
       sessionId,
@@ -300,33 +451,23 @@ export default function SeatSelection({
     });
   };
 
-  const clearSelection = () => {
-    // Release all holds via socket
-    if (socketRef.current && sessionId) {
-      // Release seats
-      for (const seatId of selectedSeatIds) {
-        socketRef.current.emit('seat_toggle', {
-          sessionId,
-          seatId
-        });
-      }
-      
-      // Release palcos
-      for (const palco of selectedPalcosLabels) {
-        socketRef.current.emit('palco_toggle', {
-          sessionId,
-          palco
-        });
-      }
+  const clearSelection = (skipSocketEmit = false) => {
+    // Release all holds via socket (unless skipSocketEmit is true)
+    if (!skipSocketEmit && socketRef.current && sessionId) {
+      // Use bulk clear events instead of individual toggles
+      socketRef.current.emit('seat_clear', { sessionId });
+      socketRef.current.emit('palco_clear', { sessionId });
       
       // Clear pullman
       if (pullmanSelected > 0) {
-        socketRef.current.emit('pullman_clear', {
-          sessionId
-        });
+        socketRef.current.emit('pullman_clear', { sessionId });
       }
     }
     
+    // Clear local selection state
+    setSelectedSeatIds(new Set());
+    setSelectedPalcosLabels(new Set());
+    setPullmanSelected(0);
   };
 
   if (!sessionId) {
@@ -450,15 +591,18 @@ export default function SeatSelection({
                     selectedSeatIds={selectedSeatIds}
                     heldByOtherSeatIds={heldByOtherSeatIds}
                     soldSeatIds={soldSeatIds}
+                    blockedSeatIds={blockedSeatIds}
                     selectedPalcosLabels={selectedPalcosLabels}
                     heldByOtherPalcosLabels={heldByOtherPalcosLabels}
                     soldPalcosLabels={soldPalcosLabels}
+                    blockedPalcosLabels={blockedPalcosLabels}
                     pullmanSelected={pullmanSelected}
                     pullmanAvailable={pullmanAvailable}
                     onPullmanChange={handlePullmanChange}
                     onToggleSeat={handleToggleSeat}
                     onTogglePalco={handleTogglePalco}
                     cellSize={BASE_CELL_SIZE}
+                    mode={mode}
                   />
                 </TransformComponent>
               </div>
@@ -482,6 +626,29 @@ export default function SeatSelection({
           </div>
         )}
       </div>
+
+      {/* Limit message notification */}
+      {limitMessage && (
+        <div
+          style={{
+            position: 'fixed',
+            bottom: 100,
+            left: '50%',
+            transform: 'translateX(-50%)',
+            background: '#dc2626',
+            color: 'white',
+            padding: '12px 24px',
+            borderRadius: 8,
+            fontSize: 14,
+            fontWeight: 500,
+            boxShadow: '0 4px 12px rgba(0,0,0,0.15)',
+            zIndex: 1000,
+            animation: 'fadeIn 0.2s ease-out'
+          }}
+        >
+          {limitMessage}
+        </div>
+      )}
     </div>
   );
 }

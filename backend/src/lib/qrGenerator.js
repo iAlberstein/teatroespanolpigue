@@ -24,13 +24,12 @@ export async function generateContainerQR(saleId, items) {
   });
 
   // Generate unique QR data for container
-  const timestamp = Date.now();
-  const random = crypto.randomBytes(8).toString('hex');
-  const qrData = `CONTAINER:${saleId}:${timestamp}:${random}`;
+  const random = crypto.randomBytes(4).toString('hex');
+  const qrData = `CONTAINER:${saleId}:${random}`;
   
   // Generate QR code image as base64
   const qrCode = await QRCode.toDataURL(qrData, {
-    errorCorrectionLevel: 'H',
+    errorCorrectionLevel: 'M',
     type: 'image/png',
     width: 300,
     margin: 2
@@ -51,12 +50,11 @@ export async function generateContainerQR(saleId, items) {
  * @returns {Promise<{qr_code: string, qr_data: string}>}
  */
 export async function generateIndividualQR(ticketId, seatCode, type) {
-  const timestamp = Date.now();
-  const random = crypto.randomBytes(6).toString('hex');
-  const qrData = `TICKET:${ticketId}:${seatCode || type}:${timestamp}:${random}`;
+  const random = crypto.randomBytes(3).toString('hex');
+  const qrData = `TICKET:${ticketId}:${random}`;
   
   const qrCode = await QRCode.toDataURL(qrData, {
-    errorCorrectionLevel: 'H',
+    errorCorrectionLevel: 'M',
     type: 'image/png',
     width: 250,
     margin: 2

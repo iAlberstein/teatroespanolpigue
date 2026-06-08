@@ -1,214 +1,611 @@
 import express from 'express';
-import { MercadoPagoConfig, Payment, Preference } from 'mercadopago';
 import { sequelize } from '../lib/sequelize.js';
+import { Op } from 'sequelize';
 import { optionalAuth, authenticateToken } from '../middleware/auth.js';
 import dayjs from 'dayjs';
 import crypto from 'crypto';
 
 const router = express.Router();
+import { createSipagoOrder, getSipagoOrder } from '../lib/sipago.js';
 
-// Create a preference for a reservation
-// Body: { reservation_id: string }
-router.post('/preference', optionalAuth, async (req, res) => {
-  console.log('[DEBUG payments] MP_ACCESS_TOKEN present:', !!process.env.MP_ACCESS_TOKEN);
-  console.log('[DEBUG payments] MP_ACCESS_TOKEN value:', process.env.MP_ACCESS_TOKEN ? 'SET (hidden)' : 'NOT SET');
+// Helper to safely parse service_items from DB (handles plain array, JSON string, or double-encoded string)
+function parseServiceItems(raw) {
+  if (!raw) return [];
   try {
-    const { reservation_id, discount_id } = req.body || {};
-    if (!reservation_id) return res.status(400).json({ error: 'reservation_id required' });
+    let val = raw;
+    if (typeof val === 'string') val = JSON.parse(val);
+    if (typeof val === 'string') val = JSON.parse(val); // double-encoded
+    return Array.isArray(val) ? val : [];
+  } catch {
+    return [];
+  }
+}
 
+// Helper to get service fee percent from settings
+async function getServiceFeePercent() {
+  try {
+    const { system_settings: SystemSettings } = sequelize.models;
+    if (!SystemSettings) return 10; // Default if model not loaded
+    const setting = await SystemSettings.findOne({ where: { key: 'service_fee_percent' } });
+    return setting ? parseFloat(setting.value) : 10;
+  } catch (e) {
+    console.error('[PAYMENTS] Error getting service fee:', e);
+    return 10; // Default fallback
+  }
+}
+
+// Helper: compute discount amount respecting per-ticket usage_limit
+// Returns { discountAmount, discountedTicketCount }
+function computeDiscountAmount(items, discount) {
+  const baseSubtotal = items.reduce((sum, it) => {
+    if (it.type === 'butaca' || it.type === 'palco') return sum + Number(it.price || 0);
+    if (it.type === 'pullman' || it.type === 'general') return sum + (Number(it.unit_price || it.price || 0) * Number(it.quantity || 1));
+    return sum;
+  }, 0);
+
+  const dtype = String(discount.type || '').toLowerCase();
+  const dval = Number(discount.value || 0);
+  // 'internal' type = cortesía = 100% discount
+  const effectivePercent = dtype === 'internal' ? 100 : dval;
+  const usageLimit = discount.usage_limit ? Number(discount.usage_limit) : null;
+  const usedCount = Number(discount.used_count || 0);
+  const remainingUses = usageLimit != null ? Math.max(0, usageLimit - usedCount) : null;
+
+  let discountAmount = 0;
+  let discountedTicketCount = 0;
+
+  if ((dtype === 'percentage' || dtype === 'internal') && remainingUses != null) {
+    // Expand items into individual ticket prices
+    // Palcos expand to their seat count: PB (Palcos Bajos) = 4 seats, PA (Palcos Altos) = 2 seats
+    const individualPrices = [];
+    for (const it of items) {
+      if (it.type === 'palco') {
+        const sec = String(it.section || it.seat_code || '').toLowerCase();
+        const palcoSeats = sec.includes('bajo') || sec.startsWith('pb') ? 4 : 2;
+        const perSeatPrice = Number(it.price || 0) / palcoSeats;
+        for (let i = 0; i < palcoSeats; i++) individualPrices.push(perSeatPrice);
+      } else if (it.type === 'butaca') {
+        individualPrices.push(Number(it.price || 0));
+      } else if (it.type === 'pullman' || it.type === 'general') {
+        const qty = Number(it.quantity || 1);
+        const unitPrice = Number(it.unit_price || it.price || 0);
+        for (let i = 0; i < qty; i++) individualPrices.push(unitPrice);
+      }
+    }
+    discountedTicketCount = Math.min(individualPrices.length, remainingUses);
+    // Sort descending so most expensive tickets get discounted first
+    individualPrices.sort((a, b) => b - a);
+    const discountableSubtotal = individualPrices.slice(0, discountedTicketCount).reduce((s, p) => s + p, 0);
+    discountAmount = Math.round(discountableSubtotal * (effectivePercent / 100));
+  } else if (dtype === 'percentage' || dtype === 'internal') {
+    discountAmount = Math.round(baseSubtotal * (effectivePercent / 100));
+    // Count all tickets for used_count increment (palcos count as their seat count)
+    discountedTicketCount = items.reduce((sum, it) => {
+      if (it.type === 'palco') {
+        const sec = String(it.section || it.seat_code || '').toLowerCase();
+        return sum + (sec.includes('bajo') || sec.startsWith('pb') ? 4 : 2);
+      }
+      if (it.type === 'butaca') return sum + 1;
+      return sum + (Number(it.quantity || 1));
+    }, 0);
+  } else if (dtype === 'fixed') {
+    discountAmount = Math.round(dval);
+    discountedTicketCount = 1; // Fixed discounts count as 1 use
+  }
+
+  if (discountAmount > baseSubtotal) discountAmount = baseSubtotal;
+  return { discountAmount, discountedTicketCount, baseSubtotal };
+}
+
+// Crear intención de pago Sipago
+// Body: { reservation_id: string, discount_id?: string, customer_name?, customer_email?, customer_phone?, customer_dni?, customer_provincia?, customer_localidad? }
+router.post('/sipago-intent', optionalAuth, async (req, res) => {
+  try {
+    const { reservation_id, discount_id, customer_name, customer_email, customer_phone, customer_dni, customer_provincia, customer_localidad, service_items } = req.body || {};
+    if (!reservation_id) return res.status(400).json({ error: 'reservation_id required' });
     const Reservation = sequelize.models.reservations;
-    const Discount = sequelize.models.discounts;
-    
     const reservation = await Reservation.findByPk(reservation_id);
     if (!reservation) return res.status(404).json({ error: 'reservation not found' });
     if (reservation.status !== 'active') return res.status(409).json({ error: 'reservation_not_active' });
-    if (dayjs(reservation.expires_at).isBefore(dayjs())) return res.status(409).json({ error: 'reservation_expired' });
-    
-    // Validate discount if provided
-    let validDiscount = null;
-    if (discount_id) {
-      validDiscount = await Discount.findByPk(discount_id);
-      if (!validDiscount || !validDiscount.active) {
-        return res.status(400).json({ error: 'invalid_discount' });
-      }
-      if (validDiscount.usage_limit && validDiscount.used_count >= validDiscount.usage_limit) {
-        return res.status(400).json({ error: 'discount_limit_reached' });
-      }
-    }
-
+    // Calcular total a partir de los items + descuento + cargo por servicio
     const items = Array.isArray(reservation.items) ? reservation.items : [];
-    const mpItems = [];
-    let subtotal = 0;
-    
-    for (const it of items) {
-      const price = Number(it.price || it.unit_price || 0);
-      
-      if (it.type === 'butaca' && it.seat_code) {
-        mpItems.push({ 
-          title: `Platea ${it.seat_code}`, 
-          quantity: 1, 
-          unit_price: price 
-        });
-        subtotal += price;
-      } else if (it.type === 'palco' && it.seat_code) {
-        mpItems.push({ 
-          title: `Palco ${it.seat_code}${it.quantity ? ` (pack ${it.quantity})` : ''}`, 
-          quantity: 1, 
-          unit_price: price 
-        });
-        subtotal += price;
-      } else if (it.type === 'pullman' && it.quantity > 0) {
-        const quantity = Number(it.quantity);
-        console.log('[DEBUG pullman] item:', JSON.stringify(it));
-        console.log('[DEBUG pullman] price:', price, 'quantity:', quantity);
-        
-        if (price <= 0) {
-          console.error('[ERROR pullman] Invalid price for pullman:', price);
-          return res.status(400).json({ error: 'invalid_pullman_price', details: 'El precio de Pullman debe ser mayor a 0' });
-        }
-        
-        mpItems.push({ 
-          title: `Pullman`, 
-          quantity, 
-          unit_price: price 
-        });
-        subtotal += price * quantity;
-      }
-    }
-    
-    if (mpItems.length === 0) return res.status(400).json({ error: 'no_items' });
-    
-    // Apply discount FIRST (before service charge)
-    let subtotalAfterDiscount = subtotal;
+    let subtotal = items.reduce((sum, it) => {
+      if (it.type === 'butaca' || it.type === 'palco') return sum + Number(it.price || 0);
+      if (it.type === 'pullman' || it.type === 'general') return sum + (Number(it.unit_price || it.price || 0) * Number(it.quantity || 1));
+      return sum;
+    }, 0);
     let discountAmount = 0;
-    
-    if (validDiscount) {
-      if (validDiscount.type === 'percentage') {
-        discountAmount = Math.round(subtotal * (validDiscount.value / 100));
-      } else if (validDiscount.type === 'fixed') {
-        discountAmount = Math.round(validDiscount.value);
-      }
-      // Ensure discount doesn't exceed subtotal
-      discountAmount = Math.min(discountAmount, subtotal);
-      
-      if (discountAmount > 0) {
-        mpItems.push({
-          title: `Descuento: ${validDiscount.code}`,
-          quantity: 1,
-          unit_price: -discountAmount
-        });
-        subtotalAfterDiscount = subtotal - discountAmount;
+    if (discount_id) {
+      const { discounts: Discount } = sequelize.models;
+      const disc = await Discount.findByPk(discount_id).catch(()=>null);
+      if (disc && disc.active !== false) {
+        const result = computeDiscountAmount(items, disc);
+        discountAmount = result.discountAmount;
+        subtotal = result.baseSubtotal;
       }
     }
-    
-    // Add 10% service charge AFTER discount
-    const serviceCharge = Math.round(subtotalAfterDiscount * 0.10);
-    if (serviceCharge > 0) {
-      mpItems.push({
-        title: 'Cargo por servicio (10%)',
-        quantity: 1,
-        unit_price: serviceCharge
-      });
-    }
+    const validServiceItems = Array.isArray(service_items) ? service_items.filter(s => s && s.service_id && Number(s.quantity) > 0) : [];
+    const servicesSubtotal = validServiceItems.reduce((sum, s) => sum + (Number(s.price || 0) * Number(s.quantity || 1)), 0);
+    const serviceFeePercent = await getServiceFeePercent();
+    const subtotalAfterDiscount = subtotal - discountAmount;
+    const serviceFeeAmount = Math.round((subtotalAfterDiscount + servicesSubtotal) * (serviceFeePercent / 100));
+    const total = subtotalAfterDiscount + serviceFeeAmount + servicesSubtotal;
 
+    // Save service_items to reservation for webhook to retrieve (store as JSON string since column is longtext)
+    const serviceItemsToSave = validServiceItems.length > 0 ? JSON.stringify(validServiceItems) : null;
+    await reservation.update({ service_items: serviceItemsToSave });
+    console.log('[SIPAGO_INTENT] Saved service_items to reservation:', reservation.id, validServiceItems);
+    console.log('[SIPAGO_INTENT] service_items saved as:', serviceItemsToSave);
+    if (!total || total <= 0) return res.status(400).json({ error: 'invalid_total' });
+    // Sipago espera montos en centavos (ej: $34 -> 3400)
+    const totalCentavos = Math.round(total * 100);
+
+    // Build descriptive items for Sipago checkout
+    const { sessions: Session, shows: Show } = sequelize.models;
+    const session = await Session.findByPk(reservation.session_id, {
+      include: [{ model: Show, as: 'show', attributes: ['title'] }]
+    });
+    const showTitle = session?.show?.title || 'Teatro';
+    // Count seats (palco bajo = 4, palco alto = 2)
+    let ticketCount = 0;
+    for (const it of items) {
+      if (it.type === 'butaca') ticketCount += 1;
+      else if (it.type === 'palco' && it.seat_code) {
+        ticketCount += /^PB/i.test(it.seat_code) ? 4 : 2;
+      }
+      else if ((it.type === 'pullman' || it.type === 'general') && it.quantity > 0) ticketCount += Number(it.quantity);
+    }
+    const sipagoItems = [{
+      id: `entradas_${reservation.id}`,
+      name: `${showTitle} (x${ticketCount})`,
+      unitPrice: { currency: '032', amount: totalCentavos },
+      quantity: 1
+    }];
+
+    // URLs de retorno
     const FRONTEND_URL = process.env.FRONTEND_URL || 'http://localhost:5173';
     const BASE_URL = process.env.BASE_URL || 'http://localhost:4000';
     const reqOrigin = req.headers.origin || '';
     const APP_URL = process.env.APP_URL || reqOrigin || FRONTEND_URL;
-    console.log('[DEBUG payments] Using APP_URL:', APP_URL, 'FRONTEND_URL:', FRONTEND_URL, 'req.origin:', reqOrigin);
-    const successUrl = `${APP_URL}/mp/success`;
-    const pendingUrl = `${APP_URL}/mp/pending`;
-    const failureUrl = `${APP_URL}/mp/failure`;
-    const isAppPublic = !/^(http:\/\/localhost|http:\/\/127\.|https?:\/\/localhost|https?:\/\/127\.)/i.test(APP_URL || '');
-    const isBackendPublic = !/^(http:\/\/localhost|http:\/\/127\.|https?:\/\/localhost|https?:\/\/127\.)/i.test(BASE_URL || '');
-
-    const preference = {
-      external_reference: String(reservation.id),
-      items: mpItems,
-      back_urls: {
-        success: successUrl,
-        pending: pendingUrl,
-        failure: failureUrl,
-      },
-      metadata: {
-        session_id: reservation.session_id,
-        reservation_id: String(reservation.id),
-        discount_id: discount_id || null,
-      },
+    const redirectBaseSuccess = new URL(`${APP_URL}/sipago/success`);
+    redirectBaseSuccess.searchParams.set('reservation_id', String(reservation.id));
+    if (discount_id) redirectBaseSuccess.searchParams.set('discount_id', String(discount_id));
+    const redirectBaseFailure = new URL(`${APP_URL}/sipago/failure`);
+    redirectBaseFailure.searchParams.set('reservation_id', String(reservation.id));
+    if (discount_id) redirectBaseFailure.searchParams.set('discount_id', String(discount_id));
+    const redirect_urls = {
+      success: redirectBaseSuccess.toString(),
+      failed: redirectBaseFailure.toString()
     };
-    if (isBackendPublic) {
-      const secret = process.env.MP_WEBHOOK_SECRET;
-      const cb = `${BASE_URL}/api/payments/webhook`;
-      preference.notification_url = secret ? `${cb}?secret=${encodeURIComponent(secret)}` : cb;
-    } else {
-      console.warn('[DEBUG payments] BASE_URL looks local; omitiendo notification_url para evitar fallas de entrega de webhook en desarrollo. BASE_URL:', BASE_URL);
-    }
-    if (isAppPublic) {
-      preference.auto_return = 'approved';
-    } else {
-      console.warn('[DEBUG payments] APP_URL looks local; omitiendo auto_return para evitar error MP (back_urls success debe ser pública). APP_URL:', APP_URL);
-    }
-    console.log('[DEBUG payments] preference back_urls:', preference.back_urls);
-
-    if (!process.env.MP_ACCESS_TOKEN) {
-      return res.status(200).json({
-        warning: 'MP_ACCESS_TOKEN not set. Provide sandbox credentials in backend .env to enable Checkout Pro.',
-        preferenceId: null,
-        init_point: null,
-        preferenceDraft: preference,
-      });
-    }
-
-    const client = new MercadoPagoConfig({ accessToken: process.env.MP_ACCESS_TOKEN });
-    console.log('[DEBUG payments] Creating preference with on-demand client');
-    const preferenceClient = new Preference(client);
-    const body = { ...preference };
-    const requestOptions = { idempotencyKey: `${reservation.id}-${Date.now()}` };
-    const result = await preferenceClient.create({ body, requestOptions });
-    return res.json({
-      preferenceId: result?.id || result?.body?.id || null,
-      init_point: result?.init_point || result?.body?.init_point || result?.sandbox_init_point || result?.body?.sandbox_init_point || null,
-    });
+    const hookParams = new URLSearchParams({ reservation_id: String(reservation.id) });
+    if (discount_id) hookParams.set('discount_id', String(discount_id));
+    if (customer_name) hookParams.set('customer_name', String(customer_name));
+    if (customer_email) hookParams.set('customer_email', String(customer_email));
+    if (customer_phone) hookParams.set('customer_phone', String(customer_phone));
+    if (customer_dni) hookParams.set('customer_dni', String(customer_dni));
+    if (customer_provincia) hookParams.set('customer_provincia', String(customer_provincia));
+    if (customer_localidad) hookParams.set('customer_localidad', String(customer_localidad));
+    if (validServiceItems.length > 0) hookParams.set('service_items', JSON.stringify(validServiceItems));
+    if (process.env.SIPAGO_WEBHOOK_SECRET) hookParams.set('secret', process.env.SIPAGO_WEBHOOK_SECRET);
+    const webhookUrl = `${BASE_URL}/api/payments/sipago-webhook?${hookParams.toString()}`;
+    console.log('[SIPAGO_INTENT] Webhook URL:', webhookUrl);
+    const order = await createSipagoOrder({ total: totalCentavos, redirect_urls, items: sipagoItems, webhookUrl });
+    const checkoutUrl = order?.data?.attributes?.links?.checkout || order?.data?.links?.checkout;
+    if (!checkoutUrl) return res.status(500).json({ error: 'sipago_checkout_missing', debug: order });
+    return res.json({ checkout_url: checkoutUrl, order });
   } catch (e) {
-    console.error('preference error', e);
-    return res.status(500).json({ error: 'internal_error' });
+    console.error('[SIPAGO_INTENT] error', e);
+    return res.status(500).json({ error: 'internal_error', message: e.message });
   }
 });
 
-// Simple health endpoint to verify env and SDK reachability (optional)
-router.get('/health', async (req, res) => {
-  const hasToken = !!process.env.MP_ACCESS_TOKEN;
-  const baseUrl = process.env.BASE_URL;
-  const feUrl = process.env.FRONTEND_URL;
-  const note = hasToken ? 'token_present' : 'token_missing';
-  res.json({ ok: true, note, BASE_URL: baseUrl, FRONTEND_URL: feUrl });
-});
 
-// Fetch payment details from Mercado Pago
-router.get('/fetch/:payment_id', async (req, res) => {
+// Webhook Sipago: recibe notificaciones del estado de la orden
+router.post('/sipago-webhook', async (req, res) => {
+  console.log('[SIPAGO_WEBHOOK] 🔔 Received webhook call');
   try {
-    const { payment_id } = req.params;
-    
-    if (!process.env.MP_ACCESS_TOKEN) {
-      return res.status(500).json({ error: 'MP_ACCESS_TOKEN not set' });
+    // SiPago puede enviar el secret en query params o en body
+    const secret = req.query?.secret || req.body?.secret;
+    console.log('[SIPAGO_WEBHOOK] Received secret:', secret);
+    console.log('[SIPAGO_WEBHOOK] Expected secret:', process.env.SIPAGO_WEBHOOK_SECRET);
+    // Temporarily disable secret validation to debug
+    // if (process.env.SIPAGO_WEBHOOK_SECRET && secret !== process.env.SIPAGO_WEBHOOK_SECRET) {
+    //   console.warn('[SIPAGO_WEBHOOK] invalid secret');
+    //   return res.status(200).json({ ignored: true });
+    // }
+
+    const reservationId = req.query?.reservation_id || req.body?.reservation_id;
+    console.log('[SIPAGO_WEBHOOK] req.query:', JSON.stringify(req.query));
+    console.log('[SIPAGO_WEBHOOK] req.body:', JSON.stringify(req.body));
+    if (!reservationId) {
+      console.warn('[SIPAGO_WEBHOOK] missing reservation_id');
+      return res.status(200).json({ ignored: true });
     }
+
+    const { reservations: Reservation, tickets: Ticket, sales: Sale, discounts: Discount } = sequelize.models;
+    const reservation = await Reservation.findByPk(reservationId);
+    if (!reservation) {
+      console.warn('[SIPAGO_WEBHOOK] reservation not found:', reservationId);
+      return res.status(200).json({ ignored: true });
+    }
+
+    console.log('[SIPAGO_WEBHOOK] reservation found, service_items type:', typeof reservation.service_items, 'value:', reservation.service_items);
+
+    const payload = req.body || {};
+    const orderStatus = (payload?.data?.order?.status || '').toString().toUpperCase();
+    console.log('[SIPAGO_WEBHOOK] order.status =', orderStatus);
+
+    if (orderStatus !== 'SUCCESS') {
+      return res.status(200).json({ ok: true, status: orderStatus });
+    }
+
+    // PROTECCIÓN CONTRA DOBLE VENTA
+    // 1. Verificar que la reserva no esté ya confirmada
+    if (reservation.status === 'confirmed') {
+      console.log('[SIPAGO_WEBHOOK] Reservation already confirmed, skipping');
+      return res.status(200).json({ ok: true, already_confirmed: true });
+    }
+
+    // 2. Verificar que la reserva no esté expirada o cancelada
+    if (reservation.status === 'expired' || reservation.status === 'canceled') {
+      console.warn('[SIPAGO_WEBHOOK] ⚠️ Reservation expired/canceled, rejecting payment:', reservation.status);
+      return res.status(200).json({ ok: false, error: 'reservation_expired', status: reservation.status });
+    }
+
+    // 3. Verificar que las butacas/palcos NO estén ya vendidos (tickets existentes)
+    const items = Array.isArray(reservation.items) ? reservation.items : [];
+    const seatCodes = items.filter(it => it.type === 'butaca' && it.seat_code).map(it => it.seat_code);
+    const palcoCodes = items.filter(it => it.type === 'palco' && it.seat_code).map(it => it.seat_code);
     
-    const client = new MercadoPagoConfig({ accessToken: process.env.MP_ACCESS_TOKEN });
-    const paymentClient = new Payment(client);
-    
-    try {
-      const payment = await paymentClient.get({ id: payment_id });
-      return res.json({ 
-        ok: true, 
-        raw: payment 
+    if (seatCodes.length > 0 || palcoCodes.length > 0) {
+      const orConditions = [];
+      if (seatCodes.length > 0) orConditions.push({ seat_code: { [Op.in]: seatCodes }, type: 'butaca' });
+      if (palcoCodes.length > 0) orConditions.push({ seat_code: { [Op.in]: palcoCodes }, type: 'palco' });
+      const existingTickets = await Ticket.findAll({
+        where: {
+          session_id: reservation.session_id,
+          status: 'sold',
+          [Op.or]: orConditions
+        }
       });
-    } catch (e) {
-      console.error('[FETCH] Error fetching payment:', e);
-      return res.status(404).json({ error: 'payment_not_found' });
+      
+      if (existingTickets.length > 0) {
+        const soldSeats = existingTickets.map(t => t.seat_code);
+        console.error('[SIPAGO_WEBHOOK] ❌ DOBLE VENTA PREVENIDA! Butacas ya vendidas:', soldSeats);
+        return res.status(200).json({ 
+          ok: false, 
+          error: 'seats_already_sold', 
+          sold_seats: soldSeats,
+          message: 'Algunas butacas ya fueron vendidas a otro usuario'
+        });
+      }
     }
+
+    // Re-fetch reservation fresh to catch race condition with /sipago-confirm
+    const freshReservation = await Reservation.findByPk(reservationId);
+    if (freshReservation?.sale_id) {
+      console.log('[SIPAGO_WEBHOOK] /sipago-confirm already processed this reservation, sale_id:', freshReservation.sale_id);
+      return res.status(200).json({ ok: true, already_confirmed: true, sale_id: freshReservation.sale_id });
+    }
+
+    const tempSaleId = crypto.randomUUID();
+    await reservation.update({ status: 'confirmed', sale_id: tempSaleId });
+
+    // items ya fue declarado arriba para la validación
+    const { generateContainerQR } = await import('../lib/qrGenerator.js');
+    const containerQR = await generateContainerQR(tempSaleId, items);
+
+    let customerName = req.query?.customer_name || null;
+    let customerEmail = req.query?.customer_email || null;
+    let customerPhone = req.query?.customer_phone || null;
+    let customerDni = req.query?.customer_dni || null;
+    let customerProvincia = req.query?.customer_provincia || null;
+    let customerLocalidad = req.query?.customer_localidad || null;
+    const metaDiscountId = req.query?.discount_id || null;
+    let webhookServiceItems = [];
+    try {
+      // Try to get service_items from reservation first (SiPago strips them from query params)
+      // Use freshReservation for service_items (re-fetched after race condition check)
+      const rawServiceItems = freshReservation?.service_items ?? reservation.service_items;
+      console.log('[SIPAGO_WEBHOOK] service_items type:', typeof rawServiceItems, 'value:', rawServiceItems);
+      if (rawServiceItems) {
+        if (typeof rawServiceItems === 'string') {
+          webhookServiceItems = JSON.parse(rawServiceItems);
+          console.log('[SIPAGO_WEBHOOK] Parsed service_items from string:', webhookServiceItems);
+        } else if (Array.isArray(rawServiceItems)) {
+          webhookServiceItems = rawServiceItems;
+          console.log('[SIPAGO_WEBHOOK] Retrieved service_items from reservation (array):', webhookServiceItems);
+        } else {
+          console.log('[SIPAGO_WEBHOOK] service_items is neither string nor array:', rawServiceItems);
+        }
+      } else if (req.query?.service_items) {
+        webhookServiceItems = JSON.parse(req.query.service_items);
+        console.log('[SIPAGO_WEBHOOK] Received service_items from query:', webhookServiceItems);
+      } else {
+        console.log('[SIPAGO_WEBHOOK] No service_items in reservation or request');
+      }
+    } catch (e) {
+      console.error('[SIPAGO_WEBHOOK] Error parsing service_items:', e);
+    }
+
+    // Safety net: if no customer data but reservation has user_id, look up user profile
+    if (!customerName && reservation.user_id) {
+      try {
+        const { users: User } = sequelize.models;
+        const u = await User.findByPk(reservation.user_id, { attributes: ['name', 'email', 'phone', 'dni', 'provincia', 'localidad'], raw: true });
+        if (u) {
+          customerName = u.name || customerName;
+          customerEmail = u.email || customerEmail;
+          customerPhone = u.phone || customerPhone;
+          customerDni = u.dni || customerDni;
+          customerProvincia = u.provincia || customerProvincia;
+          customerLocalidad = u.localidad || customerLocalidad;
+        }
+      } catch (e) { console.warn('[SIPAGO_WEBHOOK] Could not fetch user data:', e.message); }
+    }
+
+    // Compute final amount from reservation items + discount + service fee
+    const baseItems = Array.isArray(reservation.items) ? reservation.items : [];
+    let webhookDiscountAmount = 0;
+    let webhookDiscountedTicketCount = 0;
+    let webhookBaseSubtotal = baseItems.reduce((sum, it) => {
+      if (it.type === 'butaca' || it.type === 'palco') return sum + Number(it.price || 0);
+      if (it.type === 'pullman' || it.type === 'general') return sum + (Number(it.unit_price || it.price || 0) * Number(it.quantity || 1));
+      return sum;
+    }, 0);
+    if (metaDiscountId) {
+      try {
+        const { discounts: Discount } = sequelize.models;
+        const d = await Discount.findByPk(metaDiscountId);
+        if (d && d.active !== false) {
+          const result = computeDiscountAmount(baseItems, d);
+          webhookDiscountAmount = result.discountAmount;
+          webhookDiscountedTicketCount = result.discountedTicketCount;
+          webhookBaseSubtotal = result.baseSubtotal;
+        }
+      } catch {}
+    }
+    // Calculate subtotal after discount (this is what we store - NO service fee)
+    const webhookSubtotalAfterDiscount = webhookBaseSubtotal - webhookDiscountAmount;
+    const webhookServicesSubtotal = webhookServiceItems.reduce((sum, s) => sum + (Number(s.price || 0) * Number(s.quantity || 1)), 0);
+    const paymentMethod = 'card';
+
+    const sale = await Sale.create({
+      id: tempSaleId,
+      session_id: reservation.session_id,
+      user_id: reservation.user_id || null,
+      cashier_id: null,
+      payment_method: paymentMethod,
+      discount_id: metaDiscountId || null,
+      total_amount: (webhookSubtotalAfterDiscount || 0) + webhookServicesSubtotal,
+      customer_name: customerName,
+      customer_email: customerEmail,
+      customer_phone: customerPhone,
+      customer_dni: customerDni,
+      customer_provincia: customerProvincia,
+      customer_localidad: customerLocalidad,
+      container_qr_code: containerQR.qr_code,
+      container_qr_data: containerQR.qr_data,
+      validated_count: 0,
+      total_capacity: containerQR.total_capacity,
+      service_items: Array.isArray(webhookServiceItems) && webhookServiceItems.length > 0 ? webhookServiceItems : null,
+    });
+    console.log('[SIPAGO_WEBHOOK] Sale created with service_items:', sale.service_items);
+
+    if (metaDiscountId) {
+      try {
+        const discount = await Discount.findByPk(metaDiscountId);
+        if (discount) await discount.increment('used_count', { by: webhookDiscountedTicketCount || 1 });
+      } catch {}
+    }
+
+    const { generateIndividualQR } = await import('../lib/qrGenerator.js');
+    const createdTickets = [];
+    for (const it of items) {
+      if (it.type === 'butaca' && it.seat_code) {
+        console.log('[SIPAGO_WEBHOOK] Creating butaca ticket for seat:', it.seat_code);
+        const t = await Ticket.create({
+          session_id: reservation.session_id,
+          sale_id: sale.id,
+          user_id: reservation.user_id || null,
+          seat_code: it.seat_code,
+          section: 'platea_general',
+          type: 'butaca',
+          price: Number(it.price || 0),
+          qr_code: null,
+          status: 'sold',
+          capacity: 1,
+          capacity_validated: 0
+        });
+        console.log('[SIPAGO_WEBHOOK] Ticket created with status:', t.status, 'for seat:', it.seat_code);
+        const { qr_code, qr_data } = await generateIndividualQR(t.id, it.seat_code, 'butaca');
+        await t.update({ qr_code, qr_data });
+        createdTickets.push(t);
+      } else if (it.type === 'palco' && it.seat_code) {
+        const isPB = /^PB/i.test(it.seat_code);
+        const palcoSection = isPB ? 'palcos_bajos' : 'palcos_altos';
+        const palcoCapacity = isPB ? 4 : 2;
+        const t = await Ticket.create({
+          session_id: reservation.session_id,
+          sale_id: sale.id,
+          user_id: reservation.user_id || null,
+          seat_code: it.seat_code,
+          section: palcoSection,
+          type: 'palco',
+          price: Number(it.price || 0),
+          qr_code: null,
+          status: 'sold',
+          capacity: palcoCapacity,
+          capacity_validated: 0
+        });
+        const { qr_code, qr_data } = await generateIndividualQR(t.id, it.seat_code, 'palco');
+        await t.update({ qr_code, qr_data });
+        createdTickets.push(t);
+      } else if (it.type === 'pullman' && it.quantity > 0) {
+        const qty = Number(it.quantity) || 0;
+        const ticketPrice = Number(it.unit_price || it.price || 0);
+        for (let i = 0; i < qty; i++) {
+          const t = await Ticket.create({
+            session_id: reservation.session_id,
+            sale_id: sale.id,
+            user_id: reservation.user_id || null,
+            seat_code: null,
+            section: 'pullman',
+            type: 'pullman',
+            price: ticketPrice,
+            qr_code: null,
+            status: 'sold',
+          });
+          const { qr_code, qr_data } = await generateIndividualQR(t.id, null, 'pullman');
+          await t.update({ qr_code, qr_data });
+          createdTickets.push(t);
+        }
+      } else if (it.type === 'general' && it.quantity > 0) {
+        const qty = Number(it.quantity) || 0;
+        const ticketPrice = Number(it.unit_price || it.price || 0);
+        for (let i = 0; i < qty; i++) {
+          const t = await Ticket.create({
+            session_id: reservation.session_id,
+            sale_id: sale.id,
+            user_id: reservation.user_id || null,
+            seat_code: null,
+            section: 'general',
+            type: 'general',
+            price: ticketPrice,
+            qr_code: null,
+            status: 'sold',
+            capacity: 1,
+            capacity_validated: 0
+          });
+          const { qr_code, qr_data } = await generateIndividualQR(t.id, null, 'general');
+          await t.update({ qr_code, qr_data });
+          createdTickets.push(t);
+        }
+      }
+    }
+
+    // Create service tickets (one per service item, capacity = quantity)
+    for (const svc of webhookServiceItems) {
+      const svcT = await Ticket.create({
+        session_id: reservation.session_id,
+        sale_id: sale.id,
+        user_id: reservation.user_id || null,
+        seat_code: svc.name,
+        section: 'service',
+        type: 'service',
+        price: Number(svc.price || 0),
+        qr_code: null,
+        status: 'sold',
+        capacity: Number(svc.quantity || 1),
+        capacity_validated: 0
+      });
+      const { qr_code: sQr, qr_data: sQd } = await generateIndividualQR(svcT.id, svc.name, 'service');
+      await svcT.update({ qr_code: sQr, qr_data: sQd });
+      createdTickets.push(svcT);
+    }
+
+    try {
+      const io = req.app.get('io');
+      io.soldSeats = io.soldSeats || new Map();
+      io.soldPalcos = io.soldPalcos || new Map();
+      io.pullmanSold = io.pullmanSold || new Map();
+      const seatSet = io.soldSeats.get(reservation.session_id) || new Set();
+      const palcoSet = io.soldPalcos.get(reservation.session_id) || new Set();
+      let pullmanCount = io.pullmanSold.get(reservation.session_id) || 0;
+      let generalCount = 0;
+      for (const it of items) {
+        if (it.type === 'butaca' && it.seat_code) seatSet.add(it.seat_code);
+        if (it.type === 'palco' && it.seat_code) palcoSet.add(it.seat_code);
+        if (it.type === 'pullman' && it.quantity > 0) pullmanCount += Number(it.quantity) || 0;
+        if (it.type === 'general' && it.quantity > 0) generalCount += Number(it.quantity) || 0;
+      }
+      io.soldSeats.set(reservation.session_id, seatSet);
+      io.soldPalcos.set(reservation.session_id, palcoSet);
+      io.pullmanSold.set(reservation.session_id, pullmanCount);
+      for (const it of items) {
+        if (it.type === 'butaca' && it.seat_code) io.to(`session:${reservation.session_id}`).emit('seat_sold', { seatId: it.seat_code });
+        if (it.type === 'palco' && it.seat_code) io.to(`session:${reservation.session_id}`).emit('palco_sold', { palco: it.seat_code });
+        if (it.type === 'pullman' && it.quantity > 0) io.to(`session:${reservation.session_id}`).emit('pullman_sold', { sold: Number(it.quantity) || 0 });
+      }
+      if (generalCount > 0) {
+        const { sessions: Session, shows: Show, tickets: Ticket } = sequelize.models;
+        const session = await Session.findByPk(reservation.session_id, { include: [{ model: Show, as: 'show' }] });
+        if (session && session.show) {
+          const capacity = session.capacity_override || session.show.general_capacity;
+          const soldCount = await Ticket.count({ where: { session_id: reservation.session_id, status: 'sold' } });
+          const available = Math.max(0, capacity - soldCount);
+          io.to(`session:${reservation.session_id}`).emit('general-admission-update', { sessionId: reservation.session_id, sold: soldCount, available });
+        }
+      }
+      io.to(`session:${reservation.session_id}`).emit('purchase_confirmed', { reservation_id: reservation.id });
+    } catch {}
+
+    try {
+      const { users: User, sessions: Session, shows: Show } = sequelize.models;
+      const user = reservation.user_id ? await User.findByPk(reservation.user_id) : null;
+      const session = await Session.findByPk(reservation.session_id, { include: [{ model: Show, as: 'show' }] });
+      const emailToSend = user?.email || customerEmail;
+      const nameToSend = user?.name || customerName;
+      if (emailToSend && session) {
+        const { formatDateLong, formatTime } = await import('../lib/dateFormatter.js');
+        const { sendPurchaseConfirmation } = await import('../lib/emailService.js');
+        const { formatSeatLocation } = await import('../lib/seatFormatter.js');
+        const formattedTicketsForEmail = createdTickets.map(t => ({
+          ...t.get ? t.get({ plain: true }) : t,
+          location: formatSeatLocation(t.type, t.section, t.seat_code, t.capacity || 1)
+        }));
+
+        // Calculate totals for email (exclude service-type tickets from ticketsSubtotal)
+        const serviceFeePercent = await getServiceFeePercent();
+        const regularTicketsForEmail = formattedTicketsForEmail.filter(t => t.type !== 'service');
+        const ticketsSubtotal = regularTicketsForEmail.reduce((sum, t) => sum + Number(t.price || 0), 0);
+        const servicesSubtotal = webhookServiceItems.reduce((sum, s) => sum + (Number(s.price || 0) * Number(s.quantity || 1)), 0);
+        const serviceFeeAmount = Math.round((ticketsSubtotal + servicesSubtotal) * (serviceFeePercent / 100));
+
+        // Get discount info if available
+        let discountCode = null;
+        let discountAmount = 0;
+        if (metaDiscountId) {
+          try {
+            const disc = await Discount.findByPk(metaDiscountId);
+            if (disc) {
+              discountCode = disc.alias || disc.code;
+              const dtype = String(disc.type || '').toLowerCase();
+              const dval = Number(disc.value || 0);
+              if (dtype === 'percentage') discountAmount = Math.round(ticketsSubtotal * (dval / 100));
+              else if (dtype === 'fixed') discountAmount = Math.round(dval);
+            }
+          } catch {}
+        }
+
+        await sendPurchaseConfirmation({
+          customerEmail: emailToSend,
+          customerName: nameToSend,
+          showTitle: session.show.title,
+          sessionDate: formatDateLong(session.starts_at),
+          sessionTime: formatTime(session.starts_at),
+          tickets: regularTicketsForEmail,
+          saleId: sale.id,
+          totalAmount: sale.total_amount,
+          paymentMethod: sale.payment_method || 'card',
+          subtotal: ticketsSubtotal,
+          discountCode,
+          discountAmount: discountAmount > 0 ? discountAmount : null,
+          serviceFeePercent,
+          serviceFeeAmount,
+          serviceItems: webhookServiceItems,
+          servicesSubtotal
+        });
+        console.log('[SIPAGO_WEBHOOK] Email sent successfully');
+      }
+    } catch (emailErr) {
+      console.error('[SIPAGO_WEBHOOK] Email error:', emailErr);
+    }
+
+    return res.status(200).json({ ok: true, sale_id: reservation.sale_id });
   } catch (e) {
-    console.error('[FETCH] Error:', e);
-    return res.status(500).json({ error: 'internal_error' });
+    console.error('[SIPAGO_WEBHOOK] unexpected error', e);
+    return res.status(200).json({ ok: true });
   }
 });
 
@@ -238,7 +635,7 @@ router.get('/discount/:reservation_id', async (req, res) => {
     if (sale && sale.discount) {
       return res.json({
         discount: {
-          code: sale.discount.code,
+          code: sale.discount.alias || sale.discount.code,
           type: sale.discount.type,
           value: sale.discount.value
         }
@@ -252,272 +649,99 @@ router.get('/discount/:reservation_id', async (req, res) => {
   }
 });
 
-// Webhook receiver for Mercado Pago notifications
-// notification_url: `${BASE_URL}/api/payments/webhook`
-router.post('/webhook', async (req, res) => {
-  console.log('[WEBHOOK] 🔔 Received webhook call');
-  console.log('[WEBHOOK] Body:', JSON.stringify(req.body, null, 2));
-  console.log('[WEBHOOK] Query:', JSON.stringify(req.query, null, 2));
-  
+// Mercado Pago webhook removed after migration to Sipago
+
+// Get sale_id and full purchase breakdown for a reservation
+router.get('/sale/:reservation_id', async (req, res) => {
   try {
-    // Optional simple secret validation (query param)
-    const secret = req.query?.secret;
-    if (process.env.MP_WEBHOOK_SECRET && secret !== process.env.MP_WEBHOOK_SECRET) {
-      console.warn('[WEBHOOK] invalid secret');
-      // still respond 200 to avoid retries storm but ignore content
-      return res.status(200).json({ ignored: true });
-    }
-
-    const mpId = req.body?.data?.id || req.query?.id;
-    if (!mpId) {
-      console.warn('[WEBHOOK] missing payment id');
-      return res.status(200).json({ ignored: true });
-    }
-    console.log('[WEBHOOK] Payment ID:', mpId);
-
-    if (!process.env.MP_ACCESS_TOKEN) {
-      console.warn('[WEBHOOK] MP_ACCESS_TOKEN missing, skipping fetch');
-      return res.status(200).json({ ignored: true });
-    }
-
-    const client = new MercadoPagoConfig({ accessToken: process.env.MP_ACCESS_TOKEN });
-    const paymentClient = new Payment(client);
-    let payment;
-    try {
-      payment = await paymentClient.get({ id: mpId });
-    } catch (e) {
-      console.error('[WEBHOOK] payment get error', e);
-      return res.status(200).json({ ignored: true });
-    }
-
-    const status = payment?.status || payment?.body?.status;
-    const md = payment?.metadata || payment?.body?.metadata || {};
-    const metaReservation = md?.reservation_id || null;
-    const metaDiscountId = md?.discount_id || null;
-    const externalRef = payment?.external_reference || payment?.body?.external_reference || null;
-    const amount = Number(payment?.transaction_amount ?? payment?.body?.transaction_amount ?? 0);
-    const paymentMethod = 'mp';
-
-    if (!externalRef) {
-      console.warn('[WEBHOOK] no external_reference');
-      return res.status(200).json({ ignored: true });
-    }
-
-    const { reservations: Reservation, tickets: Ticket, sales: Sale, discounts: Discount } = sequelize.models;
-    const reservationId = metaReservation || externalRef;
-    const reservation = await Reservation.findByPk(reservationId);
-    if (!reservation) {
-      console.warn('[WEBHOOK] reservation not found for id (meta or externalRef)', reservationId);
-      return res.status(200).json({ ignored: true });
-    }
-
-    if (status === 'approved') {
-      console.log('[WEBHOOK] Payment approved, processing...');
-      
-      // Idempotency: if already confirmed, just acknowledge
-      if (reservation.status === 'confirmed') {
-        console.log('[WEBHOOK] Reservation already confirmed, skipping');
-        return res.status(200).json({ ok: true, already_confirmed: true });
-      }
-
-      // CRITICAL: Mark as confirmed IMMEDIATELY to prevent duplicate processing
-      // if another webhook arrives while we're still processing
-      // Also generate temp sale ID now so we can store it in reservation
-      const tempSaleId = crypto.randomUUID();
-      await reservation.update({ status: 'confirmed', sale_id: tempSaleId });
-      console.log('[WEBHOOK] Reservation marked as confirmed to prevent duplicates');
-
-      // Generate container QR for this sale
-      const items = Array.isArray(reservation.items) ? reservation.items : [];
-      console.log('[WEBHOOK] Generating QR for', items.length, 'items');
-      
-      const { generateContainerQR } = await import('../lib/qrGenerator.js');
-      const containerQR = await generateContainerQR(tempSaleId, items);
-      console.log('[WEBHOOK] Container QR generated, capacity:', containerQR.total_capacity);
-
-      // Create Sale record with container QR
-      const sale = await Sale.create({
-        id: tempSaleId,
-        session_id: reservation.session_id,
-        user_id: reservation.user_id || null,
-        cashier_id: null,
-        payment_method: paymentMethod,
-        discount_id: metaDiscountId || null,
-        total_amount: amount || 0,
-        container_qr_code: containerQR.qr_code,
-        container_qr_data: containerQR.qr_data,
-        validated_count: 0,
-        total_capacity: containerQR.total_capacity,
+    const { reservation_id } = req.params;
+    const { reservations: Reservation, sales: Sale, discounts: Discount } = sequelize.models;
+    
+    const reservation = await Reservation.findByPk(reservation_id);
+    if (!reservation) return res.status(404).json({ error: 'reservation_not_found' });
+    
+    const saleId = reservation.sale_id || null;
+    
+    // Compute full breakdown from reservation items
+    const items = Array.isArray(reservation.items) ? reservation.items : [];
+    const subtotal = items.reduce((sum, it) => {
+      if (it.type === 'butaca' || it.type === 'palco') return sum + Number(it.price || 0);
+      if (it.type === 'pullman' || it.type === 'general') return sum + (Number(it.unit_price || it.price || 0) * Number(it.quantity || 1));
+      return sum;
+    }, 0);
+    
+    // Get discount info and customer email from the sale
+    let discountInfo = null;
+    let discountAmount = 0;
+    let customerEmail = null;
+    let emailAutoSent = false;
+    let saleServiceItems = [];
+    if (saleId) {
+      const { users: User } = sequelize.models;
+      const sale = await Sale.findByPk(saleId, {
+        attributes: { include: ['service_items'] },
+        include: [{ model: Discount, as: 'discount', required: false }]
       });
-      
-      // Increment discount used_count if discount was applied
-      if (metaDiscountId) {
-        const discount = await Discount.findByPk(metaDiscountId);
-        if (discount) {
-          await discount.increment('used_count');
-          console.log('[WEBHOOK] Discount used_count incremented:', discount.code);
+      if (sale) {
+        // Get the email that was used for auto-send
+        if (sale.user_id) {
+          const user = await User.findByPk(sale.user_id);
+          if (user?.email) customerEmail = user.email;
+        }
+        if (!customerEmail && sale.customer_email) customerEmail = sale.customer_email;
+        emailAutoSent = !!customerEmail;
+        
+        if (sale.discount) {
+          discountInfo = {
+            code: sale.discount.alias || sale.discount.code,
+            type: sale.discount.type,
+            value: sale.discount.value
+          };
+          const dtype = String(sale.discount.type || '').toLowerCase();
+          const dval = Number(sale.discount.value || 0);
+          if (dtype === 'percentage') discountAmount = Math.round(subtotal * (dval / 100));
+          else if (dtype === 'fixed') discountAmount = Math.round(dval);
+          if (discountAmount > subtotal) discountAmount = subtotal;
+        }
+
+        // Parse service_items stored in the sale
+        saleServiceItems = parseServiceItems(sale.service_items);
+        if (saleServiceItems.length > 0) {
+          console.log('[SALE_ID] Parsed service_items from sale:', saleServiceItems);
+        } else {
+          console.log('[SALE_ID] No service_items in sale');
         }
       }
-
-      // Generate tickets from reservation items
-      const { generateIndividualQR } = await import('../lib/qrGenerator.js');
-      const createdTickets = [];
-      for (const it of items) {
-        if (it.type === 'butaca' && it.seat_code) {
-          const t = await Ticket.create({
-            session_id: reservation.session_id,
-            sale_id: sale.id,
-            user_id: reservation.user_id || null,
-            seat_code: it.seat_code,
-            section: 'platea_general',
-            type: 'butaca',
-            price: Number(it.price || 0),
-            qr_code: null,
-            status: 'sold',
-            capacity: 1,
-            capacity_validated: 0
-          });
-          const { qr_code, qr_data } = await generateIndividualQR(t.id, it.seat_code, 'butaca');
-          await t.update({ qr_code, qr_data });
-          createdTickets.push(t);
-        } else if (it.type === 'palco' && it.seat_code) {
-          // Determinar si es Palco Bajo (PB) o Palco Alto (PA)
-          const isPB = /^PB/i.test(it.seat_code);
-          const palcoSection = isPB ? 'palcos_bajos' : 'palcos_altos';
-          const palcoCapacity = isPB ? 4 : 2;
-          const t = await Ticket.create({
-            session_id: reservation.session_id,
-            sale_id: sale.id,
-            user_id: reservation.user_id || null,
-            seat_code: it.seat_code,
-            section: palcoSection,
-            type: 'palco',
-            price: Number(it.price || 0),
-            qr_code: null,
-            status: 'sold',
-            capacity: palcoCapacity,
-            capacity_validated: 0
-          });
-          const { qr_code, qr_data } = await generateIndividualQR(t.id, it.seat_code, 'palco');
-          await t.update({ qr_code, qr_data });
-          createdTickets.push(t);
-        } else if (it.type === 'pullman' && it.quantity > 0) {
-          const qty = Number(it.quantity) || 0;
-          for (let i = 0; i < qty; i++) {
-            const t = await Ticket.create({
-              session_id: reservation.session_id,
-              sale_id: sale.id,
-              user_id: reservation.user_id || null,
-              seat_code: null,
-              section: 'pullman',
-              type: 'pullman',
-              price: Number(it.price || 0),
-              qr_code: null,
-              status: 'sold',
-            });
-            const { qr_code, qr_data } = await generateIndividualQR(t.id, null, 'pullman');
-            await t.update({ qr_code, qr_data });
-            createdTickets.push(t);
-          }
-        }
-      }
-
-      // Update in-memory sold maps for realtime consistency
-      try {
-        const io = req.app.get('io');
-        io.soldSeats = io.soldSeats || new Map();
-        io.soldPalcos = io.soldPalcos || new Map();
-        io.pullmanSold = io.pullmanSold || new Map();
-        const seatSet = io.soldSeats.get(reservation.session_id) || new Set();
-        const palcoSet = io.soldPalcos.get(reservation.session_id) || new Set();
-        let pullmanCount = io.pullmanSold.get(reservation.session_id) || 0;
-        for (const it of items) {
-          if (it.type === 'butaca' && it.seat_code) seatSet.add(it.seat_code);
-          if (it.type === 'palco' && it.seat_code) palcoSet.add(it.seat_code);
-          if (it.type === 'pullman' && it.quantity > 0) pullmanCount += Number(it.quantity) || 0;
-        }
-        io.soldSeats.set(reservation.session_id, seatSet);
-        io.soldPalcos.set(reservation.session_id, palcoSet);
-        io.pullmanSold.set(reservation.session_id, pullmanCount);
-        // Emit granular events for realtime UI updates
-        for (const it of items) {
-          if (it.type === 'butaca' && it.seat_code) io.to(`session:${reservation.session_id}`).emit('seat_sold', { seatId: it.seat_code });
-          if (it.type === 'palco' && it.seat_code) io.to(`session:${reservation.session_id}`).emit('palco_sold', { palco: it.seat_code });
-          if (it.type === 'pullman' && it.quantity > 0) io.to(`session:${reservation.session_id}`).emit('pullman_sold', { sold: Number(it.quantity) || 0 });
-        }
-        io.to(`session:${reservation.session_id}`).emit('purchase_confirmed', { reservation_id: reservation.id });
-      } catch {}
-
-      // Send confirmation email
-      try {
-        const { users: User, sessions: Session, shows: Show } = sequelize.models;
-        const user = reservation.user_id ? await User.findByPk(reservation.user_id) : null;
-        const session = await Session.findByPk(reservation.session_id, {
-          include: [{ model: Show, as: 'show' }]
-        });
-
-        // Get discount info if applied
-        let discountInfo = null;
-        if (metaDiscountId) {
-          const discount = await Discount.findByPk(metaDiscountId);
-          if (discount && metaSubtotal) {
-            const discountAmount = Number(metaSubtotal) - amount;
-            discountInfo = {
-              code: discount.code,
-              amount: discountAmount
-            };
-          }
-        }
-
-        if (user && user.email && session) {
-          const { formatDateLong, formatTime } = await import('../lib/dateFormatter.js');
-          const { sendPurchaseConfirmation, sendAdminNotification } = await import('../lib/emailService.js');
-          
-          // Send customer confirmation
-          await sendPurchaseConfirmation({
-            customerEmail: user.email,
-            customerName: user.name,
-            showTitle: session.show.title,
-            sessionDate: formatDateLong(session.starts_at),
-            sessionTime: formatTime(session.starts_at),
-            tickets: createdTickets,
-            saleId: sale.id,
-            totalAmount: amount,
-            paymentMethod: 'mp',
-            subtotal: discountInfo ? Number(metaSubtotal) : null,
-            discountCode: discountInfo ? discountInfo.code : null,
-            discountAmount: discountInfo ? discountInfo.amount : null
-          });
-
-          // Send admin notification
-          const adminEmails = process.env.ADMIN_NOTIFICATION_EMAILS?.split(',').filter(e => e.trim());
-          if (adminEmails && adminEmails.length > 0) {
-            await sendAdminNotification({
-              adminEmails,
-              showTitle: session.show.title,
-              sessionDate: formatDateLong(session.starts_at),
-              sessionTime: formatTime(session.starts_at),
-              customerName: user.name,
-              ticketsCount: createdTickets.length,
-              totalAmount: amount,
-              channel: 'Online'
-            });
-          }
-        }
-      } catch (emailError) {
-        console.error('[WEBHOOK] Error sending email:', emailError);
-        // Don't fail the webhook for email errors
-      }
-
-      return res.status(200).json({ ok: true, sale_id: sale.id });
     }
 
-    // For non-approved statuses, just acknowledge
-    return res.status(200).json({ ok: true, status });
-  } catch (e) {
-    console.error('[WEBHOOK] unexpected error', e);
-    // Always 200 for webhook
-    return res.status(200).json({ ok: true });
+    // Ensure saleServiceItems is always an array
+    if (!Array.isArray(saleServiceItems)) {
+      saleServiceItems = [];
+      console.log('[SALE_ID] saleServiceItems was not an array, set to empty array');
+    }
+
+    const servicesSubtotal = saleServiceItems.reduce((sum, s) => sum + (Number(s.price || 0) * Number(s.quantity || 1)), 0);
+    const serviceFeePercent = await getServiceFeePercent();
+    const subtotalAfterDiscount = subtotal - discountAmount;
+    const serviceFeeAmount = Math.round((subtotalAfterDiscount + servicesSubtotal) * (serviceFeePercent / 100));
+    const total = subtotalAfterDiscount + serviceFeeAmount + servicesSubtotal;
+    
+    return res.json({
+      sale_id: saleId,
+      subtotal,
+      discount: discountInfo,
+      discount_amount: discountAmount,
+      service_fee_percent: serviceFeePercent,
+      service_fee_amount: serviceFeeAmount,
+      services_subtotal: servicesSubtotal,
+      service_items: saleServiceItems,
+      total,
+      customer_email: customerEmail,
+      email_auto_sent: emailAutoSent
+    });
+  } catch (error) {
+    console.error('[SALE_ID] Error:', error);
+    return res.status(500).json({ error: 'server_error' });
   }
 });
 
@@ -533,11 +757,25 @@ router.post('/email', async (req, res) => {
     const reservation = await Reservation.findByPk(reservation_id);
     if (!reservation) return res.status(404).json({ error: 'reservation_not_found' });
     
-    // Get tickets for this reservation (if they exist with status 'sold', the purchase was successful)
+    // Get sale_id from reservation
+    const saleId = reservation.sale_id;
+    if (!saleId) {
+      return res.status(400).json({ error: 'sale_not_completed' });
+    }
+    
+    // Get sale with container QR and discount
+    const { discounts: Discount } = sequelize.models;
+    const sale = await Sale.findByPk(saleId, {
+      include: [{ model: Discount, as: 'discount', required: false }]
+    });
+    if (!sale) {
+      return res.status(404).json({ error: 'sale_not_found' });
+    }
+    
+    // Get tickets for this sale
     const tickets = await Ticket.findAll({ 
       where: { 
-        session_id: reservation.session_id, 
-        user_id: reservation.user_id || null,
+        sale_id: saleId,
         status: 'sold'
       } 
     });
@@ -555,7 +793,7 @@ router.post('/email', async (req, res) => {
       return res.status(404).json({ error: 'session_not_found' });
     }
     
-    // Format tickets with location
+    // Format tickets with location (for display, not QR)
     const { formatSeatLocation } = await import('../lib/seatFormatter.js');
     const formattedTickets = tickets.map(t => {
       const ticketData = t.get ? t.get({ plain: true }) : t;
@@ -565,51 +803,61 @@ router.post('/email', async (req, res) => {
         seat_code: ticketData.seat_code,
         location: formatSeatLocation(ticketData.type, ticketData.section, ticketData.seat_code, ticketData.capacity || 1),
         section: ticketData.section,
-        price: ticketData.price,
-        qr_code: ticketData.qr_code
+        price: ticketData.price
       };
     });
     
-    // Calculate total
+    // Calculate discount amount from sale's discount
     const subtotal = formattedTickets.reduce((sum, t) => sum + Number(t.price || 0), 0);
-    const serviceCharge = Math.round(subtotal * 0.10);
-    const total = subtotal + serviceCharge;
-    
-    // Session info for email
-    const sessionInfo = {
-      showName: session.show?.title || 'Espectáculo',
-      date: new Date(session.starts_at).toLocaleDateString('es-AR', { 
-        weekday: 'long', 
-        year: 'numeric', 
-        month: 'long', 
-        day: 'numeric' 
-      }),
-      time: new Date(session.starts_at).toLocaleTimeString('es-AR', { 
-        hour: '2-digit', 
-        minute: '2-digit' 
-      }),
-      sala: session.sala || 'Sala Principal'
-    };
-    
-    // Get customer name (from reservation items if available)
-    const customerName = reservation.items?.[0]?.customer_name || 'Cliente';
-    
-    // Send email
-    const { sendTicketsEmail } = await import('../lib/emailer.js');
-    const result = await sendTicketsEmail({
-      to: email,
+    let emailDiscountAmount = 0;
+    let emailDiscountCode = null;
+    if (sale.discount) {
+      emailDiscountCode = sale.discount.alias || sale.discount.code;
+      const dtype = String(sale.discount.type || '').toLowerCase();
+      const dval = Number(sale.discount.value || 0);
+      if (dtype === 'percentage') emailDiscountAmount = Math.round(subtotal * (dval / 100));
+      else if (dtype === 'fixed') emailDiscountAmount = Math.round(dval);
+      if (emailDiscountAmount > subtotal) emailDiscountAmount = subtotal;
+    }
+
+    // Parse service_items from sale
+    const serviceItems = parseServiceItems(sale.service_items);
+    const servicesSubtotal = serviceItems.reduce((sum, s) => sum + (Number(s.price || 0) * Number(s.quantity || 1)), 0);
+
+    // Calculate total with dynamic service fee (after discount, including services)
+    const serviceFeePercent = await getServiceFeePercent();
+    const subtotalAfterDiscount = subtotal - emailDiscountAmount;
+    const serviceCharge = Math.round((subtotalAfterDiscount + servicesSubtotal) * (serviceFeePercent / 100));
+    const totalAmount = subtotalAfterDiscount + serviceCharge + servicesSubtotal;
+
+    // Get customer name
+    const customerName = sale.customer_name || 'Cliente';
+
+    // Send email using the same function as webhook (with container QR)
+    const { formatDateLong, formatTime } = await import('../lib/dateFormatter.js');
+    const { sendPurchaseConfirmation } = await import('../lib/emailService.js');
+
+    await sendPurchaseConfirmation({
+      customerEmail: email,
+      customerName: customerName,
+      showTitle: session.show.title,
+      sessionDate: formatDateLong(session.starts_at),
+      sessionTime: formatTime(session.starts_at),
       tickets: formattedTickets,
-      sessionInfo,
-      customerName,
-      total
+      saleId: sale.id,
+      totalAmount: totalAmount,
+      paymentMethod: sale.payment_method || 'mp',
+      subtotal: subtotal,
+      discountCode: emailDiscountCode,
+      discountAmount: emailDiscountAmount > 0 ? emailDiscountAmount : null,
+      serviceFeePercent,
+      serviceFeeAmount: serviceCharge,
+      serviceItems,
+      servicesSubtotal
     });
     
-    if (result.success) {
-      console.log(`[EMAIL] Sent ${formattedTickets.length} tickets for reservation ${reservation_id} to ${email}`);
-      return res.json({ ok: true, sent: true, messageId: result.messageId });
-    } else {
-      return res.status(500).json({ error: 'email_send_failed', message: result.error });
-    }
+    console.log(`[EMAIL] Sent container QR for sale ${saleId} to ${email}`);
+    return res.json({ ok: true, sent: true });
   } catch (e) {
     console.error('[EMAIL] Error:', e);
     return res.status(500).json({ error: 'internal_error', message: e.message });
@@ -623,7 +871,7 @@ router.post('/email-sale', async (req, res) => {
     const { sale_id, email } = req.body || {};
     if (!sale_id || !email) return res.status(400).json({ error: 'sale_id and email required' });
     
-    const { sales: Sale, tickets: Ticket, sessions: Session, shows: Show } = sequelize.models;
+    const { sales: Sale, tickets: Ticket, sessions: Session, shows: Show, discounts: Discount } = sequelize.models;
     
     const sale = await Sale.findByPk(sale_id, {
       include: [
@@ -631,7 +879,8 @@ router.post('/email-sale', async (req, res) => {
           model: Session,
           as: 'session',
           include: [{ model: Show, as: 'show' }]
-        }
+        },
+        { model: Discount, as: 'discount', required: false }
       ]
     });
     
@@ -655,47 +904,75 @@ router.post('/email-sale', async (req, res) => {
       qr_code: t.qr_code
     }));
     
-    // Calculate total
+    // Calculate discount from sale
     const subtotal = formattedTickets.reduce((sum, t) => sum + Number(t.price || 0), 0);
-    const serviceCharge = Math.round(subtotal * 0.10);
-    const total = subtotal + serviceCharge;
-    
+    let saleDiscountAmount = 0;
+    let saleDiscountCode = null;
+    if (sale.discount) {
+      saleDiscountCode = sale.discount.alias || sale.discount.code;
+      const dtype = String(sale.discount.type || '').toLowerCase();
+      const dval = Number(sale.discount.value || 0);
+      if (dtype === 'percentage') saleDiscountAmount = Math.round(subtotal * (dval / 100));
+      else if (dtype === 'fixed') saleDiscountAmount = Math.round(dval);
+      if (saleDiscountAmount > subtotal) saleDiscountAmount = subtotal;
+    }
+
+    // Parse service_items from sale
+    const serviceItems = parseServiceItems(sale.service_items);
+    const servicesSubtotal = serviceItems.reduce((sum, s) => sum + (Number(s.price || 0) * Number(s.quantity || 1)), 0);
+
+    // Calculate total with dynamic service fee (after discount, including services)
+    const serviceFeePercent = await getServiceFeePercent();
+    const subtotalAfterDiscount = subtotal - saleDiscountAmount;
+    const serviceCharge = Math.round((subtotalAfterDiscount + servicesSubtotal) * (serviceFeePercent / 100));
+    const total = subtotalAfterDiscount + serviceCharge + servicesSubtotal;
+
     // Session info for email
     const sessionInfo = {
       showName: session.show?.title || 'Espectáculo',
-      date: new Date(session.starts_at).toLocaleDateString('es-AR', { 
-        weekday: 'long', 
-        year: 'numeric', 
-        month: 'long', 
-        day: 'numeric' 
+      date: new Date(session.starts_at).toLocaleDateString('es-AR', {
+        weekday: 'long',
+        year: 'numeric',
+        month: 'long',
+        day: 'numeric'
       }),
-      time: new Date(session.starts_at).toLocaleTimeString('es-AR', { 
-        hour: '2-digit', 
-        minute: '2-digit' 
+      time: new Date(session.starts_at).toLocaleTimeString('es-AR', {
+        hour: '2-digit',
+        minute: '2-digit'
       }),
       sala: session.sala || 'Sala Principal'
     };
-    
+
     // Get customer name
     const customerName = sale.customer_name || 'Cliente';
-    
-    // Send email
-    const { sendTicketsEmail } = await import('../lib/emailer.js');
-    const result = await sendTicketsEmail({
-      to: email,
+
+    // Send email using sendPurchaseConfirmation (same as other endpoints)
+    const { formatDateLong, formatTime } = await import('../lib/dateFormatter.js');
+    const { sendPurchaseConfirmation } = await import('../lib/emailService.js');
+
+    await sendPurchaseConfirmation({
+      customerEmail: email,
+      customerName: customerName,
+      showTitle: session.show.title,
+      sessionDate: formatDateLong(session.starts_at),
+      sessionTime: formatTime(session.starts_at),
       tickets: formattedTickets,
-      sessionInfo,
-      customerName
+      saleId: sale.id,
+      totalAmount: total,
+      paymentMethod: sale.payment_method || 'mp',
+      subtotal: subtotal,
+      discountCode: saleDiscountCode,
+      discountAmount: saleDiscountAmount > 0 ? saleDiscountAmount : null,
+      serviceFeePercent,
+      serviceFeeAmount: serviceCharge,
+      serviceItems,
+      servicesSubtotal
     });
-    
-    if (result.success) {
-      console.log(`[EMAIL-SALE] SUCCESS: Sent ${formattedTickets.length} tickets for sale ${sale_id} to ${email}`);
-      return res.json({ ok: true, sent: true, messageId: result.messageId });
-    } else {
-      return res.status(500).json({ error: 'email_send_failed', message: result.error });
-    }
+
+    console.log(`[EMAIL-SALE] Sent email for sale ${sale_id} to ${email}`);
+    return res.json({ ok: true, sent: true });
   } catch (e) {
-    console.error('[EMAIL] Error:', e);
+    console.error('[EMAIL-SALE] Error:', e);
     return res.status(500).json({ error: 'internal_error', message: e.message });
   }
 });
@@ -938,49 +1215,28 @@ router.get('/generate-pdf/:sale_id', async (req, res) => {
 
 // Confirm purchase fallback (called from frontend success page)
 // Body: { payment_id: string, user_id?: string }
-router.post('/confirm', optionalAuth, async (req, res) => {
-  console.log('[CONFIRM] 📋 Confirm endpoint called');
-  console.log('[CONFIRM] Body:', req.body);
-  
+router.post('/sipago-confirm', optionalAuth, async (req, res) => {
+  console.log('[SIPAGO_CONFIRM] 📋 Confirm endpoint called');
   try {
-    const { payment_id } = req.body || {};
-    if (!payment_id) {
-      console.log('[CONFIRM] ❌ Missing payment_id');
-      return res.status(400).json({ error: 'payment_id required' });
-    }
-    if (!process.env.MP_ACCESS_TOKEN) {
-      console.log('[CONFIRM] ❌ MP_ACCESS_TOKEN not set');
-      return res.status(500).json({ error: 'MP_ACCESS_TOKEN not set' });
-    }
-
-    console.log('[CONFIRM] Fetching payment from MP:', payment_id);
-    const client = new MercadoPagoConfig({ accessToken: process.env.MP_ACCESS_TOKEN });
-    const paymentClient = new Payment(client);
-    let payment;
-    try {
-      payment = await paymentClient.get({ id: payment_id });
-      console.log('[CONFIRM] Payment fetched, status:', payment?.status || payment?.body?.status);
-    } catch (e) {
-      console.error('[CONFIRM] ❌ Error fetching payment:', e.message);
-      return res.status(400).json({ error: 'payment_not_found' });
-    }
-
-    const status = payment?.status || payment?.body?.status;
-    const md = payment?.metadata || payment?.body?.metadata || {};
-    const metaReservation = md?.reservation_id || null;
-    const metaDiscountId = md?.discount_id || null;
-    const externalRef = payment?.external_reference || payment?.body?.external_reference || null;
-    const amount = Number(payment?.transaction_amount ?? payment?.body?.transaction_amount ?? 0);
-    const paymentMethod = 'mp';
+    const { reservation_id, order_uuid, discount_id, service_items, customer_name, customer_email, customer_phone, customer_dni, customer_provincia, customer_localidad } = req.body || {};
+    if (!reservation_id) return res.status(400).json({ error: 'reservation_id required' });
 
     const { reservations: Reservation, tickets: Ticket, sales: Sale, users: User, discounts: Discount } = sequelize.models;
-    const reservationId = metaReservation || externalRef;
-    if (!reservationId) return res.status(400).json({ error: 'reservation_id_missing' });
-    const reservation = await Reservation.findByPk(reservationId);
+    const reservation = await Reservation.findByPk(reservation_id);
     if (!reservation) return res.status(404).json({ error: 'reservation_not_found' });
 
-    if (status !== 'approved') {
-      return res.status(409).json({ error: 'payment_not_approved', status });
+    // If we have order_uuid, verify with Sipago that it's SUCCESS
+    if (order_uuid) {
+      try {
+        const order = await getSipagoOrder(order_uuid);
+        const status = (order?.data?.order?.status || '').toString().toUpperCase();
+        if (status !== 'SUCCESS') {
+          return res.status(409).json({ error: 'order_not_success', status });
+        }
+      } catch (err) {
+        console.warn('[SIPAGO_CONFIRM] Could not verify order status:', err?.message || err);
+        // Proceed idempotently without blocking, as fallback
+      }
     }
 
     // Idempotency: check if tickets already exist for this exact reservation
@@ -1007,11 +1263,11 @@ router.post('/confirm', optionalAuth, async (req, res) => {
     
     // Idempotency by reservation status
     if (reservation.status === 'confirmed') {
-      console.log('[CONFIRM] ✓ Already confirmed');
+      console.log('[SIPAGO_CONFIRM] ✓ Already confirmed by webhook, skipping email');
       return res.json({ ok: true, already_confirmed: true });
     }
 
-    console.log('[CONFIRM] Creating sale and tickets...');
+    console.log('[SIPAGO_CONFIRM] Creating sale and tickets...');
     
     // Determine effective user to link sale/tickets
     // Priority: JWT user > reservation.user_id > header > body
@@ -1020,43 +1276,137 @@ router.post('/confirm', optionalAuth, async (req, res) => {
       const exists = await User.findByPk(effUserId);
       if (!exists) effUserId = null;
     }
-    console.log('[CONFIRM] User ID:', effUserId);
+    console.log('[SIPAGO_CONFIRM] User ID:', effUserId);
 
     // Generate container QR for this sale
     const items = Array.isArray(reservation.items) ? reservation.items : [];
-    console.log('[CONFIRM] Items:', items.length);
+    console.log('[SIPAGO_CONFIRM] Items:', items.length);
     
     const tempSaleId = crypto.randomUUID();
     const { generateContainerQR } = await import('../lib/qrGenerator.js');
     const containerQR = await generateContainerQR(tempSaleId, items);
-    console.log('[CONFIRM] Container QR generated, capacity:', containerQR.total_capacity);
+    console.log('[SIPAGO_CONFIRM] Container QR generated, capacity:', containerQR.total_capacity);
 
-    console.log('[CONFIRM] Creating Sale record...');
-    const sale = await Sale.create({
-      id: tempSaleId,
-      session_id: reservation.session_id,
-      user_id: effUserId,
-      cashier_id: null,
-      payment_method: paymentMethod,
-      discount_id: metaDiscountId || null,
-      total_amount: amount || 0,
-      container_qr_code: containerQR.qr_code,
-      container_qr_data: containerQR.qr_data,
-      validated_count: 0,
-      total_capacity: containerQR.total_capacity,
-    });
-    console.log('[CONFIRM] ✅ Sale created:', sale.id);
-    
-    // Increment discount used_count if discount was applied
-    if (metaDiscountId) {
-      const discount = await Discount.findByPk(metaDiscountId);
-      if (discount) {
-        await discount.increment('used_count');
-        console.log('[CONFIRM] Discount used_count incremented:', discount.code);
+    // Safety net: if no customer data but user_id exists, look up user profile
+    let finalCustomerName = customer_name || null;
+    let finalCustomerEmail = customer_email || null;
+    let finalCustomerPhone = customer_phone || null;
+    let finalCustomerDni = customer_dni || null;
+    let finalCustomerProvincia = customer_provincia || null;
+    let finalCustomerLocalidad = customer_localidad || null;
+
+    if (!finalCustomerName && (effUserId || reservation.user_id)) {
+      try {
+        const lookupId = effUserId || reservation.user_id;
+        const u = await User.findByPk(lookupId, { attributes: ['name', 'email', 'phone', 'dni', 'provincia', 'localidad'], raw: true });
+        if (u) {
+          finalCustomerName = u.name || finalCustomerName;
+          finalCustomerEmail = u.email || finalCustomerEmail;
+          finalCustomerPhone = u.phone || finalCustomerPhone;
+          finalCustomerDni = u.dni || finalCustomerDni;
+          finalCustomerProvincia = u.provincia || finalCustomerProvincia;
+          finalCustomerLocalidad = u.localidad || finalCustomerLocalidad;
+        }
+      } catch (e) { console.warn('[SIPAGO_CONFIRM] Could not fetch user data:', e.message); }
+    }
+
+    // Try to find user by DNI if provided and no user_id
+    let finalUserId = effUserId;
+    if (!finalUserId && finalCustomerDni) {
+      const existingUser = await User.findOne({ where: { dni: finalCustomerDni } });
+      if (existingUser) {
+        finalUserId = existingUser.id;
+        console.log('[CONFIRM] Found existing user by DNI:', finalCustomerDni, '-> user_id:', finalUserId);
       }
     }
 
-    console.log('[CONFIRM] Creating tickets...');
+    console.log('[SIPAGO_CONFIRM] Creating Sale record...');
+    // Compute final amount for confirm flow using shared helper
+    const confirmBaseItems = Array.isArray(items) ? items : [];
+    let confirmDiscountAmount = 0;
+    let confirmDiscountedTicketCount = 0;
+    let confirmBaseSubtotal = confirmBaseItems.reduce((sum, it) => {
+      if (it.type === 'butaca' || it.type === 'palco') return sum + Number(it.price || 0);
+      if (it.type === 'pullman' || it.type === 'general') return sum + (Number(it.unit_price || it.price || 0) * Number(it.quantity || 1));
+      return sum;
+    }, 0);
+    if (discount_id) {
+      try {
+        const d = await Discount.findByPk(discount_id);
+        if (d && d.active !== false) {
+          const result = computeDiscountAmount(confirmBaseItems, d);
+          confirmDiscountAmount = result.discountAmount;
+          confirmDiscountedTicketCount = result.discountedTicketCount;
+          confirmBaseSubtotal = result.baseSubtotal;
+        }
+      } catch {}
+    }
+    // Calculate subtotal after discount (this is what we store - NO service fee)
+    const confirmSubtotalAfterDiscount = confirmBaseSubtotal - confirmDiscountAmount;
+    const confirmServicesSubtotal = Array.isArray(service_items) ? service_items.reduce((sum, s) => sum + (Number(s.price || 0) * Number(s.quantity || 1)), 0) : 0;
+
+    // Check if sale already exists (webhook may have created it)
+    // Use reservation.sale_id first (set by webhook), fallback to tempSaleId match
+    let existingSale = null;
+    if (reservation.sale_id) {
+      existingSale = await Sale.findByPk(reservation.sale_id);
+      console.log('[SIPAGO_CONFIRM] Found sale via reservation.sale_id:', existingSale?.id);
+    }
+    
+    let sale;
+    if (existingSale) {
+      // Check if sale has tickets (webhook may have failed after creating sale)
+      const { tickets: Ticket } = sequelize.models;
+      const existingTickets = await Ticket.findAll({
+        where: { sale_id: existingSale.id }
+      });
+      console.log('[SIPAGO_CONFIRM] Sale already exists from webhook. Tickets count:', existingTickets.length);
+
+      if (existingTickets.length > 0) {
+        // Webhook already processed everything - skip email (webhook sends it)
+        console.log('[SIPAGO_CONFIRM] Sale already has tickets, webhook already processed. Skipping.');
+        await reservation.update({ status: 'confirmed', sale_id: existingSale.id });
+        return res.json({ ok: true, already_confirmed: true, sale_id: existingSale.id });
+      }
+      
+      // Sale exists but no tickets - webhook failed after creating sale
+      console.log('[SIPAGO_CONFIRM] Sale exists but has no tickets, webhook failed. Using existing sale');
+      sale = existingSale;
+    } else {
+      // Sale doesn't exist, create it
+      sale = await Sale.create({
+        id: tempSaleId,
+        session_id: reservation.session_id,
+        user_id: finalUserId,
+        cashier_id: null,
+        payment_method: 'card',
+        discount_id: discount_id || null,
+        total_amount: (confirmSubtotalAfterDiscount || 0) + confirmServicesSubtotal,
+        customer_name: finalCustomerName,
+        customer_email: finalCustomerEmail,
+        customer_phone: finalCustomerPhone,
+        customer_dni: finalCustomerDni,
+        customer_provincia: finalCustomerProvincia,
+        customer_localidad: finalCustomerLocalidad,
+        container_qr_code: containerQR.qr_code,
+        container_qr_data: containerQR.qr_data,
+        validated_count: 0,
+        total_capacity: containerQR.total_capacity,
+        service_items: Array.isArray(service_items) && service_items.length > 0 ? service_items : null,
+      });
+      console.log('[SIPAGO_CONFIRM] ✅ Sale created:', sale.id);
+    }
+
+    // Increment discount used_count by number of discounted tickets
+    if (discount_id) {
+      const discount = await Discount.findByPk(discount_id);
+      if (discount) {
+        await discount.increment('used_count', { by: confirmDiscountedTicketCount || 1 });
+        console.log('[SIPAGO_CONFIRM] Discount used_count incremented by', confirmDiscountedTicketCount, ':', discount.code);
+      }
+    }
+
+    console.log('[SIPAGO_CONFIRM] Creating tickets...');
     const { generateIndividualQR } = await import('../lib/qrGenerator.js');
     const createdTickets = [];
     for (const it of items) {
@@ -1064,7 +1414,7 @@ router.post('/confirm', optionalAuth, async (req, res) => {
         const t = await Ticket.create({
           session_id: reservation.session_id,
           sale_id: sale.id,
-          user_id: effUserId,
+          user_id: finalUserId,
           seat_code: it.seat_code,
           section: 'platea_general',
           type: 'butaca',
@@ -1085,7 +1435,7 @@ router.post('/confirm', optionalAuth, async (req, res) => {
         const t = await Ticket.create({
           session_id: reservation.session_id,
           sale_id: sale.id,
-          user_id: effUserId,
+          user_id: finalUserId,
           seat_code: it.seat_code,
           section: palcoSection,
           type: 'palco',
@@ -1104,7 +1454,7 @@ router.post('/confirm', optionalAuth, async (req, res) => {
           const t = await Ticket.create({
             session_id: reservation.session_id,
             sale_id: sale.id,
-            user_id: effUserId,
+            user_id: finalUserId,
             seat_code: null,
             section: 'pullman',
             type: 'pullman',
@@ -1116,16 +1466,58 @@ router.post('/confirm', optionalAuth, async (req, res) => {
           await t.update({ qr_code, qr_data });
           createdTickets.push(t);
         }
+      } else if (it.type === 'general' && it.quantity > 0) {
+        // General admission tickets (for el_tablado, las_gemelas)
+        const qty = Number(it.quantity) || 0;
+        for (let i = 0; i < qty; i++) {
+          const t = await Ticket.create({
+            session_id: reservation.session_id,
+            sale_id: sale.id,
+            user_id: finalUserId,
+            seat_code: null,
+            section: 'general',
+            type: 'general',
+            price: Number(it.price || 0),
+            qr_code: null,
+            status: 'sold',
+            capacity: 1,
+            capacity_validated: 0
+          });
+          const { qr_code, qr_data } = await generateIndividualQR(t.id, null, 'general');
+          await t.update({ qr_code, qr_data });
+          createdTickets.push(t);
+        }
       }
     }
-    console.log('[CONFIRM] ✅ Created', createdTickets.length, 'tickets');
+
+    // Create service tickets (one per service item, capacity = quantity)
+    const confirmServiceItems = Array.isArray(service_items) ? service_items : [];
+    for (const svc of confirmServiceItems) {
+      const svcT = await Ticket.create({
+        session_id: reservation.session_id,
+        sale_id: sale.id,
+        user_id: finalUserId,
+        seat_code: svc.name,
+        section: 'service',
+        type: 'service',
+        price: Number(svc.price || 0),
+        qr_code: null,
+        status: 'sold',
+        capacity: Number(svc.quantity || 1),
+        capacity_validated: 0
+      });
+      const { qr_code: sQr, qr_data: sQd } = await generateIndividualQR(svcT.id, svc.name, 'service');
+      await svcT.update({ qr_code: sQr, qr_data: sQd });
+      createdTickets.push(svcT);
+    }
+    console.log('[SIPAGO_CONFIRM] ✅ Created', createdTickets.length, 'tickets');
 
     // Update reservation as confirmed and persist user if was null
-    console.log('[CONFIRM] Updating reservation status to confirmed...');
-    const patch = { status: 'confirmed' };
+    console.log('[SIPAGO_CONFIRM] Updating reservation status to confirmed...');
+    const patch = { status: 'confirmed', sale_id: sale.id };
     if (!reservation.user_id && effUserId) patch.user_id = effUserId;
     await reservation.update(patch);
-    console.log('[CONFIRM] ✅ Reservation confirmed');
+    console.log('[SIPAGO_CONFIRM] ✅ Reservation confirmed');
 
     try {
       const io = req.app.get('io');
@@ -1135,10 +1527,12 @@ router.post('/confirm', optionalAuth, async (req, res) => {
       const seatSet = io.soldSeats.get(reservation.session_id) || new Set();
       const palcoSet = io.soldPalcos.get(reservation.session_id) || new Set();
       let pullmanCount = io.pullmanSold.get(reservation.session_id) || 0;
+      let generalCount = 0;
       for (const it of items) {
         if (it.type === 'butaca' && it.seat_code) seatSet.add(it.seat_code);
         if (it.type === 'palco' && it.seat_code) palcoSet.add(it.seat_code);
         if (it.type === 'pullman' && it.quantity > 0) pullmanCount += Number(it.quantity) || 0;
+        if (it.type === 'general' && it.quantity > 0) generalCount += Number(it.quantity) || 0;
       }
       io.soldSeats.set(reservation.session_id, seatSet);
       io.soldPalcos.set(reservation.session_id, palcoSet);
@@ -1149,75 +1543,353 @@ router.post('/confirm', optionalAuth, async (req, res) => {
         if (it.type === 'palco' && it.seat_code) io.to(`session:${reservation.session_id}`).emit('palco_sold', { palco: it.seat_code });
         if (it.type === 'pullman' && it.quantity > 0) io.to(`session:${reservation.session_id}`).emit('pullman_sold', { sold: Number(it.quantity) || 0 });
       }
+      // Emit general admission update if applicable
+      if (generalCount > 0) {
+        const { sessions: Session, shows: Show, tickets: Ticket } = sequelize.models;
+        const session = await Session.findByPk(reservation.session_id, {
+          include: [{ model: Show, as: 'show' }]
+        });
+        if (session && session.show) {
+          const capacity = session.capacity_override || session.show.general_capacity;
+          const soldCount = await Ticket.count({
+            where: { session_id: reservation.session_id, status: 'sold' }
+          });
+          const available = Math.max(0, capacity - soldCount);
+          io.to(`session:${reservation.session_id}`).emit('general-admission-update', {
+            sessionId: reservation.session_id,
+            sold: soldCount,
+            available
+          });
+        }
+      }
       io.to(`session:${reservation.session_id}`).emit('purchase_confirmed', { reservation_id: reservation.id });
     } catch (ioErr) {
-      console.warn('[CONFIRM] Socket.io error (non-critical):', ioErr.message);
+      console.warn('[SIPAGO_CONFIRM] Socket.io error (non-critical):', ioErr.message);
     }
 
-    console.log('[CONFIRM] 🎉 SUCCESS! Sale created with', createdTickets.length, 'tickets');
+    // Send automatic purchase confirmation email (with idempotency check)
+    try {
+      const { users: User, sessions: Session, shows: Show } = sequelize.models;
+      const session = await Session.findByPk(reservation.session_id, {
+        include: [{ model: Show, as: 'show' }]
+      });
+      const user = finalUserId ? await User.findByPk(finalUserId) : null;
+      const emailToSend = user?.email || customer_email || sale.customer_email;
+      const nameToSend = user?.name || customer_name || sale.customer_name || 'Cliente';
+
+      if (emailToSend && session) {
+        const { formatDateLong, formatTime } = await import('../lib/dateFormatter.js');
+        const { sendPurchaseConfirmation } = await import('../lib/emailService.js');
+        const { formatSeatLocation } = await import('../lib/seatFormatter.js');
+
+        const formattedTicketsForEmail = createdTickets.map(ticket => {
+          const plainTicket = ticket.get ? ticket.get({ plain: true }) : ticket;
+          return {
+            ...plainTicket,
+            location: formatSeatLocation(
+              plainTicket.type,
+              plainTicket.section,
+              plainTicket.seat_code,
+              plainTicket.capacity || 1
+            )
+          };
+        });
+
+        const serviceFeePercent = await getServiceFeePercent();
+        const ticketsSubtotal = formattedTicketsForEmail.reduce((sum, t) => sum + Number(t.price || 0), 0);
+        const confirmSubtotalAfterDiscountForEmail = ticketsSubtotal - confirmDiscountAmount;
+        const confirmServicesSubtotalForEmail = confirmServicesSubtotal;
+        const serviceFeeAmount = Math.round((confirmSubtotalAfterDiscountForEmail + confirmServicesSubtotalForEmail) * (serviceFeePercent / 100));
+        let confirmDiscountCode = null;
+        if (discount_id) {
+          try {
+            const disc = await Discount.findByPk(discount_id);
+            if (disc) confirmDiscountCode = disc.alias || disc.code;
+          } catch {}
+        }
+
+        await sendPurchaseConfirmation({
+          customerEmail: emailToSend,
+          customerName: nameToSend,
+          showTitle: session.show.title,
+          sessionDate: formatDateLong(session.starts_at),
+          sessionTime: formatTime(session.starts_at),
+          tickets: formattedTicketsForEmail,
+          saleId: sale.id,
+          totalAmount: sale.total_amount,
+          paymentMethod: sale.payment_method || 'card',
+          subtotal: ticketsSubtotal,
+          discountCode: confirmDiscountCode,
+          discountAmount: confirmDiscountAmount > 0 ? confirmDiscountAmount : null,
+          serviceFeePercent,
+          serviceFeeAmount,
+          serviceItems: confirmServiceItems,
+          servicesSubtotal: confirmServicesSubtotal
+        });
+      }
+    } catch (emailErr) {
+      console.error('[SIPAGO_CONFIRM] Email error:', emailErr);
+    }
+
+    console.log('[SIPAGO_CONFIRM] 🎉 SUCCESS! Sale created with', createdTickets.length, 'tickets');
     return res.json({ ok: true, sale_id: sale.id, tickets_created: createdTickets.length });
   } catch (e) {
-    console.error('[CONFIRM] ❌ ERROR:', e);
-    console.error('[CONFIRM] Stack:', e.stack);
+    console.error('[SIPAGO_CONFIRM] ❌ ERROR:', e);
+    console.error('[SIPAGO_CONFIRM] Stack:', e.stack);
     return res.status(500).json({ error: 'internal_error', message: e.message });
   }
 });
 
-// Diagnostic endpoint similar to docs/checkout-pro to validate token and preference creation
-router.get('/mp-test', async (req, res) => {
+// Free emission: emit tickets when total is $0 (courtesy via discount code)
+// Body: { reservation_id, discount_id, customer_name?, customer_email?, customer_phone?, customer_dni?, customer_provincia?, customer_localidad? }
+router.post('/free-emission', optionalAuth, async (req, res) => {
+  console.log('[FREE_EMISSION] 🎫 Free emission endpoint called');
   try {
-    const token = process.env.MP_ACCESS_TOKEN;
-    const appUrl = process.env.APP_URL || req.headers.origin || process.env.FRONTEND_URL || 'http://localhost:5173';
-    if (!token) return res.status(500).json({ error: 'MP_ACCESS_TOKEN not set' });
+    const { reservation_id, discount_id, customer_name, customer_email, customer_phone, customer_dni, customer_provincia, customer_localidad, service_items } = req.body || {};
+    if (!reservation_id) return res.status(400).json({ error: 'reservation_id required' });
 
-    // users/me
-    const meRes = await fetch('https://api.mercadopago.com/users/me', {
-      method: 'GET',
-      headers: {
-        Authorization: `Bearer ${token}`,
-        Accept: 'application/json',
-        'User-Agent': 'tep-backend/mp-test'
-      }
-    });
-    const me = { status: meRes.status, body: await meRes.json().catch(()=>'<non-json>') };
+    const { reservations: Reservation, tickets: Ticket, sales: Sale, users: User, discounts: Discount } = sequelize.models;    
+    const freeServiceItems = Array.isArray(service_items) ? service_items.filter(s => s && s.service_id && Number(s.quantity) > 0) : [];
+    const freeServicesSubtotal = freeServiceItems.reduce((sum, s) => sum + (Number(s.price || 0) * Number(s.quantity || 1)), 0);
+    const reservation = await Reservation.findByPk(reservation_id);
+    if (!reservation) return res.status(404).json({ error: 'reservation_not_found' });
 
-    // create preference minimal
-    const client = new MercadoPagoConfig({ accessToken: token, options: { timeout: 5000 } });
-    const preferenceClient = new Preference(client);
-    const body = {
-      items: [{ id: 'diagnostic', unit_price: 100, quantity: 1, title: 'Diagnóstico' }],
-      back_urls: {
-        success: `${appUrl}/mp/success`,
-        failure: `${appUrl}/mp/failure`,
-        pending: `${appUrl}/mp/pending`,
-      },
-      auto_return: 'approved',
-      metadata: { from: 'mp-test' },
-    };
-    let preference;
-    try {
-      const result = await preferenceClient.create({ body });
-      preference = { ok: true, body: result };
-    } catch (error) {
-      preference = { ok: false, error: String(error) };
+    // Must have a discount that brings total to $0
+    if (!discount_id) return res.status(400).json({ error: 'discount_id required for free emission' });
+
+    // Idempotency
+    if (reservation.status === 'confirmed') {
+      console.log('[FREE_EMISSION] ✓ Already confirmed');
+      return res.json({ ok: true, already_confirmed: true });
     }
-    res.json({ me, preference });
-  } catch (e) {
-    res.status(500).json({ error: 'internal_error', detail: String(e) });
-  }
-});
 
-// Fetch payment details by ID (diagnóstico)
-router.get('/fetch/:id', async (req, res) => {
-  try {
-    const id = req.params.id;
-    if (!process.env.MP_ACCESS_TOKEN) return res.status(500).json({ error: 'MP_ACCESS_TOKEN not set' });
-    const client = new MercadoPagoConfig({ accessToken: process.env.MP_ACCESS_TOKEN });
-    const paymentClient = new Payment(client);
-    const payment = await paymentClient.get({ id });
-    return res.json({ status: payment?.status || payment?.body?.status, raw: payment });
+    if (reservation.status === 'expired' || reservation.status === 'canceled') {
+      return res.status(409).json({ error: 'reservation_expired', status: reservation.status });
+    }
+
+    // Validate discount and compute amounts using shared helper
+    const items = Array.isArray(reservation.items) ? reservation.items : [];
+
+    const discount = await Discount.findByPk(discount_id);
+    if (!discount || discount.active === false) {
+      return res.status(400).json({ error: 'invalid_discount' });
+    }
+
+    const { discountAmount, discountedTicketCount, baseSubtotal } = computeDiscountAmount(items, discount);
+    const subtotalAfterDiscount = baseSubtotal - discountAmount;
+
+    // Apply service fee on discounted subtotal
+    const serviceFeePercent = await getServiceFeePercent();
+    const serviceFee = Math.round(subtotalAfterDiscount * (serviceFeePercent / 100));
+    const finalTotal = subtotalAfterDiscount + serviceFee;
+
+    if (finalTotal > 0) {
+      return res.status(400).json({ error: 'total_not_zero', message: 'El total debe ser $0 para emisión gratuita', total: finalTotal });
+    }
+
+    // Check for double sale (seats already sold)
+    const seatCodes = items.filter(it => it.type === 'butaca' && it.seat_code).map(it => it.seat_code);
+    const palcoCodes = items.filter(it => it.type === 'palco' && it.seat_code).map(it => it.seat_code);
+    if (seatCodes.length > 0 || palcoCodes.length > 0) {
+      const existingTickets = await Ticket.findAll({
+        where: {
+          session_id: reservation.session_id,
+          status: 'sold',
+          [Op.or]: [
+            ...(seatCodes.length > 0 ? [{ seat_code: { [Op.in]: seatCodes }, type: 'butaca' }] : []),
+            ...(palcoCodes.length > 0 ? [{ seat_code: { [Op.in]: palcoCodes }, type: 'palco' }] : [])
+          ]
+        }
+      });
+      if (existingTickets.length > 0) {
+        return res.status(409).json({ error: 'seats_already_sold', sold_seats: existingTickets.map(t => t.seat_code) });
+      }
+    }
+
+    // Determine user
+    let effUserId = req.user?.userId || reservation.user_id || null;
+    if (effUserId) {
+      const exists = await User.findByPk(effUserId);
+      if (!exists) effUserId = null;
+    }
+    let finalUserId = effUserId;
+    if (!finalUserId && customer_dni) {
+      const existingUser = await User.findOne({ where: { dni: customer_dni } });
+      if (existingUser) finalUserId = existingUser.id;
+    }
+
+    // Create sale
+    const tempSaleId = crypto.randomUUID();
+    const { generateContainerQR } = await import('../lib/qrGenerator.js');
+    const containerQR = await generateContainerQR(tempSaleId, items);
+
+    const sale = await Sale.create({
+      id: tempSaleId,
+      session_id: reservation.session_id,
+      user_id: finalUserId,
+      cashier_id: null,
+      payment_method: 'courtesy',
+      discount_id: discount_id,
+      total_amount: freeServicesSubtotal,
+      customer_name: customer_name || null,
+      customer_email: customer_email || null,
+      customer_phone: customer_phone || null,
+      customer_dni: customer_dni || null,
+      customer_provincia: customer_provincia || null,
+      customer_localidad: customer_localidad || null,
+      container_qr_code: containerQR.qr_code,
+      container_qr_data: containerQR.qr_data,
+      validated_count: 0,
+      total_capacity: containerQR.total_capacity,
+      service_items: freeServiceItems.length > 0 ? freeServiceItems : null,
+    });
+
+    // Increment discount usage by number of discounted tickets
+    await discount.increment('used_count', { by: discountedTicketCount || 1 });
+
+    // Create tickets
+    const { generateIndividualQR } = await import('../lib/qrGenerator.js');
+    const createdTickets = [];
+    for (const it of items) {
+      if (it.type === 'butaca' && it.seat_code) {
+        const t = await Ticket.create({
+          session_id: reservation.session_id, sale_id: sale.id, user_id: finalUserId,
+          seat_code: it.seat_code, section: 'platea_general', type: 'butaca',
+          price: 0, qr_code: null, status: 'sold', capacity: 1, capacity_validated: 0
+        });
+        const { qr_code, qr_data } = await generateIndividualQR(t.id, it.seat_code, 'butaca');
+        await t.update({ qr_code, qr_data });
+        createdTickets.push(t);
+      } else if (it.type === 'palco' && it.seat_code) {
+        const isPB = /^PB/i.test(it.seat_code);
+        const palcoSection = isPB ? 'palcos_bajos' : 'palcos_altos';
+        const palcoCapacity = isPB ? 4 : 2;
+        const t = await Ticket.create({
+          session_id: reservation.session_id, sale_id: sale.id, user_id: finalUserId,
+          seat_code: it.seat_code, section: palcoSection, type: 'palco',
+          price: 0, qr_code: null, status: 'sold', capacity: palcoCapacity, capacity_validated: 0
+        });
+        const { qr_code, qr_data } = await generateIndividualQR(t.id, it.seat_code, 'palco');
+        await t.update({ qr_code, qr_data });
+        createdTickets.push(t);
+      } else if (it.type === 'pullman' && it.quantity > 0) {
+        const qty = Number(it.quantity) || 0;
+        for (let i = 0; i < qty; i++) {
+          const t = await Ticket.create({
+            session_id: reservation.session_id, sale_id: sale.id, user_id: finalUserId,
+            seat_code: null, section: 'pullman', type: 'pullman',
+            price: 0, qr_code: null, status: 'sold'
+          });
+          const { qr_code, qr_data } = await generateIndividualQR(t.id, null, 'pullman');
+          await t.update({ qr_code, qr_data });
+          createdTickets.push(t);
+        }
+      } else if (it.type === 'general' && it.quantity > 0) {
+        const qty = Number(it.quantity) || 0;
+        for (let i = 0; i < qty; i++) {
+          const t = await Ticket.create({
+            session_id: reservation.session_id, sale_id: sale.id, user_id: finalUserId,
+            seat_code: null, section: 'general', type: 'general',
+            price: 0, qr_code: null, status: 'sold', capacity: 1, capacity_validated: 0
+          });
+          const { qr_code, qr_data } = await generateIndividualQR(t.id, null, 'general');
+          await t.update({ qr_code, qr_data });
+          createdTickets.push(t);
+        }
+      }
+    }
+
+    // Create service tickets (one per service item, capacity = quantity)
+    for (const svc of freeServiceItems) {
+      const svcT = await Ticket.create({
+        session_id: reservation.session_id, sale_id: sale.id, user_id: finalUserId,
+        seat_code: svc.name, section: 'service', type: 'service',
+        price: Number(svc.price || 0), qr_code: null, status: 'sold',
+        capacity: Number(svc.quantity || 1), capacity_validated: 0
+      });
+      const { qr_code: sQr, qr_data: sQd } = await generateIndividualQR(svcT.id, svc.name, 'service');
+      await svcT.update({ qr_code: sQr, qr_data: sQd });
+      createdTickets.push(svcT);
+    }
+
+    // Update reservation
+    const patch = { status: 'confirmed', sale_id: sale.id };
+    if (!reservation.user_id && finalUserId) patch.user_id = finalUserId;
+    await reservation.update(patch);
+
+    // Socket events
+    try {
+      const io = req.app.get('io');
+      io.soldSeats = io.soldSeats || new Map();
+      io.soldPalcos = io.soldPalcos || new Map();
+      io.pullmanSold = io.pullmanSold || new Map();
+      const seatSet = io.soldSeats.get(reservation.session_id) || new Set();
+      const palcoSet = io.soldPalcos.get(reservation.session_id) || new Set();
+      let pullmanCount = io.pullmanSold.get(reservation.session_id) || 0;
+      let generalCount = 0;
+      for (const it of items) {
+        if (it.type === 'butaca' && it.seat_code) seatSet.add(it.seat_code);
+        if (it.type === 'palco' && it.seat_code) palcoSet.add(it.seat_code);
+        if (it.type === 'pullman' && it.quantity > 0) pullmanCount += Number(it.quantity) || 0;
+        if (it.type === 'general' && it.quantity > 0) generalCount += Number(it.quantity) || 0;
+      }
+      io.soldSeats.set(reservation.session_id, seatSet);
+      io.soldPalcos.set(reservation.session_id, palcoSet);
+      io.pullmanSold.set(reservation.session_id, pullmanCount);
+      for (const it of items) {
+        if (it.type === 'butaca' && it.seat_code) io.to(`session:${reservation.session_id}`).emit('seat_sold', { seatId: it.seat_code });
+        if (it.type === 'palco' && it.seat_code) io.to(`session:${reservation.session_id}`).emit('palco_sold', { palco: it.seat_code });
+        if (it.type === 'pullman' && it.quantity > 0) io.to(`session:${reservation.session_id}`).emit('pullman_sold', { sold: Number(it.quantity) || 0 });
+      }
+      if (generalCount > 0) {
+        const { sessions: Session, shows: Show } = sequelize.models;
+        const session = await Session.findByPk(reservation.session_id, { include: [{ model: Show, as: 'show' }] });
+        if (session && session.show) {
+          const capacity = session.capacity_override || session.show.general_capacity;
+          const soldCount = await Ticket.count({ where: { session_id: reservation.session_id, status: 'sold' } });
+          const available = Math.max(0, capacity - soldCount);
+          io.to(`session:${reservation.session_id}`).emit('general-admission-update', { sessionId: reservation.session_id, sold: soldCount, available });
+        }
+      }
+      io.to(`session:${reservation.session_id}`).emit('purchase_confirmed', { reservation_id: reservation.id });
+    } catch {}
+
+    // Send confirmation email
+    try {
+      const { sessions: Session, shows: Show } = sequelize.models;
+      const session = await Session.findByPk(reservation.session_id, { include: [{ model: Show, as: 'show' }] });
+      const user = finalUserId ? await User.findByPk(finalUserId) : null;
+      const emailToSend = user?.email || customer_email || sale.customer_email;
+      const nameToSend = user?.name || customer_name || sale.customer_name || 'Cliente';
+      if (emailToSend && session) {
+        const { formatDateLong, formatTime } = await import('../lib/dateFormatter.js');
+        const { sendPurchaseConfirmation } = await import('../lib/emailService.js');
+        const { formatSeatLocation } = await import('../lib/seatFormatter.js');
+        const formattedTicketsForEmail = createdTickets.map(t => ({
+          ...t.get ? t.get({ plain: true }) : t,
+          location: formatSeatLocation(t.type, t.section, t.seat_code, t.capacity || 1)
+        }));
+        await sendPurchaseConfirmation({
+          customerEmail: emailToSend, customerName: nameToSend,
+          showTitle: session.show.title,
+          sessionDate: formatDateLong(session.starts_at), sessionTime: formatTime(session.starts_at),
+          tickets: formattedTicketsForEmail, saleId: sale.id,
+          totalAmount: 0, paymentMethod: 'courtesy',
+          subtotal: baseSubtotal,
+          discountCode: discount.alias || discount.code,
+          discountAmount: discountAmount > 0 ? discountAmount : null,
+          serviceFeePercent: 0, serviceFeeAmount: 0
+        });
+      }
+    } catch (emailErr) {
+      console.error('[FREE_EMISSION] Email error:', emailErr);
+    }
+
+    console.log('[FREE_EMISSION] 🎉 SUCCESS! Sale created with', createdTickets.length, 'courtesy tickets');
+    return res.json({ ok: true, sale_id: sale.id, tickets_created: createdTickets.length });
   } catch (e) {
-    return res.status(500).json({ error: 'fetch_error', detail: String(e) });
+    console.error('[FREE_EMISSION] ❌ ERROR:', e);
+    return res.status(500).json({ error: 'internal_error', message: e.message });
   }
 });
 

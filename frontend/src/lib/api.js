@@ -10,6 +10,11 @@ const getAPIUrl = () => {
   if (typeof window !== 'undefined') {
     const currentHost = window.location.hostname;
     
+    // Producción: detectar dominio del teatro
+    if (currentHost.includes('teatropigue.com.ar')) {
+      return 'https://www.teatropigue.com.ar';
+    }
+    
     // Si estamos en ngrok, usar URL relativa (proxy de Vite)
     if (currentHost.includes('ngrok')) {
       return ''; // URL relativa, Vite proxy manejará /api
@@ -29,6 +34,11 @@ const getSocketURL = () => {
   if (typeof window !== 'undefined') {
     const currentHost = window.location.hostname;
     const currentOrigin = window.location.origin;
+    
+    // Producción: detectar dominio del teatro
+    if (currentHost.includes('teatropigue.com.ar')) {
+      return 'https://www.teatropigue.com.ar';
+    }
     
     // Si estamos en ngrok, socket debe usar el mismo origin (Vite proxy redirige)
     if (currentHost.includes('ngrok')) {
@@ -54,14 +64,14 @@ export async function apiFetch(endpoint, options = {}) {
   const apiUrl = getAPIUrl();
   const url = `${apiUrl}${endpoint}`;
   
-  console.log('[API] Request to:', url);
+  // No agregar Content-Type si el body es FormData (el navegador lo hace automáticamente)
+  const isFormData = options.body instanceof FormData;
   
   const defaultOptions = {
     mode: 'cors', // Explícito para Safari
     credentials: 'omit', // No enviamos cookies, usamos JWT en headers
-    headers: {
+    headers: isFormData ? {} : {
       'Content-Type': 'application/json',
-      ...options.headers,
     },
   };
   

@@ -28,7 +28,7 @@ export default function MpFailure(){
       {reservationId && <p>Reservation ID: <code>{reservationId}</code></p>}
       {canceled && <p style={{ fontSize: 12, color: '#666' }}>Tu reserva fue cancelada y los asientos liberados.</p>}
       <div style={{ marginTop: 16 }}>
-        <a href="/cartelera">Ir a la cartelera</a>
+        <a href="/agenda">Ir a la cartelera</a>
       </div>
     </div>
   );

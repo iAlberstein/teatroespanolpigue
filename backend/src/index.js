@@ -1,10 +1,17 @@
+// Force Argentina timezone for all date operations on this server
+process.env.TZ = 'America/Argentina/Buenos_Aires';
+
 import dotenv from 'dotenv';
 import { fileURLToPath } from 'url';
 import { dirname, join } from 'path';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
-dotenv.config({ path: join(__dirname, '..', '.env') });
+
+// Cargar .env.local en desarrollo, .env en producción
+const envFile = process.env.NODE_ENV === 'development' ? '.env.local' : '.env';
+dotenv.config({ path: join(__dirname, '..', envFile) });
+console.log(`[ENV] Loaded ${envFile}`);
 
 import express from 'express';
 import http from 'http';
@@ -15,6 +22,7 @@ import registerModels from './models/registerModels.js';
 import apiRouter from './routes/index.js';
 import dayjs from 'dayjs';
 import { Op } from 'sequelize';
+import { scheduleDailySalesEmail } from './lib/dailySalesReport.js';
 
 // Inicializar Sequelize DESPUÉS de cargar dotenv
 const sequelizeInstance = initSequelize();
@@ -82,14 +90,27 @@ app.use(cors({
 // Handle preflight requests explicitly (importante para Safari)
 app.options('*', cors());
 
-app.use(express.json());
-app.set('io', io);
+// Servir archivos estáticos de media
+app.use('/media', express.static(join(__dirname, '../media')));
 
 app.get('/health', (req, res) => {
   res.json({ status: 'ok' });
 });
 
+// Aplicar express.json() condicionalmente (skip para upload endpoints)
+app.use((req, res, next) => {
+  // No parsear JSON para endpoints de upload
+  if (req.path.includes('/upload')) {
+    return next();
+  }
+  express.json({ limit: '10mb' })(req, res, next);
+});
+
+app.set('io', io);
+
 app.use('/api', apiRouter);
+
+scheduleDailySalesEmail();
 
 // Socket namespaces for seats
 io.on('connection', (socket) => {
@@ -102,78 +123,150 @@ io.on('connection', (socket) => {
   const seatHolds = io.seatHolds || (io.seatHolds = new Map());
   // In-memory palco holds per session: Map(sessionId => Map(palcoLabel => socketId))
   const palcoHolds = io.palcoHolds || (io.palcoHolds = new Map());
+  const getBlockedGeneral = (sessionId) => io.blockedGeneral?.get(sessionId) || 0;
 
   socket.on('join_session', async (data) => {
     const sessionId = typeof data === 'string' ? data : data.sessionId;
     const userId = typeof data === 'object' ? data.userId : null;
+    const guestId = typeof data === 'object' ? data.guestId : null;
     
     socket.join(`session:${sessionId}`);
     socket.data.sessionId = sessionId;
     socket.data.userId = userId;
+    socket.data.guestId = guestId; // Track guest identifier for reconnection
     
-    // init pullman state if missing
-    if (!pullmanState.has(sessionId)) {
-      pullmanState.set(sessionId, { capacity: 92, heldBySocket: new Map() });
+    // Reload sold tickets from DB for this session (to sync with DB state)
+    try {
+      const { tickets: Ticket } = sequelize.models;
+      const soldTickets = await Ticket.findAll({
+        where: {
+          session_id: sessionId,
+          status: { [Op.in]: ['sold', 'validated'] }
+        },
+        attributes: ['type', 'seat_code']
+      });
+
+      // Update sold seats/palcos/general admission in memory
+      if (!io.soldSeats) io.soldSeats = new Map();
+      if (!io.soldPalcos) io.soldPalcos = new Map();
+      if (!io.pullmanSold) io.pullmanSold = new Map();
+
+      const seats = new Set();
+      const palcos = new Set();
+      let pullmanCount = 0;
+
+      for (const t of soldTickets) {
+        if (t.type === 'butaca' && t.seat_code) seats.add(t.seat_code);
+        if (t.type === 'palco' && t.seat_code) palcos.add(t.seat_code);
+        // For capacity-based sections (pullman and general admission), each ticket consumes 1 slot
+        if (t.type === 'pullman' || t.type === 'general') pullmanCount++;
+      }
+
+      io.soldSeats.set(sessionId, seats);
+      io.soldPalcos.set(sessionId, palcos);
+      io.pullmanSold.set(sessionId, pullmanCount);
+    } catch (err) {
+      console.error('[Socket] Error reloading sold tickets:', err);
     }
+    
+    // init pullman state if missing (get capacity from session/show)
+    if (!pullmanState.has(sessionId)) {
+      try {
+        const { sessions: Session, shows: Show } = sequelize.models;
+        const session = await Session.findByPk(sessionId, {
+          include: [{ model: Show, as: 'show' }]
+        });
+        
+        // Use general_capacity from show, fallback to 92 if not found
+        const capacity = session?.show?.general_capacity || 92;
+        pullmanState.set(sessionId, { capacity, heldBySocket: new Map() });
+        console.log(`[Socket] Initialized pullman state for session ${sessionId} with capacity ${capacity}`);
+      } catch (err) {
+        console.error('[Socket] Error loading session capacity:', err);
+        pullmanState.set(sessionId, { capacity: 92, heldBySocket: new Map() });
+      }
+    }
+    
+    // Clean up orphaned holds from disconnected sockets
     const st = pullmanState.get(sessionId);
+    const connectedSockets = await io.in(`session:${sessionId}`).fetchSockets();
+    const connectedIds = new Set(connectedSockets.map(s => s.id));
+    
+    for (const [socketId] of st.heldBySocket.entries()) {
+      if (!connectedIds.has(socketId)) {
+        console.log(`[Socket] Cleaning orphaned pullman hold from ${socketId}`);
+        st.heldBySocket.delete(socketId);
+      }
+    }
+    
     const totalHeld = Array.from(st.heldBySocket.values()).reduce((a,b)=>a+b,0);
     const soldCount = io.pullmanSold?.get(sessionId) || 0;
-    const available = Math.max(0, st.capacity - totalHeld - soldCount);
+    const blockedCount = getBlockedGeneral(sessionId);
+    const available = Math.max(0, st.capacity - totalHeld - soldCount - blockedCount);
+    console.log(`[Socket] User joined session ${sessionId}: capacity=${st.capacity}, totalHeld=${totalHeld}, sold=${soldCount}, blocked=${blockedCount}, available=${available}`);
     socket.emit('pullman_updated', { available, capacity: st.capacity });
 
     // ensure seat holds map exists
     if (!seatHolds.has(sessionId)) seatHolds.set(sessionId, new Map());
     if (!palcoHolds.has(sessionId)) palcoHolds.set(sessionId, new Map());
     
-    // Re-asociar holds de reservas activas del usuario
-    if (userId) {
-      try {
-        const { reservations: Reservation } = sequelize.models;
-        const now = dayjs().toDate();
-        const activeReservations = await Reservation.findAll({
-          where: {
-            user_id: userId,
-            session_id: sessionId,
-            status: 'active',
-            expires_at: { [Op.gt]: now }
-          }
-        });
-        
-        if (activeReservations.length > 0) {
-          const reservation = activeReservations[0];
-          const items = Array.isArray(reservation.items) ? reservation.items : [];
-          const seatMap = seatHolds.get(sessionId);
-          const palcoMap = palcoHolds.get(sessionId);
-          
-          // Re-asociar butacas al nuevo socket (sin emitir eventos individuales)
-          for (const it of items) {
-            if (it.type === 'butaca' && it.seat_code) {
-              seatMap.set(it.seat_code, socket.id);
-            }
-            if (it.type === 'palco' && it.seat_code) {
-              palcoMap.set(it.seat_code, socket.id);
-            }
-          }
-          
-          // Emitir la reserva completa al cliente (esto actualiza toda la UI de una vez)
-          socket.emit('reservation_restored', reservation);
+    // Clean orphan holds - release all holds from disconnected sockets
+    // No restoration - user requested clean slate on page refresh
+    try {
+      const seatMap = seatHolds.get(sessionId);
+      const palcoMap = palcoHolds.get(sessionId);
+      const toRelease = [];
+      const toReleasePalcos = [];
+      
+      // Release holds from disconnected sockets
+      for (const [seatId, hold] of seatMap.entries()) {
+        const holderSocketId = typeof hold === 'string' ? hold : hold?.socketId;
+        const holderSocket = io.sockets.sockets.get(holderSocketId);
+        if (!holderSocket) {
+          toRelease.push(seatId);
         }
-      } catch (err) {
-        console.error('[Socket] Error restoring holds:', err);
       }
+      
+      for (const [palco, hold] of palcoMap.entries()) {
+        const holderSocketId = typeof hold === 'string' ? hold : hold?.socketId;
+        const holderSocket = io.sockets.sockets.get(holderSocketId);
+        if (!holderSocket) {
+          toReleasePalcos.push(palco);
+        }
+      }
+      
+      // Release orphan holds and notify all users in session
+      for (const seatId of toRelease) {
+        seatMap.delete(seatId);
+        io.to(`session:${sessionId}`).emit('seat_released', { seatId, by: 'system' });
+      }
+      for (const palco of toReleasePalcos) {
+        palcoMap.delete(palco);
+        io.to(`session:${sessionId}`).emit('palco_released', { palco, by: 'system' });
+      }
+      
+      if (toRelease.length > 0 || toReleasePalcos.length > 0) {
+        console.log(`[Socket] Cleaned and broadcast ${toRelease.length} orphan seat holds and ${toReleasePalcos.length} orphan palco holds`);
+      }
+    } catch (err) {
+      console.error('[Socket] Error cleaning orphan holds:', err);
     }
   });
 
   // Toggle palco hold (PA/PB packs)
+  // Hold structure: { socketId, guestId, userId }
   socket.on('palco_toggle', ({ sessionId, palco }) => {
     if (!palco) return;
     if (!palcoHolds.has(sessionId)) palcoHolds.set(sessionId, new Map());
     const holds = palcoHolds.get(sessionId);
     const holder = holds.get(palco);
+    const myGuestId = socket.data.guestId;
+    const myUserId = socket.data.userId;
+    
     if (!holder) {
-      holds.set(palco, socket.id);
-      io.to(`session:${sessionId}`).emit('palco_held', { palco, by: socket.id });
-    } else if (holder === socket.id) {
+      holds.set(palco, { socketId: socket.id, guestId: myGuestId, userId: myUserId });
+      io.to(`session:${sessionId}`).emit('palco_held', { palco, by: socket.id, guestId: myGuestId });
+    } else if (holder.socketId === socket.id || (myGuestId && holder.guestId === myGuestId) || (myUserId && holder.userId === myUserId)) {
       holds.delete(palco);
       io.to(`session:${sessionId}`).emit('palco_released', { palco, by: socket.id });
     } else {
@@ -181,13 +274,121 @@ io.on('connection', (socket) => {
     }
   });
 
+  // Cancel reservation: delete from DB and release all holds
+  socket.on('cancel_reservation', async ({ reservationId }) => {
+    try {
+      const { reservations: Reservation } = sequelize.models;
+      const reservation = await Reservation.findByPk(reservationId);
+      
+      if (!reservation) {
+        socket.emit('cancel_reservation_error', { error: 'Reservation not found' });
+        return;
+      }
+      
+      const sessionId = reservation.session_id;
+      const items = Array.isArray(reservation.items) ? reservation.items : [];
+      const myGuestId = socket.data.guestId;
+      const myUserId = socket.data.userId;
+      
+      // Mark reservation as canceled
+      await reservation.update({ status: 'canceled' });
+      
+      // Release all holds
+      const seatMap = seatHolds.get(sessionId);
+      const palcoMap = palcoHolds.get(sessionId);
+      
+      if (seatMap) {
+        for (const item of items) {
+          if (item.type === 'butaca' && item.seat_code) {
+            seatMap.delete(item.seat_code);
+            io.to(`session:${sessionId}`).emit('seat_released', { seatId: item.seat_code, by: socket.id });
+          }
+        }
+      }
+      
+      if (palcoMap) {
+        for (const item of items) {
+          if (item.type === 'palco' && item.seat_code) {
+            palcoMap.delete(item.seat_code);
+            io.to(`session:${sessionId}`).emit('palco_released', { palco: item.seat_code, by: socket.id });
+          }
+        }
+      }
+      
+      // Clear pullman if any
+      const st = pullmanState.get(sessionId);
+      if (st && st.heldBySocket.has(socket.id)) {
+        st.heldBySocket.set(socket.id, 0);
+        const soldCount = io.pullmanSold?.get(sessionId) || 0;
+        const blockedCount = getBlockedGeneral(sessionId);
+        const newTotal = Array.from(st.heldBySocket.values()).reduce((a,b)=>a+b,0);
+        const available = Math.max(0, st.capacity - newTotal - soldCount - blockedCount);
+        io.to(`session:${sessionId}`).emit('pullman_updated', { available, capacity: st.capacity });
+      }
+      
+      // ALSO release ALL holds by this socket (safety net - ensures nothing is left behind)
+      // This covers cases where items array doesn't match actual holds
+      if (seatMap) {
+        const seatsToRelease = [];
+        for (const [seatId, holder] of seatMap.entries()) {
+          const holderSocketId = typeof holder === 'string' ? holder : holder?.socketId;
+          const holderGuestId = typeof holder === 'object' ? holder?.guestId : null;
+          const holderUserId = typeof holder === 'object' ? holder?.userId : null;
+          if (holderSocketId === socket.id || (myGuestId && holderGuestId === myGuestId) || (myUserId && holderUserId === myUserId)) {
+            seatsToRelease.push(seatId);
+          }
+        }
+        for (const seatId of seatsToRelease) {
+          seatMap.delete(seatId);
+          io.to(`session:${sessionId}`).emit('seat_released', { seatId, by: socket.id, reason: 'cancel_reservation' });
+        }
+        if (seatsToRelease.length > 0) {
+          console.log(`[Socket] Released ${seatsToRelease.length} additional seats held by socket`);
+        }
+      }
+      
+      if (palcoMap) {
+        const palcosToRelease = [];
+        for (const [palco, holder] of palcoMap.entries()) {
+          const holderSocketId = typeof holder === 'string' ? holder : holder?.socketId;
+          const holderGuestId = typeof holder === 'object' ? holder?.guestId : null;
+          const holderUserId = typeof holder === 'object' ? holder?.userId : null;
+          if (holderSocketId === socket.id || (myGuestId && holderGuestId === myGuestId) || (myUserId && holderUserId === myUserId)) {
+            palcosToRelease.push(palco);
+          }
+        }
+        for (const palco of palcosToRelease) {
+          palcoMap.delete(palco);
+          io.to(`session:${sessionId}`).emit('palco_released', { palco, by: socket.id, reason: 'cancel_reservation' });
+        }
+        if (palcosToRelease.length > 0) {
+          console.log(`[Socket] Released ${palcosToRelease.length} additional palcos held by socket`);
+        }
+      }
+      
+      socket.emit('cancel_reservation_success', { reservationId });
+      console.log(`[Socket] Reservation ${reservationId} cancelled and holds released`);
+    } catch (err) {
+      console.error('[Socket] Error cancelling reservation:', err);
+      socket.emit('cancel_reservation_error', { error: err.message });
+    }
+  });
+
   // Clear all seats held by this socket in a session
+  // Hold structure: { socketId, guestId, userId } or legacy string
   socket.on('seat_clear', ({ sessionId }) => {
     const holds = seatHolds.get(sessionId);
     if (!holds) return;
     const toRelease = [];
+    const myGuestId = socket.data.guestId;
+    const myUserId = socket.data.userId;
     for (const [seatId, holder] of holds.entries()) {
-      if (holder === socket.id) toRelease.push(seatId);
+      const holderSocketId = typeof holder === 'string' ? holder : holder?.socketId;
+      const holderGuestId = typeof holder === 'object' ? holder?.guestId : null;
+      const holderUserId = typeof holder === 'object' ? holder?.userId : null;
+      if (holderSocketId === socket.id || (myGuestId && holderGuestId === myGuestId) || (myUserId && holderUserId === myUserId)) {
+        toRelease.push(seatId);
+      }
     }
     for (const seatId of toRelease) {
       holds.delete(seatId);
@@ -196,12 +397,20 @@ io.on('connection', (socket) => {
   });
 
   // Clear all palcos held by this socket in a session
+  // Hold structure: { socketId, guestId, userId } or legacy string
   socket.on('palco_clear', ({ sessionId }) => {
     const holds = palcoHolds.get(sessionId);
     if (!holds) return;
     const toRelease = [];
+    const myGuestId = socket.data.guestId;
+    const myUserId = socket.data.userId;
     for (const [palco, holder] of holds.entries()) {
-      if (holder === socket.id) toRelease.push(palco);
+      const holderSocketId = typeof holder === 'string' ? holder : holder?.socketId;
+      const holderGuestId = typeof holder === 'object' ? holder?.guestId : null;
+      const holderUserId = typeof holder === 'object' ? holder?.userId : null;
+      if (holderSocketId === socket.id || (myGuestId && holderGuestId === myGuestId) || (myUserId && holderUserId === myUserId)) {
+        toRelease.push(palco);
+      }
     }
     for (const palco of toRelease) {
       holds.delete(palco);
@@ -210,16 +419,20 @@ io.on('connection', (socket) => {
   });
 
   // Toggle seat hold
+  // Hold structure: { socketId, guestId, userId }
   socket.on('seat_toggle', ({ sessionId, seatId }) => {
     if (!seatHolds.has(sessionId)) seatHolds.set(sessionId, new Map());
     const holds = seatHolds.get(sessionId);
     const holder = holds.get(seatId);
+    const myGuestId = socket.data.guestId;
+    const myUserId = socket.data.userId;
+    
     if (!holder) {
       // hold seat
-      holds.set(seatId, socket.id);
-      io.to(`session:${sessionId}`).emit('seat_held', { seatId, by: socket.id });
-    } else if (holder === socket.id) {
-      // release by same socket
+      holds.set(seatId, { socketId: socket.id, guestId: myGuestId, userId: myUserId });
+      io.to(`session:${sessionId}`).emit('seat_held', { seatId, by: socket.id, guestId: myGuestId });
+    } else if (holder.socketId === socket.id || (myGuestId && holder.guestId === myGuestId) || (myUserId && holder.userId === myUserId)) {
+      // release by same socket/guest/user
       holds.delete(seatId);
       io.to(`session:${sessionId}`).emit('seat_released', { seatId, by: socket.id });
     } else {
@@ -233,21 +446,22 @@ io.on('connection', (socket) => {
     if (!pullmanState.has(sessionId)) return;
     const st = pullmanState.get(sessionId);
     const soldCount = io.pullmanSold?.get(sessionId) || 0;
+    const blockedCount = getBlockedGeneral(sessionId);
     const current = st.heldBySocket.get(socket.id) || 0;
     const totalHeldExcludingMe = Array.from(st.heldBySocket.entries())
       .filter(([sid]) => sid !== socket.id)
       .reduce((a, [, v]) => a + v, 0);
-    const maxForMe = Math.max(0, st.capacity - totalHeldExcludingMe - soldCount);
+    const maxForMe = Math.max(0, st.capacity - totalHeldExcludingMe - soldCount - blockedCount);
     let desired = current + (delta > 0 ? 1 : delta < 0 ? -1 : 0);
     desired = Math.max(0, Math.min(maxForMe, desired));
     if (desired === current) {
-      const availableNoChange = Math.max(0, st.capacity - (totalHeldExcludingMe + current) - soldCount);
+      const availableNoChange = Math.max(0, st.capacity - (totalHeldExcludingMe + current) - soldCount - blockedCount);
       socket.emit('pullman_confirmed', { selected: current, available: availableNoChange, capacity: st.capacity });
       return;
     }
     st.heldBySocket.set(socket.id, desired);
     const newTotal = totalHeldExcludingMe + desired;
-    const available = Math.max(0, st.capacity - newTotal - soldCount);
+    const available = Math.max(0, st.capacity - newTotal - soldCount - blockedCount);
     // confirm current user's count
     socket.emit('pullman_confirmed', { selected: desired, available, capacity: st.capacity });
     // broadcast availability to all in session
@@ -260,8 +474,9 @@ io.on('connection', (socket) => {
     if (st.heldBySocket.has(socket.id)) {
       st.heldBySocket.set(socket.id, 0);
       const soldCount = io.pullmanSold?.get(sessionId) || 0;
+      const blockedCount = getBlockedGeneral(sessionId);
       const newTotal = Array.from(st.heldBySocket.values()).reduce((a,b)=>a+b,0);
-      const available = Math.max(0, st.capacity - newTotal - soldCount);
+      const available = Math.max(0, st.capacity - newTotal - soldCount - blockedCount);
       socket.emit('pullman_confirmed', { selected: 0, available, capacity: st.capacity });
       io.to(`session:${sessionId}`).emit('pullman_updated', { available, capacity: st.capacity });
     }
@@ -275,16 +490,19 @@ io.on('connection', (socket) => {
     if (st.heldBySocket.has(socket.id)) {
       st.heldBySocket.delete(socket.id);
       const soldCount = io.pullmanSold?.get(sessionId) || 0;
+      const blockedCount = getBlockedGeneral(sessionId);
       const newTotal = Array.from(st.heldBySocket.values()).reduce((a,b)=>a+b,0);
-      const available = Math.max(0, st.capacity - newTotal - soldCount);
+      const available = Math.max(0, st.capacity - newTotal - soldCount - blockedCount);
       io.to(`session:${sessionId}`).emit('pullman_updated', { available, capacity: st.capacity });
     }
     // Release all seats held by this socket
+    // Hold structure: { socketId, guestId, userId } or legacy string
     const holds = seatHolds.get(sessionId);
     if (holds) {
       const toRelease = [];
       for (const [seatId, holder] of holds.entries()) {
-        if (holder === socket.id) toRelease.push(seatId);
+        const holderSocketId = typeof holder === 'string' ? holder : holder?.socketId;
+        if (holderSocketId === socket.id) toRelease.push(seatId);
       }
       // check active reservations to persist holds during payment/navigation
       try {
@@ -309,11 +527,13 @@ io.on('connection', (socket) => {
       }
     }
     // Release all palcos held by this socket
+    // Hold structure: { socketId, guestId, userId } or legacy string
     const pHolds = palcoHolds.get(sessionId);
     if (pHolds) {
       const toReleasePalcos = [];
       for (const [palco, holder] of pHolds.entries()) {
-        if (holder === socket.id) toReleasePalcos.push(palco);
+        const holderSocketId = typeof holder === 'string' ? holder : holder?.socketId;
+        if (holderSocketId === socket.id) toReleasePalcos.push(palco);
       }
       try {
         const { reservations: Reservation } = sequelize.models;
@@ -378,6 +598,34 @@ io.on('connection', (socket) => {
       console.error('[STARTUP] Error loading sold tickets:', err);
     }
 
+    // Load blocked seats from DB into memory on startup
+    try {
+      const { seat_blocks: SeatBlock } = sequelize.models;
+      io.blockedSeats = io.blockedSeats || new Map();
+      io.blockedPalcos = io.blockedPalcos || new Map();
+      io.blockedGeneral = io.blockedGeneral || new Map();
+      
+      const blocks = await SeatBlock.findAll();
+      
+      for (const block of blocks) {
+        const sessionId = block.session_id;
+        
+        if (block.block_type === 'butaca') {
+          if (!io.blockedSeats.has(sessionId)) io.blockedSeats.set(sessionId, new Set());
+          io.blockedSeats.get(sessionId).add(block.seat_code);
+        } else if (block.block_type === 'palco') {
+          if (!io.blockedPalcos.has(sessionId)) io.blockedPalcos.set(sessionId, new Set());
+          io.blockedPalcos.get(sessionId).add(block.seat_code);
+        } else if (block.block_type === 'general') {
+          io.blockedGeneral.set(sessionId, (io.blockedGeneral.get(sessionId) || 0) + block.quantity);
+        }
+      }
+      
+      console.log(`[STARTUP] Loaded ${blocks.length} seat blocks from DB into memory`);
+    } catch (err) {
+      console.error('[STARTUP] Error loading seat blocks:', err);
+    }
+
     // Simple expiry worker for reservations: runs every 15s
     const { reservations: Reservation } = sequelize.models;
     setInterval(async () => {
@@ -386,10 +634,36 @@ io.on('connection', (socket) => {
         const expired = await Reservation.findAll({ where: { status: 'active', expires_at: { [Op.lt]: now } } });
         for (const r of expired) {
           await r.update({ status: 'expired' });
+          
+          // Release holds for expired reservation
+          const sessionId = r.session_id;
+          const items = Array.isArray(r.items) ? r.items : [];
+          const seatMap = io.seatHolds?.get(sessionId);
+          const palcoMap = io.palcoHolds?.get(sessionId);
+          
+          if (seatMap) {
+            for (const item of items) {
+              if (item.type === 'butaca' && item.seat_code) {
+                seatMap.delete(item.seat_code);
+                io.to(`session:${sessionId}`).emit('seat_released', { seatId: item.seat_code, reason: 'expired' });
+              }
+            }
+          }
+          
+          if (palcoMap) {
+            for (const item of items) {
+              if (item.type === 'palco' && item.seat_code) {
+                palcoMap.delete(item.seat_code);
+                io.to(`session:${sessionId}`).emit('palco_released', { palco: item.seat_code, reason: 'expired' });
+              }
+            }
+          }
+          
           io.to(`session:${r.session_id}`).emit('reservation_expired', { reservation_id: r.id });
+          console.log(`[Worker] Reservation ${r.id} expired and holds released`);
         }
       } catch (e) {
-        // swallow
+        console.error('[Worker] Error expiring reservations:', e);
       }
     }, 15000);
 

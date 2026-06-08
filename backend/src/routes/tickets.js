@@ -205,6 +205,81 @@ router.post('/validate', authenticateToken, requireRole('boleteria', 'admin'), a
 });
 
 /**
+ * GET /api/tickets/admission-report
+ * Returns admission stats for today's sessions: sold, entered, pending
+ * Requires: boleteria or admin role
+ */
+router.get('/admission-report', authenticateToken, requireRole('boleteria', 'admin'), async (req, res) => {
+  try {
+    const { sessions: Session, shows: Show, tickets: Ticket } = sequelize.models;
+    const { Op } = await import('sequelize');
+
+    // Today range in local time (Argentina UTC-3)
+    const now = new Date();
+    const todayStart = new Date(now);
+    todayStart.setHours(0, 0, 0, 0);
+    const todayEnd = new Date(now);
+    todayEnd.setHours(23, 59, 59, 999);
+
+    // Find sessions for today
+    const sessions = await Session.findAll({
+      where: {
+        starts_at: { [Op.between]: [todayStart, todayEnd] }
+      },
+      include: [{ model: Show, as: 'show', attributes: ['id', 'title', 'venue_type'] }],
+      order: [['starts_at', 'ASC']]
+    });
+
+    if (sessions.length === 0) {
+      return res.json({ sessions: [], message: 'No hay funciones programadas para hoy' });
+    }
+
+    const result = [];
+
+    for (const session of sessions) {
+      const tickets = await Ticket.findAll({
+        where: {
+          session_id: session.id,
+          status: { [Op.in]: ['sold', 'validated'] }
+        },
+        attributes: ['id', 'status', 'capacity', 'capacity_validated', 'type']
+      });
+
+      let totalSold = 0;
+      let totalEntered = 0;
+
+      for (const t of tickets) {
+        const cap = t.capacity || 1;
+        const capValidated = t.capacity_validated || 0;
+        totalSold += cap;
+        if (t.status === 'validated') {
+          totalEntered += cap;
+        } else {
+          totalEntered += capValidated;
+        }
+      }
+
+      const totalPending = totalSold - totalEntered;
+
+      result.push({
+        session_id: session.id,
+        show_title: session.show?.title || 'Sin título',
+        venue_type: session.show?.venue_type || 'sala_principal',
+        starts_at: session.starts_at,
+        total_sold: totalSold,
+        total_entered: totalEntered,
+        total_pending: totalPending
+      });
+    }
+
+    return res.json({ sessions: result });
+  } catch (error) {
+    console.error('[ADMISSION_REPORT] Error:', error);
+    return res.status(500).json({ error: 'Error al generar reporte', message: error.message });
+  }
+});
+
+/**
  * GET /api/tickets/:id
  * Get ticket details (for debugging/admin)
  * Requires: authentication
@@ -286,7 +361,7 @@ router.get('/:id/validations', authenticateToken, requireRole('admin', 'boleteri
  */
 router.post('/box-office-sale', authenticateToken, requireRole('boleteria', 'admin'), async (req, res) => {
   try {
-    const { session_id, items, customer, payment_method = 'cash', discount_id } = req.body;
+    const { session_id, items, customer, payment_method = 'cash', discount_id, service_items = [] } = req.body;
     const { reservations: Reservation, sales: Sale, tickets: Ticket, sessions: Session, users: User, discounts: Discount, cash_register_shifts: CashRegisterShift } = sequelize.models;
 
     // Validate session exists
@@ -310,9 +385,10 @@ router.post('/box-office-sale', authenticateToken, requireRole('boleteria', 'adm
       }
     }
 
-    // Validate items
-    if (!Array.isArray(items) || items.length === 0) {
-      return res.status(400).json({ error: 'invalid_items', message: 'Items array is required' });
+    // Validate items (allow empty items if there are service_items)
+    const validServiceItems = Array.isArray(service_items) ? service_items.filter(s => s && s.service_id && Number(s.quantity) > 0) : [];
+    if (!Array.isArray(items) || (items.length === 0 && validServiceItems.length === 0)) {
+      return res.status(400).json({ error: 'invalid_items', message: 'Debe seleccionar al menos una entrada o un servicio' });
     }
 
     // Validate customer data
@@ -368,13 +444,15 @@ router.post('/box-office-sale', authenticateToken, requireRole('boleteria', 'adm
       if (existingUser) userFoundBy = 'phone';
     }
 
-    // Calculate subtotal
-    const subtotal = items.reduce((sum, item) => {
-      if (item.type === 'pullman' && item.quantity > 0) {
+    // Calculate subtotal (tickets + services)
+    const ticketsSubtotal = (items || []).reduce((sum, item) => {
+      if ((item.type === 'pullman' || item.type === 'general') && item.quantity > 0) {
         return sum + (Number(item.price || 0) * Number(item.quantity || 1));
       }
       return sum + Number(item.price || 0);
     }, 0);
+    const servicesSubtotal = validServiceItems.reduce((sum, s) => sum + (Number(s.price || 0) * Number(s.quantity || 1)), 0);
+    const subtotal = ticketsSubtotal + servicesSubtotal;
     
     // Apply discount FIRST (before any charges)
     let discountAmount = 0;
@@ -416,9 +494,11 @@ router.post('/box-office-sale', authenticateToken, requireRole('boleteria', 'adm
       container_qr_data: containerQR.qr_data,
       validated_count: 0,
       total_capacity: containerQR.total_capacity,
+      service_items: validServiceItems.length > 0 ? validServiceItems : null,
       metadata: {
         source: 'box_office',
         items,
+        service_items: validServiceItems,
         discount_applied: validDiscount ? {
           code: validDiscount.code,
           type: validDiscount.type,
@@ -479,7 +559,46 @@ router.post('/box-office-sale', authenticateToken, requireRole('boleteria', 'adm
           });
           tickets.push(ticket);
         }
+      } else if (item.type === 'general') {
+        // General admission tickets (for el_tablado, las_gemelas)
+        const quantity = Number(item.quantity || 1);
+        for (let i = 0; i < quantity; i++) {
+          const ticket = await Ticket.create({
+            session_id,
+            sale_id: sale.id,
+            user_id: ticketUserId,
+            type: 'general',
+            seat_code: null,
+            section: 'general',
+            price: Number(item.price || 0),
+            status: 'sold',
+            qr_data: null,
+            capacity: 1,
+            capacity_validated: 0
+          });
+          tickets.push(ticket);
+        }
       }
+    }
+
+    // Create service tickets (one per service item, capacity = quantity)
+    for (const svc of validServiceItems) {
+      const svcTicket = await Ticket.create({
+        session_id,
+        sale_id: sale.id,
+        user_id: ticketUserId,
+        type: 'service',
+        seat_code: null,
+        section: 'service',
+        price: Number(svc.price || 0),
+        status: 'sold',
+        qr_data: null,
+        capacity: Number(svc.quantity || 1),
+        capacity_validated: 0
+      });
+      // Store name in metadata-style: we use seat_code field to hold service name for display
+      await svcTicket.update({ seat_code: svc.name });
+      tickets.push(svcTicket);
     }
 
     // Generate individual QR data for each ticket
@@ -505,6 +624,7 @@ router.post('/box-office-sale', authenticateToken, requireRole('boleteria', 'adm
       const palcoSet = io.soldPalcos.get(session_id) || new Set();
       let pullmanCount = io.pullmanSold.get(session_id) || 0;
 
+      let generalCount = 0;
       for (const item of items) {
         if (item.type === 'butaca' && item.seat_code) {
           seatSet.add(item.seat_code);
@@ -517,7 +637,13 @@ router.post('/box-office-sale', authenticateToken, requireRole('boleteria', 'adm
         if (item.type === 'pullman') {
           pullmanCount += Number(item.quantity || 1);
         }
+        if (item.type === 'general') {
+          generalCount += Number(item.quantity || 1);
+          console.log('[BOX_OFFICE] General admission item found:', item);
+        }
       }
+      
+      console.log('[BOX_OFFICE] Total general count:', generalCount);
 
       io.soldSeats.set(session_id, seatSet);
       io.soldPalcos.set(session_id, palcoSet);
@@ -525,6 +651,26 @@ router.post('/box-office-sale', authenticateToken, requireRole('boleteria', 'adm
 
       if (pullmanCount > 0) {
         io.to(`session:${session_id}`).emit('pullman_sold', { sold: pullmanCount });
+      }
+
+      // Emit general admission update if applicable
+      if (generalCount > 0) {
+        const capacity = session.capacity_override || session.show.general_capacity;
+        const soldCount = await Ticket.count({
+          where: { session_id, status: 'sold' }
+        });
+        const available = Math.max(0, capacity - soldCount);
+        console.log('[BOX_OFFICE] Emitting general-admission-update:', {
+          sessionId: session_id,
+          sold: soldCount,
+          available,
+          capacity
+        });
+        io.to(`session:${session_id}`).emit('general-admission-update', {
+          sessionId: session_id,
+          sold: soldCount,
+          available
+        });
       }
     }
 
@@ -542,9 +688,10 @@ router.post('/box-office-sale', authenticateToken, requireRole('boleteria', 'adm
         id: ticketData.id,
         type: ticketData.type,
         seat_code: ticketData.seat_code,
-        location: formatSeatLocation(ticketData.type, ticketData.section, ticketData.seat_code),
+        location: formatSeatLocation(ticketData.type, ticketData.section, ticketData.seat_code, ticketData.capacity || 1),
         section: ticketData.section,
         price: ticketData.price,
+        capacity: ticketData.capacity || 1,
         qr_data: ticketData.qr_data
       };
     });
@@ -553,7 +700,7 @@ router.post('/box-office-sale', authenticateToken, requireRole('boleteria', 'adm
     if (customer.email) {
       try {
         const { formatDateLong, formatTime } = await import('../lib/dateFormatter.js');
-        const { sendPurchaseConfirmation, sendAdminNotification } = await import('../lib/emailService.js');
+        const { sendPurchaseConfirmation } = await import('../lib/emailService.js');
         
         // Send customer confirmation
         await sendPurchaseConfirmation({
@@ -571,20 +718,6 @@ router.post('/box-office-sale', authenticateToken, requireRole('boleteria', 'adm
           discountAmount: validDiscount ? discountAmount : null
         });
 
-        // Send admin notification
-        const adminEmails = process.env.ADMIN_NOTIFICATION_EMAILS?.split(',').filter(e => e.trim());
-        if (adminEmails && adminEmails.length > 0) {
-          await sendAdminNotification({
-            adminEmails,
-            showTitle: session.show.title,
-            sessionDate: formatDateLong(session.starts_at),
-            sessionTime: formatTime(session.starts_at),
-            customerName: customer.name,
-            ticketsCount: formattedTickets.length,
-            totalAmount: total,
-            channel: 'Boletería'
-          });
-        }
       } catch (emailError) {
         console.error('[BOX_OFFICE_SALE] Error sending email:', emailError);
         // Don't fail the sale for email errors
@@ -619,7 +752,7 @@ router.post('/box-office-sale', authenticateToken, requireRole('boleteria', 'adm
         customer_name: customer.name,
         tickets_count: formattedTickets.length,
         total_amount: total,
-        discount_code: validDiscount ? validDiscount.code : null
+        discount_code: validDiscount ? (validDiscount.alias || validDiscount.code) : null
       },
       ipAddress: req.ip || req.headers['x-forwarded-for'],
       userAgent: req.headers['user-agent']
@@ -644,6 +777,7 @@ router.post('/box-office-sale', authenticateToken, requireRole('boleteria', 'adm
       },
       discount: validDiscount ? {
         code: validDiscount.code,
+        alias: validDiscount.alias || null,
         type: validDiscount.type,
         value: validDiscount.value,
         amount: discountAmount
@@ -668,6 +802,148 @@ router.post('/box-office-sale', authenticateToken, requireRole('boleteria', 'adm
   } catch (error) {
     console.error('[BOX_OFFICE_SALE] Error:', error);
     return res.status(500).json({ error: 'server_error', message: 'Error creating sale' });
+  }
+});
+
+// Manual ticket lookup by DNI, email, apellido or phone (for lost QR cases)
+// Body: { query: string }
+router.post('/lookup-customer', authenticateToken, requireRole('boleteria', 'admin'), async (req, res) => {
+  try {
+    const { query } = req.body;
+    
+    if (!query || query.trim().length < 2) {
+      return res.status(400).json({ error: 'Se requiere al menos 2 caracteres para buscar' });
+    }
+    
+    const { sales: Sale, tickets: Ticket, sessions: Session, shows: Show, users: User } = sequelize.models;
+    const { Op } = (await import('sequelize')).default || await import('sequelize');
+    const { formatSeatLocation } = await import('../lib/seatFormatter.js');
+    
+    const term = query.trim().toLowerCase();
+    const like = { [Op.like]: `%${term}%` };
+    
+    // Only show sessions from today onwards (not past events)
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+    
+    // Search sales by customer fields OR by associated user fields
+    const sales = await Sale.findAll({
+      where: {
+        [Op.or]: [
+          sequelize.where(sequelize.fn('LOWER', sequelize.col('sales.customer_name')), like),
+          sequelize.where(sequelize.fn('LOWER', sequelize.col('sales.customer_email')), like),
+          sequelize.where(sequelize.fn('LOWER', sequelize.col('sales.customer_dni')), like),
+          sequelize.where(sequelize.fn('LOWER', sequelize.col('sales.customer_phone')), like),
+          sequelize.where(sequelize.fn('LOWER', sequelize.col('user.name')), like),
+          sequelize.where(sequelize.fn('LOWER', sequelize.col('user.email')), like),
+          sequelize.where(sequelize.fn('LOWER', sequelize.fn('IFNULL', sequelize.col('user.dni'), '')), like)
+        ]
+      },
+      include: [
+        {
+          model: Session,
+          as: 'session',
+          required: true,
+          where: {
+            starts_at: { [Op.gte]: today }
+          },
+          include: [{ model: Show, as: 'show', attributes: ['id', 'title', 'image_url'] }]
+        },
+        {
+          model: User,
+          as: 'user',
+          required: false,
+          attributes: ['id', 'name', 'email', 'dni', 'phone']
+        }
+      ],
+      order: [[{ model: Session, as: 'session' }, 'starts_at', 'ASC']]
+    });
+    
+    if (sales.length === 0) {
+      return res.json({ results: [], message: 'No se encontraron entradas para este dato' });
+    }
+    
+    // For each sale, get its tickets
+    const results = [];
+    for (const sale of sales) {
+      const tickets = await Ticket.findAll({
+        where: { sale_id: sale.id },
+        order: [['type', 'ASC'], ['seat_code', 'ASC']]
+      });
+      
+      if (tickets.length === 0) continue;
+      
+      // Check if sale is refunded
+      const rawMetadata = sale.metadata || {};
+      const refunded = !!rawMetadata.refunded;
+      
+      const ticketInfo = tickets.map(t => {
+        let fullSection = t.section;
+        if (t.section === 'platea' || t.section === 'platea_general') {
+          fullSection = 'Platea Baja';
+        } else if (t.section === 'palco') {
+          const isPB = t.seat_code && /^PB/i.test(t.seat_code);
+          fullSection = isPB ? 'Palco Bajo' : 'Palco Alto';
+        } else if (t.section === 'palcos_bajos') {
+          fullSection = 'Palco Bajo';
+        } else if (t.section === 'palcos_altos') {
+          fullSection = 'Palco Alto';
+        } else if (t.section === 'pullman') {
+          fullSection = 'Pullman';
+        }
+        
+        let location = '';
+        if (t.type === 'service') {
+          fullSection = 'Servicio';
+          location = t.seat_code || 'Servicio';
+        } else if (t.type === 'butaca') {
+          const fila = t.seat_code ? t.seat_code.charAt(0).toUpperCase() : '';
+          const asiento = t.seat_code ? t.seat_code.substring(1) : '';
+          location = `${fullSection} - Fila ${fila} - Asiento ${asiento}`;
+        } else if (t.type === 'palco') {
+          const numero = t.seat_code ? t.seat_code.replace(/^(PB|PA)\s*/i, '') : '';
+          location = `${fullSection} - Número ${numero}`;
+        } else if (t.type === 'pullman') {
+          location = 'Pullman';
+        } else if (t.type === 'general') {
+          location = 'Entrada General';
+        }
+        
+        return {
+          id: t.id,
+          type: t.type,
+          seat_code: t.seat_code,
+          section: fullSection,
+          location,
+          status: t.status,
+          validated_at: t.validated_at,
+          price: t.price,
+          capacity: t.capacity || 1,
+          capacity_validated: t.capacity_validated || 0
+        };
+      });
+      
+      results.push({
+        sale_id: sale.id,
+        customer_name: sale.customer_name || sale.user?.name || 'Sin nombre',
+        customer_dni: sale.customer_dni || sale.user?.dni || '',
+        customer_email: sale.customer_email || sale.user?.email || '',
+        customer_phone: sale.customer_phone || sale.user?.phone || '',
+        show_name: sale.session?.show?.title || 'Espectáculo',
+        show_image: sale.session?.show?.image_url || null,
+        session_date: sale.session?.starts_at,
+        session_id: sale.session_id,
+        refunded,
+        total_tickets: ticketInfo.length,
+        validated_tickets: ticketInfo.filter(t => t.status === 'validated').length,
+        tickets: ticketInfo
+      });
+    }
+    
+    return res.json({ results });
+  } catch (error) {
+    console.error('[LOOKUP_CUSTOMER] Error:', error);
+    return res.status(500).json({ error: 'server_error', message: error.message });
   }
 });
 
@@ -724,7 +1000,10 @@ router.post('/scan-qr', authenticateToken, requireRole('boleteria', 'admin'), as
         
         // Formatear ubicación detallada
         let location = '';
-        if (t.type === 'butaca') {
+        if (t.type === 'service') {
+          fullSection = 'Servicio';
+          location = t.seat_code || 'Servicio';
+        } else if (t.type === 'butaca') {
           const fila = t.seat_code ? t.seat_code.charAt(0).toUpperCase() : '';
           const asiento = t.seat_code ? t.seat_code.substring(1) : '';
           location = `${fullSection} - Fila ${fila} - Asiento ${asiento}`;
@@ -908,7 +1187,10 @@ router.post('/scan-qr', authenticateToken, requireRole('boleteria', 'admin'), as
 
       // Formatear ubicación detallada para mostrar al boletero
       let location = '';
-      if (ticket.type === 'butaca') {
+      if (ticket.type === 'service') {
+        fullSection = 'Servicio';
+        location = ticket.seat_code || 'Servicio';
+      } else if (ticket.type === 'butaca') {
         const fila = ticket.seat_code ? ticket.seat_code.charAt(0).toUpperCase() : '';
         const asiento = ticket.seat_code ? ticket.seat_code.substring(1) : '';
         location = `${fullSection} - Fila ${fila} - Asiento ${asiento}`;
@@ -1444,12 +1726,16 @@ Función: ${sessionDate} a las ${sessionTime}
 
 Podés ver ${ticketCount === 1 ? 'tu entrada' : 'tus entradas'} aquí: ${ticketsUrl}
 
-Recordá llegar al menos 30 minutos antes de la función.
+Recordá llegar al menos 30 minutos antes de la función. Una vez comenzada la misma, la ubicación pierde validez y el personal del teatro te asignará un nuevo lugar.
 
-Teatro Español Pigüé`;
+Las entradas no tienen cambio ni devolución, excepto en casos de cancelación/modificación del espectáculo.
+
+Teatro Español Pigüé
+
+(Para acceder al link, tenés que tener agendado este contacto)`;
       
       // WhatsApp URL (opens WhatsApp Web/App with pre-filled message)
-      const whatsappUrl = `https://wa.me/${phone.replace(/\D/g, '')}?text=${encodeURIComponent(whatsappMessage)}`;
+      const whatsappUrl = `https://wa.me/549${phone.replace(/\D/g, '')}?text=${encodeURIComponent(whatsappMessage)}`;
       
       result.whatsappUrl = whatsappUrl;
     }

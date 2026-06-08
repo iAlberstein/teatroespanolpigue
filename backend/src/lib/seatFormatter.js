@@ -24,6 +24,8 @@ export function sortTicketsBySection(tickets) {
       else if (a.seat_code?.startsWith('PA')) priorityA = 3;
     }
     else if (a.type === 'pullman') priorityA = 4;
+    else if (a.type === 'general') priorityA = 5;
+    else if (a.type === 'service') priorityA = 6;
     
     if (b.type === 'butaca') priorityB = 1;
     else if (b.type === 'palco') {
@@ -31,6 +33,8 @@ export function sortTicketsBySection(tickets) {
       else if (b.seat_code?.startsWith('PA')) priorityB = 3;
     }
     else if (b.type === 'pullman') priorityB = 4;
+    else if (b.type === 'general') priorityB = 5;
+    else if (b.type === 'service') priorityB = 6;
     
     // Si tienen diferente prioridad, ordenar por prioridad
     if (priorityA !== priorityB) {
@@ -53,8 +57,16 @@ export function sortTicketsBySection(tickets) {
  * @returns {string} - Formatted location
  */
 export function formatSeatLocation(type, section, seatCode, capacity = 1) {
+  if (type === 'service') {
+    return seatCode || 'Servicio';
+  }
+  
+  if (type === 'general') {
+    return `Entrada General`;
+  }
+  
   if (type === 'pullman') {
-    return `Pullman x ${capacity}`;
+    return `Pullman x${capacity}`;
   }
   
   if (type === 'palco') {
@@ -74,16 +86,16 @@ export function formatSeatLocation(type, section, seatCode, capacity = 1) {
   }
   
   if (type === 'butaca') {
-    if (!seatCode) return 'Butaca';
+    if (!seatCode) return 'Platea Baja';
     
-    // A7 -> Platea Baja - Butaca 7
+    // A7 -> Platea Baja - Fila A - Asiento 7
     // Extract row (letter) and number
     const match = seatCode.match(/^([A-Z])(\d+)$/);
     if (match) {
       const [, row, number] = match;
-      return `Platea Baja - Fila ${row} - Butaca ${number}`;
+      return `Platea Baja - Fila ${row} - Asiento ${number}`;
     }
-    return `Butaca ${seatCode}`;
+    return `Platea Baja - ${seatCode}`;
   }
   
   return seatCode;
@@ -102,6 +114,10 @@ export function getSectionName(type) {
       return 'Palco';
     case 'pullman':
       return 'Pullman';
+    case 'general':
+      return 'Entrada General';
+    case 'service':
+      return 'Servicio';
     default:
       return type;
   }

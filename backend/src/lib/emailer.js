@@ -7,15 +7,20 @@ import PDFDocument from 'pdfkit';
  * EMAIL_HOST, EMAIL_PORT, EMAIL_USER, EMAIL_PASS, EMAIL_FROM
  */
 
-const transporter = nodemailer.createTransport({
-  host: process.env.EMAIL_HOST || 'smtp.gmail.com',
-  port: parseInt(process.env.EMAIL_PORT || '587'),
-  secure: false, // true for 465, false for other ports
-  auth: {
-    user: process.env.EMAIL_USER,
-    pass: process.env.EMAIL_PASS
-  }
-});
+const createTransporter = () => {
+  const host = process.env.TICKETS_EMAIL_HOST || process.env.EMAIL_HOST || 'smtp.gmail.com';
+  const user = process.env.TICKETS_EMAIL_USER || process.env.EMAIL_USER;
+  const pass = process.env.TICKETS_EMAIL_PASS || process.env.EMAIL_PASS;
+  const port = parseInt(process.env.TICKETS_EMAIL_PORT || process.env.EMAIL_PORT || '465');
+  const secure = (process.env.TICKETS_EMAIL_SECURE || process.env.EMAIL_SECURE || 'true') === 'true';
+
+  return nodemailer.createTransport({
+    host,
+    port,
+    secure,
+    auth: { user, pass }
+  });
+};
 
 /**
  * Generate HTML email template for tickets
@@ -100,8 +105,9 @@ function generateTicketEmailHTML(tickets, sessionInfo, customerName) {
                     <strong style="color: #856404;">Instrucciones importantes:</strong>
                     <ul style="color: #856404; margin: 10px 0 0 0; padding-left: 20px;">
                       <li>Presentá el código QR en la entrada del teatro</li>
-                      <li>Recordá llegar al menos 30 minutos antes</li>
+                      <li>Recordá llegar al menos 30 minutos antes, las funciones comienzan puntual</li>
                       <li>Podés mostrar este email o tus entradas desde tu perfil</li>
+                      <li>Las entradas no tienen cambio ni devolución, excepto en casos de cancelación/modificación del espectáculo</li>
                     </ul>
                     <p style="color: #856404; margin: 15px 0 0 0; font-style: italic;">
                       ¡Nos vemos en el teatro!
@@ -144,14 +150,14 @@ export async function sendTicketsEmail({ to, tickets, sessionInfo, customerName 
     const html = generateTicketEmailHTML(tickets, sessionInfo, customerName);
 
     const mailOptions = {
-      from: `"Teatro Español Pigüé" <${process.env.EMAIL_FROM || process.env.EMAIL_USER}>`,
+      from: process.env.TICKETS_EMAIL_FROM || process.env.EMAIL_FROM || `"Teatro Español Pigüé" <${process.env.TICKETS_EMAIL_USER || process.env.EMAIL_USER}>`,
       to,
       subject: `🎭 Tus entradas para ${sessionInfo.showName || 'el espectáculo'}`,
       html,
       attachments
     };
 
-    const info = await transporter.sendMail(mailOptions);
+    const info = await createTransporter().sendMail(mailOptions);
     console.log('[EMAIL] Message sent:', info.messageId);
     return { success: true, messageId: info.messageId };
   } catch (error) {
@@ -333,7 +339,8 @@ export async function sendContainerQREmail({ to, containerQR, tickets, sessionIn
                       <ul style="color: #856404; margin: 10px 0 0 0; padding-left: 20px;">
                         <li>Presentá este QR en la entrada del teatro</li>
                         <li>Se pueden validar entradas individuales</li>
-                        <li>Recordá llegar al menos 30 minutos antes</li>
+                        <li>Recordá llegar al menos 30 minutos antes, las funciones comienzan puntual</li>
+                        <li>Las entradas no tienen cambio ni devolución, excepto en casos de cancelación/modificación del espectáculo</li>
                       </ul>
                       <p style="color: #856404; margin: 15px 0 0 0; font-style: italic;">
                         ¡Nos vemos en el teatro!
@@ -361,7 +368,7 @@ export async function sendContainerQREmail({ to, containerQR, tickets, sessionIn
     `;
     
     const mailOptions = {
-      from: `"Teatro Español Pigüé" <${process.env.EMAIL_FROM || process.env.EMAIL_USER}>`,
+      from: process.env.TICKETS_EMAIL_FROM || process.env.EMAIL_FROM || `"Teatro Español Pigüé" <${process.env.TICKETS_EMAIL_USER || process.env.EMAIL_USER}>`,
       to,
       subject: `🎭 Tu QR para ${sessionInfo.showName || 'el espectáculo'}`,
       html,
@@ -372,7 +379,7 @@ export async function sendContainerQREmail({ to, containerQR, tickets, sessionIn
       }]
     };
     
-    const info = await transporter.sendMail(mailOptions);
+    const info = await createTransporter().sendMail(mailOptions);
     console.log('[EMAIL] Container QR sent:', info.messageId);
     return { success: true, messageId: info.messageId };
   } catch (error) {

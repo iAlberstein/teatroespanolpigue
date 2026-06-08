@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useMemo } from 'react';
 import { useAuth } from '../contexts/AuthContext.jsx';
 import { useNavigate } from 'react-router-dom';
 import { apiFetch, apiAuthFetch } from '../lib/api.js';
@@ -10,6 +10,11 @@ import Discounts from '../components/admin/Discounts.jsx';
 import Users from '../components/admin/Users.jsx';
 import TrendsCharts from '../components/admin/TrendsCharts.jsx';
 import NotificationSettings from '../components/admin/NotificationSettings.jsx';
+import SystemSettings from '../components/admin/SystemSettings.jsx';
+import Mailing from '../components/admin/Mailing.jsx';
+import Billing from '../components/admin/Billing.jsx';
+import Sponsors from '../components/admin/Sponsors.jsx';
+import TicketSettings from '../components/admin/TicketSettings.jsx';
 import { theme } from '../styles/theme.js';
 
 export default function Admin() {
@@ -18,29 +23,31 @@ export default function Admin() {
   const [shows, setShows] = useState([]);
   const [sessions, setSessions] = useState([]);
   const [loading, setLoading] = useState(true);
-  const [section, setSection] = useState('reports'); // 'shows' | 'reports' | 'analytics' | 'discounts' | 'users' | 'notifications'
+  const [section, setSection] = useState('reports'); // 'shows' | 'reports' | 'analytics' | 'discounts' | 'users' | 'notifications' | 'settings'
   const [view, setView] = useState('list'); // 'list' | 'create' | 'edit' | 'sessions'
   const [selectedShow, setSelectedShow] = useState(null);
   const [error, setError] = useState('');
   const [success, setSuccess] = useState('');
+  const [isMobile, setIsMobile] = useState(() => typeof window !== 'undefined' && window.innerWidth < 768);
+
+  // Track screen size for responsive
+  useEffect(() => {
+    const handleResize = () => setIsMobile(window.innerWidth < 768);
+    window.addEventListener('resize', handleResize);
+    return () => window.removeEventListener('resize', handleResize);
+  }, []);
 
   // Check if user has access (admin, boleteria, or productor)
   useEffect(() => {
-    console.log('[ADMIN] useEffect - User:', user);
     if (!user || !['admin', 'boleteria', 'productor'].includes(user.role)) {
-      console.log('[ADMIN] No access, redirecting');
       navigate('/');
     } else {
       // Set initial section based on role
-      console.log('[ADMIN] Setting section for role:', user.role);
       if (user.role === 'productor') {
-        console.log('[ADMIN] Setting section to reports for productor');
         setSection('reports');
       } else if (user.role === 'boleteria') {
-        console.log('[ADMIN] Setting section to users for boleteria');
-        setSection('users');
+        setSection('reports');
       } else {
-        console.log('[ADMIN] Setting section to shows');
         setSection('shows');
       }
     }
@@ -54,7 +61,7 @@ export default function Admin() {
   const loadShows = async () => {
     setLoading(true);
     try {
-      const res = await apiFetch('/api/shows');
+      const res = await apiFetch('/api/shows?admin=true');
       if (res.ok) {
         const data = await res.json();
         setShows(data);
@@ -190,6 +197,27 @@ export default function Admin() {
     }
   };
 
+  const handleEditSession = async (sessionId, data) => {
+    try {
+      const res = await apiAuthFetch(`/api/sessions/${sessionId}`, {
+        method: 'PUT',
+        body: JSON.stringify(data)
+      }, token);
+
+      if (res.ok) {
+        setSuccess('Sesión actualizada exitosamente');
+        await loadSessions(selectedShow.id);
+        setTimeout(() => setSuccess(''), 3000);
+      } else {
+        const errorData = await res.json();
+        setError(errorData.message || 'Error al actualizar sesión');
+      }
+    } catch (err) {
+      console.error('Error updating session:', err);
+      setError('Error de red al actualizar sesión');
+    }
+  };
+
   const handleCancel = () => {
     setView('list');
     setSelectedShow(null);
@@ -205,27 +233,25 @@ export default function Admin() {
     );
   }
 
-  console.log('[ADMIN] Rendering - section:', section, 'user role:', user?.role);
-
   return (
-    <div style={{ padding: theme.spacing.lg, maxWidth: '1400px', margin: '0 auto' }}>
+    <div style={{ padding: isMobile ? theme.spacing.sm : theme.spacing.lg, maxWidth: '1400px', margin: '0 auto' }}>
       {/* Banner especial para productor */}
       {user?.role === 'productor' && (
         <div style={{
           background: 'linear-gradient(135deg, #8b5cf6 0%, #7c3aed 100%)',
           color: 'white',
-          padding: theme.spacing.lg,
+          padding: isMobile ? theme.spacing.md : theme.spacing.lg,
           borderRadius: theme.borderRadius.lg,
-          marginBottom: theme.spacing.xl,
+          marginBottom: isMobile ? theme.spacing.md : theme.spacing.xl,
           boxShadow: '0 4px 6px rgba(139, 92, 246, 0.2)'
         }}>
-          <div style={{ display: 'flex', alignItems: 'center', gap: theme.spacing.md }}>
-            <div style={{ fontSize: 48 }}>🎬</div>
+          <div style={{ display: 'flex', flexDirection: isMobile ? 'column' : 'row', alignItems: isMobile ? 'flex-start' : 'center', gap: theme.spacing.md }}>
+            <div style={{ fontSize: isMobile ? 28 : 48, fontWeight: 700 }}>PRODUCTOR</div>
             <div>
-              <h2 style={{ margin: 0, fontSize: theme.typography.h3, fontWeight: 700 }}>
+              <h2 style={{ margin: 0, fontSize: isMobile ? theme.typography.h4 : theme.typography.h3, fontWeight: 700 }}>
                 Panel de Productor
               </h2>
-              <p style={{ margin: `${theme.spacing.xs} 0 0 0`, opacity: 0.9, fontSize: theme.typography.body }}>
+              <p style={{ margin: `${theme.spacing.xs} 0 0 0`, opacity: 0.9, fontSize: isMobile ? theme.typography.small : theme.typography.body }}>
                 Bienvenido {user.name}. Aquí podés ver los reportes de tus shows.
               </p>
             </div>
@@ -233,11 +259,11 @@ export default function Admin() {
         </div>
       )}
       
-      <div style={{ marginBottom: theme.spacing.xl }}>
-        <h1 style={{ margin: 0, fontSize: theme.typography.h2, color: theme.colors.textPrimary }}>
-          {user?.role === 'productor' ? '📊 Reportes de Ventas' : 'Panel de Administración'}
+      <div style={{ marginBottom: isMobile ? theme.spacing.md : theme.spacing.xl }}>
+        <h1 style={{ margin: 0, fontSize: isMobile ? theme.typography.h3 : theme.typography.h2, color: theme.colors.textPrimary }}>
+          {user?.role === 'productor' ? 'Reportes de Ventas' : 'Panel de Administración'}
         </h1>
-        <p style={{ color: theme.colors.textSecondary, margin: `${theme.spacing.xs} 0 0 0` }}>
+        <p style={{ color: theme.colors.textSecondary, margin: `${theme.spacing.xs} 0 0 0`, fontSize: isMobile ? theme.typography.small : theme.typography.body }}>
           {user?.role === 'productor' ? 'Análisis de ventas de tus shows' : 'Gestión completa del teatro'}
         </p>
       </div>
@@ -245,53 +271,57 @@ export default function Admin() {
       {/* Tabs de navegación */}
       <div style={{ 
         display: 'flex', 
-        gap: theme.spacing.md,
+        gap: isMobile ? theme.spacing.xs : theme.spacing.md,
         marginBottom: theme.spacing.lg,
         borderBottom: `2px solid ${theme.colors.border}`,
-        overflowX: 'auto'
+        flexWrap: 'wrap',
+        overflowX: isMobile ? 'auto' : 'visible',
+        WebkitOverflowScrolling: 'touch',
+        paddingBottom: isMobile ? theme.spacing.xs : 0
       }}>
         {/* Shows - solo admin */}
         {user?.role === 'admin' && (
           <button
             onClick={() => { setSection('shows'); setView('list'); }}
             style={{
-              padding: `${theme.spacing.sm} ${theme.spacing.lg}`,
+              padding: isMobile ? `${theme.spacing.xs} ${theme.spacing.sm}` : `${theme.spacing.sm} ${theme.spacing.lg}`,
               background: 'none',
               border: 'none',
               borderBottom: section === 'shows' ? `3px solid ${theme.colors.primary}` : 'none',
               color: section === 'shows' ? theme.colors.primary : theme.colors.textSecondary,
               fontWeight: theme.typography.semibold,
-              fontSize: theme.typography.body,
+              fontSize: isMobile ? theme.typography.small : theme.typography.body,
               cursor: 'pointer',
               marginBottom: '-2px',
-              transition: theme.transitions.fast
+              transition: theme.transitions.fast,
+              whiteSpace: 'nowrap',
+              flexShrink: 0
             }}
           >
-            📋 Shows y Sesiones
+            {isMobile ? 'Shows' : 'Shows y Sesiones'}
           </button>
         )}
         
         {/* Reportes - todos los roles */}
         <button
-          onClick={() => {
-            console.log('[ADMIN] Reportes button clicked');
-            setSection('reports');
-          }}
+          onClick={() => setSection('reports')}
           style={{
-            padding: `${theme.spacing.sm} ${theme.spacing.lg}`,
+            padding: isMobile ? `${theme.spacing.xs} ${theme.spacing.sm}` : `${theme.spacing.sm} ${theme.spacing.lg}`,
             background: section === 'reports' ? (user?.role === 'productor' ? '#8b5cf6' : theme.colors.primary) : 'none',
             border: 'none',
             borderBottom: section === 'reports' ? `3px solid ${user?.role === 'productor' ? '#8b5cf6' : theme.colors.primary}` : 'none',
             color: section === 'reports' ? 'white' : theme.colors.textSecondary,
             fontWeight: theme.typography.semibold,
-            fontSize: theme.typography.body,
+            fontSize: isMobile ? theme.typography.small : theme.typography.body,
             cursor: 'pointer',
             marginBottom: '-2px',
             transition: theme.transitions.fast,
-            borderRadius: section === 'reports' ? '4px 4px 0 0' : 0
+            borderRadius: section === 'reports' ? '4px 4px 0 0' : 0,
+            whiteSpace: 'nowrap',
+            flexShrink: 0
           }}
         >
-          {user?.role === 'productor' ? '📊 Mis Shows' : '📊 Reportes'}
+          {user?.role === 'productor' ? 'Mis Shows' : 'Reportes'}
         </button>
 
         {/* Analytics - solo admin */}
@@ -299,19 +329,21 @@ export default function Admin() {
           <button
             onClick={() => setSection('analytics')}
             style={{
-              padding: `${theme.spacing.sm} ${theme.spacing.lg}`,
+              padding: isMobile ? `${theme.spacing.xs} ${theme.spacing.sm}` : `${theme.spacing.sm} ${theme.spacing.lg}`,
               background: 'none',
               border: 'none',
               borderBottom: section === 'analytics' ? `3px solid ${theme.colors.primary}` : 'none',
               color: section === 'analytics' ? theme.colors.primary : theme.colors.textSecondary,
               fontWeight: theme.typography.semibold,
-              fontSize: theme.typography.body,
+              fontSize: isMobile ? theme.typography.small : theme.typography.body,
               cursor: 'pointer',
               marginBottom: '-2px',
-              transition: theme.transitions.fast
+              transition: theme.transitions.fast,
+              whiteSpace: 'nowrap',
+              flexShrink: 0
             }}
           >
-            📈 Analytics
+            Analytics
           </button>
         )}
         
@@ -320,19 +352,21 @@ export default function Admin() {
           <button
             onClick={() => setSection('discounts')}
             style={{
-              padding: `${theme.spacing.sm} ${theme.spacing.lg}`,
+              padding: isMobile ? `${theme.spacing.xs} ${theme.spacing.sm}` : `${theme.spacing.sm} ${theme.spacing.lg}`,
               background: 'none',
               border: 'none',
               borderBottom: section === 'discounts' ? `3px solid ${theme.colors.primary}` : 'none',
               color: section === 'discounts' ? theme.colors.primary : theme.colors.textSecondary,
               fontWeight: theme.typography.semibold,
-              fontSize: theme.typography.body,
+              fontSize: isMobile ? theme.typography.small : theme.typography.body,
               cursor: 'pointer',
               marginBottom: '-2px',
-              transition: theme.transitions.fast
+              transition: theme.transitions.fast,
+              whiteSpace: 'nowrap',
+              flexShrink: 0
             }}
           >
-            🎫 Cupones
+            Cupones
           </button>
         )}
         
@@ -341,19 +375,21 @@ export default function Admin() {
           <button
             onClick={() => setSection('users')}
             style={{
-              padding: `${theme.spacing.sm} ${theme.spacing.lg}`,
+              padding: isMobile ? `${theme.spacing.xs} ${theme.spacing.sm}` : `${theme.spacing.sm} ${theme.spacing.lg}`,
               background: 'none',
               border: 'none',
               borderBottom: section === 'users' ? `3px solid ${theme.colors.primary}` : 'none',
               color: section === 'users' ? theme.colors.primary : theme.colors.textSecondary,
               fontWeight: theme.typography.semibold,
-              fontSize: theme.typography.body,
+              fontSize: isMobile ? theme.typography.small : theme.typography.body,
               cursor: 'pointer',
               marginBottom: '-2px',
-              transition: theme.transitions.fast
+              transition: theme.transitions.fast,
+              whiteSpace: 'nowrap',
+              flexShrink: 0
             }}
           >
-            👥 Usuarios
+            Usuarios
           </button>
         )}
         
@@ -362,19 +398,136 @@ export default function Admin() {
           <button
             onClick={() => setSection('notifications')}
             style={{
-              padding: `${theme.spacing.sm} ${theme.spacing.lg}`,
+              padding: isMobile ? `${theme.spacing.xs} ${theme.spacing.sm}` : `${theme.spacing.sm} ${theme.spacing.lg}`,
               background: 'none',
               border: 'none',
               borderBottom: section === 'notifications' ? `3px solid ${theme.colors.primary}` : 'none',
               color: section === 'notifications' ? theme.colors.primary : theme.colors.textSecondary,
               fontWeight: theme.typography.semibold,
-              fontSize: theme.typography.body,
+              fontSize: isMobile ? theme.typography.small : theme.typography.body,
               cursor: 'pointer',
               marginBottom: '-2px',
-              transition: theme.transitions.fast
+              transition: theme.transitions.fast,
+              whiteSpace: 'nowrap',
+              flexShrink: 0
             }}
           >
-            📧 Notificaciones
+            {isMobile ? 'Notif.' : 'Notificaciones'}
+          </button>
+        )}
+        
+        {/* Costo de Servicio - solo admin */}
+        {user?.role === 'admin' && (
+          <button
+            onClick={() => setSection('settings')}
+            style={{
+              padding: isMobile ? `${theme.spacing.xs} ${theme.spacing.sm}` : `${theme.spacing.sm} ${theme.spacing.lg}`,
+              background: 'none',
+              border: 'none',
+              borderBottom: section === 'settings' ? `3px solid ${theme.colors.primary}` : 'none',
+              color: section === 'settings' ? theme.colors.primary : theme.colors.textSecondary,
+              fontWeight: theme.typography.semibold,
+              fontSize: isMobile ? theme.typography.small : theme.typography.body,
+              cursor: 'pointer',
+              marginBottom: '-2px',
+              transition: theme.transitions.fast,
+              whiteSpace: 'nowrap',
+              flexShrink: 0
+            }}
+          >
+            {isMobile ? 'Servicio' : 'Costo de Servicio'}
+          </button>
+        )}
+
+        {/* Mailing - solo admin */}
+        {user?.role === 'admin' && (
+          <button
+            onClick={() => setSection('mailing')}
+            style={{
+              padding: isMobile ? `${theme.spacing.xs} ${theme.spacing.sm}` : `${theme.spacing.sm} ${theme.spacing.lg}`,
+              background: 'none',
+              border: 'none',
+              borderBottom: section === 'mailing' ? `3px solid ${theme.colors.primary}` : 'none',
+              color: section === 'mailing' ? theme.colors.primary : theme.colors.textSecondary,
+              fontWeight: theme.typography.semibold,
+              fontSize: isMobile ? theme.typography.small : theme.typography.body,
+              cursor: 'pointer',
+              marginBottom: '-2px',
+              transition: theme.transitions.fast,
+              whiteSpace: 'nowrap',
+              flexShrink: 0
+            }}
+          >
+            Mailing
+          </button>
+        )}
+
+        {/* Facturador - solo admin */}
+        {user?.role === 'admin' && (
+          <button
+            onClick={() => setSection('billing')}
+            style={{
+              padding: isMobile ? `${theme.spacing.xs} ${theme.spacing.sm}` : `${theme.spacing.sm} ${theme.spacing.lg}`,
+              background: 'none',
+              border: 'none',
+              borderBottom: section === 'billing' ? `3px solid ${theme.colors.primary}` : 'none',
+              color: section === 'billing' ? theme.colors.primary : theme.colors.textSecondary,
+              fontWeight: theme.typography.semibold,
+              fontSize: isMobile ? theme.typography.small : theme.typography.body,
+              cursor: 'pointer',
+              marginBottom: '-2px',
+              transition: theme.transitions.fast,
+              whiteSpace: 'nowrap',
+              flexShrink: 0
+            }}
+          >
+            Facturador
+          </button>
+        )}
+
+        {/* Tickets - solo admin */}
+        {user?.role === 'admin' && (
+          <button
+            onClick={() => setSection('tickets')}
+            style={{
+              padding: isMobile ? `${theme.spacing.xs} ${theme.spacing.sm}` : `${theme.spacing.sm} ${theme.spacing.lg}`,
+              background: 'none',
+              border: 'none',
+              borderBottom: section === 'tickets' ? `3px solid ${theme.colors.primary}` : 'none',
+              color: section === 'tickets' ? theme.colors.primary : theme.colors.textSecondary,
+              fontWeight: theme.typography.semibold,
+              fontSize: isMobile ? theme.typography.small : theme.typography.body,
+              cursor: 'pointer',
+              marginBottom: '-2px',
+              transition: theme.transitions.fast,
+              whiteSpace: 'nowrap',
+              flexShrink: 0
+            }}
+          >
+            Tickets
+          </button>
+        )}
+
+        {/* Patrocinadores - solo admin */}
+        {user?.role === 'admin' && (
+          <button
+            onClick={() => setSection('sponsors')}
+            style={{
+              padding: isMobile ? `${theme.spacing.xs} ${theme.spacing.sm}` : `${theme.spacing.sm} ${theme.spacing.lg}`,
+              background: 'none',
+              border: 'none',
+              borderBottom: section === 'sponsors' ? `3px solid ${theme.colors.primary}` : 'none',
+              color: section === 'sponsors' ? theme.colors.primary : theme.colors.textSecondary,
+              fontWeight: theme.typography.semibold,
+              fontSize: isMobile ? theme.typography.small : theme.typography.body,
+              cursor: 'pointer',
+              marginBottom: '-2px',
+              transition: theme.transitions.fast,
+              whiteSpace: 'nowrap',
+              flexShrink: 0
+            }}
+          >
+            {isMobile ? 'Patroc.' : 'Patrocinadores'}
           </button>
         )}
       </div>
@@ -402,7 +555,7 @@ export default function Admin() {
           marginBottom: 16,
           color: '#065f46'
         }}>
-          ✅ {success}
+          {success}
         </div>
       )}
 
@@ -433,6 +586,7 @@ export default function Admin() {
               sessions={sessions}
               onAddSession={handleAddSession}
               onDeleteSession={handleDeleteSession}
+              onEditSession={handleEditSession}
               onClose={handleCancel}
             />
           )}
@@ -440,10 +594,7 @@ export default function Admin() {
       )}
 
       {section === 'reports' && (
-        <>
-          {console.log('[ADMIN] Rendering Reports component with', shows.length, 'shows')}
-          <Reports shows={shows} />
-        </>
+        <Reports shows={shows} />
       )}
 
       {section === 'analytics' && (
@@ -460,6 +611,26 @@ export default function Admin() {
 
       {section === 'notifications' && (
         <NotificationSettings />
+      )}
+
+      {section === 'settings' && (
+        <SystemSettings />
+      )}
+
+      {section === 'mailing' && (
+        <Mailing />
+      )}
+
+      {section === 'billing' && (
+        <Billing token={token} />
+      )}
+
+      {section === 'sponsors' && (
+        <Sponsors />
+      )}
+
+      {section === 'tickets' && (
+        <TicketSettings />
       )}
     </div>
   );

@@ -2,6 +2,7 @@ import { useState, useEffect } from 'react';
 import { apiAuthFetch } from '../../lib/api';
 import { useAuth } from '../../contexts/AuthContext';
 import UserTicketsModal from './UserTicketsModal';
+import LocationSelector from '../LocationSelector';
 
 export default function Users() {
   const { token, user: authUser } = useAuth();
@@ -23,11 +24,16 @@ export default function Users() {
   
   // Edit modal
   const [editingUser, setEditingUser] = useState(null);
-  const [editForm, setEditForm] = useState({ name: '', email: '', phone: '', dni: '' });
+  const [editForm, setEditForm] = useState({ name: '', email: '', phone: '', dni: '', provincia: '', localidad: '' });
   
   // Tickets modal
   const [showTicketsModal, setShowTicketsModal] = useState(false);
   const [selectedUser, setSelectedUser] = useState(null);
+
+  // Roles
+  const [availableRoles, setAvailableRoles] = useState([]);
+  const [rolesModalUser, setRolesModalUser] = useState(null);
+  const [addingRole, setAddingRole] = useState('');
 
   const theme = {
     colors: {
@@ -49,6 +55,22 @@ export default function Users() {
   useEffect(() => {
     loadUsers();
   }, [page, searchTerm, roleFilter, activeFilter, isBoleteria]);
+
+  useEffect(() => {
+    if (!isBoleteria) loadAvailableRoles();
+  }, [isBoleteria]);
+
+  const loadAvailableRoles = async () => {
+    try {
+      const res = await apiAuthFetch('/api/users/meta/roles', {}, token);
+      if (res.ok) {
+        const data = await res.json();
+        setAvailableRoles(data.roles || []);
+      }
+    } catch (err) {
+      console.error('Error loading roles:', err);
+    }
+  };
 
   useEffect(() => {
     if (isBoleteria) {
@@ -138,7 +160,9 @@ export default function Users() {
       name: user.name || '',
       email: user.email || '',
       phone: user.phone || '',
-      dni: user.dni || ''
+      dni: user.dni || '',
+      provincia: user.provincia || '',
+      localidad: user.localidad || ''
     });
   };
 
@@ -170,20 +194,77 @@ export default function Users() {
   };
 
   const getRoleBadgeColor = (role) => {
-    switch (role) {
-      case 'admin': return theme.colors.danger;
-      case 'boleteria': return theme.colors.warning;
-      case 'productor': return '#8b5cf6';
-      default: return theme.colors.primary;
-    }
+    const colors = {
+      admin: '#dc2626',
+      boleteria: '#d97706',
+      productor: '#7c3aed',
+      espectador: '#2563eb',
+      premium: '#0891b2',
+      admin_ateneo: '#be123c',
+      docente_ateneo: '#059669',
+      alumno_ateneo: '#0d9488'
+    };
+    return colors[role] || '#6b7280';
   };
 
   const getRoleLabel = (role) => {
-    switch (role) {
-      case 'admin': return 'Admin';
-      case 'boleteria': return 'Boletería';
-      case 'productor': return 'Productor';
-      default: return 'Espectador';
+    const labels = {
+      admin: 'Admin',
+      boleteria: 'Boleteria',
+      productor: 'Productor',
+      espectador: 'Espectador',
+      premium: 'Premium',
+      admin_ateneo: 'Admin Ateneo',
+      docente_ateneo: 'Docente Ateneo',
+      alumno_ateneo: 'Alumno Ateneo'
+    };
+    return labels[role] || role;
+  };
+
+  const handleAddRole = async (userId, roleName) => {
+    try {
+      const res = await apiAuthFetch(`/api/users/${userId}/roles`, {
+        method: 'POST',
+        body: JSON.stringify({ role: roleName })
+      }, token);
+      if (res.ok) {
+        const data = await res.json();
+        setUsers(prev => prev.map(u => u.id === userId ? { ...u, roles: data.roles } : u));
+        if (rolesModalUser?.id === userId) {
+          setRolesModalUser(prev => ({ ...prev, roles: data.roles }));
+        }
+        setAddingRole('');
+        setSuccess('Rol agregado');
+        setTimeout(() => setSuccess(''), 2000);
+      } else {
+        const data = await res.json();
+        setError(data.message || 'Error al agregar rol');
+      }
+    } catch (err) {
+      setError('Error al agregar rol');
+    }
+  };
+
+  const handleRemoveRole = async (userId, roleName) => {
+    if (!confirm(`Quitar rol ${getRoleLabel(roleName)}?`)) return;
+    try {
+      const res = await apiAuthFetch(`/api/users/${userId}/roles/${roleName}`, {
+        method: 'DELETE'
+      }, token);
+      if (res.ok) {
+        const data = await res.json();
+        setUsers(prev => prev.map(u => u.id === userId ? { ...u, roles: data.roles } : u));
+        if (rolesModalUser?.id === userId) {
+          setRolesModalUser(prev => ({ ...prev, roles: data.roles }));
+        }
+        setSuccess('Rol removido');
+        setTimeout(() => setSuccess(''), 2000);
+      } else {
+        const data = await res.json();
+        setError(data.message || 'Error al quitar rol');
+      }
+    } catch (err) {
+      setError('Error al quitar rol');
     }
   };
 
@@ -264,8 +345,13 @@ export default function Users() {
           >
             <option value="">Todos los roles</option>
             <option value="admin">Admin</option>
-            <option value="boleteria">Boletería</option>
+            <option value="boleteria">Boleteria</option>
+            <option value="productor">Productor</option>
             <option value="espectador">Espectador</option>
+            <option value="premium">Premium</option>
+            <option value="admin_ateneo">Admin Ateneo</option>
+            <option value="docente_ateneo">Docente Ateneo</option>
+            <option value="alumno_ateneo">Alumno Ateneo</option>
           </select>
         )}
         
@@ -343,25 +429,36 @@ export default function Users() {
                   </td>
                   {!isBoleteria && (
                     <td style={{ padding: theme.spacing.sm, textAlign: 'center' }}>
-                      <select
-                        value={userItem.role || 'espectador'}
-                        onChange={(e) => handleRoleChange(userItem.id, e.target.value)}
-                        style={{
-                          padding: '4px 8px',
-                          background: getRoleBadgeColor(userItem.role),
-                          color: theme.colors.surface,
-                          border: 'none',
-                          borderRadius: 4,
-                          fontSize: theme.typography.tiny,
-                          fontWeight: theme.typography.medium,
-                          cursor: 'pointer'
-                        }}
-                      >
-                        <option value="espectador">Espectador</option>
-                        <option value="boleteria">Boletería</option>
-                        <option value="productor">Productor</option>
-                        <option value="admin">Admin</option>
-                      </select>
+                      <div style={{ display: 'flex', flexWrap: 'wrap', gap: '4px', justifyContent: 'center', alignItems: 'center' }}>
+                        {(userItem.roles || [userItem.role || 'espectador']).map(r => (
+                          <span key={r} style={{
+                            padding: '2px 8px',
+                            background: getRoleBadgeColor(r),
+                            color: '#fff',
+                            borderRadius: 12,
+                            fontSize: '10px',
+                            fontWeight: 600,
+                            whiteSpace: 'nowrap'
+                          }}>
+                            {getRoleLabel(r)}
+                          </span>
+                        ))}
+                        <button
+                          onClick={() => setRolesModalUser(userItem)}
+                          title="Gestionar roles"
+                          style={{
+                            padding: '2px 6px',
+                            background: '#f3f4f6',
+                            border: '1px solid #d1d5db',
+                            borderRadius: 12,
+                            fontSize: '10px',
+                            cursor: 'pointer',
+                            lineHeight: 1
+                          }}
+                        >
+                          +/-
+                        </button>
+                      </div>
                     </td>
                   )}
                   <td style={{ padding: theme.spacing.sm, textAlign: 'center' }}>
@@ -571,6 +668,19 @@ export default function Users() {
                 }}
               />
             </div>
+
+            <div style={{ marginBottom: theme.spacing.md }}>
+              <LocationSelector
+                value={{ provincia: editForm.provincia, localidad: editForm.localidad }}
+                onChange={(location) => setEditForm({ 
+                  ...editForm, 
+                  provincia: location.provincia, 
+                  localidad: location.localidad 
+                })}
+                required={false}
+                disabled={false}
+              />
+            </div>
             
             <div style={{ display: 'flex', gap: theme.spacing.sm, justifyContent: 'flex-end' }}>
               <button
@@ -597,6 +707,134 @@ export default function Users() {
                 }}
               >
                 Guardar
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Modal de gestion de roles */}
+      {rolesModalUser && (
+        <div style={{
+          position: 'fixed',
+          top: 0, left: 0, right: 0, bottom: 0,
+          background: 'rgba(0,0,0,0.5)',
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+          zIndex: 1000
+        }}>
+          <div style={{
+            background: theme.colors.surface,
+            borderRadius: 8,
+            padding: theme.spacing.lg,
+            maxWidth: 480,
+            width: '90%'
+          }}>
+            <h3 style={{ marginTop: 0 }}>Roles de {rolesModalUser.name}</h3>
+            
+            <div style={{ marginBottom: theme.spacing.md }}>
+              <div style={{ fontSize: theme.typography.small, color: theme.colors.textMuted, marginBottom: 8 }}>
+                Roles actuales:
+              </div>
+              <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
+                {(rolesModalUser.roles || []).length === 0 && (
+                  <span style={{ fontSize: theme.typography.small, color: theme.colors.textMuted }}>Sin roles asignados</span>
+                )}
+                {(rolesModalUser.roles || []).map(r => (
+                  <span key={r} style={{
+                    display: 'inline-flex',
+                    alignItems: 'center',
+                    gap: 4,
+                    padding: '4px 10px',
+                    background: getRoleBadgeColor(r),
+                    color: '#fff',
+                    borderRadius: 12,
+                    fontSize: '12px',
+                    fontWeight: 600
+                  }}>
+                    {getRoleLabel(r)}
+                    <button
+                      onClick={() => handleRemoveRole(rolesModalUser.id, r)}
+                      style={{
+                        background: 'rgba(255,255,255,0.3)',
+                        border: 'none',
+                        color: '#fff',
+                        borderRadius: '50%',
+                        width: 16, height: 16,
+                        fontSize: '10px',
+                        cursor: 'pointer',
+                        display: 'flex',
+                        alignItems: 'center',
+                        justifyContent: 'center',
+                        padding: 0,
+                        lineHeight: 1
+                      }}
+                      title={`Quitar ${getRoleLabel(r)}`}
+                    >
+                      x
+                    </button>
+                  </span>
+                ))}
+              </div>
+            </div>
+
+            <div style={{ marginBottom: theme.spacing.md }}>
+              <div style={{ fontSize: theme.typography.small, color: theme.colors.textMuted, marginBottom: 8 }}>
+                Agregar rol:
+              </div>
+              <div style={{ display: 'flex', gap: 8 }}>
+                <select
+                  value={addingRole}
+                  onChange={(e) => setAddingRole(e.target.value)}
+                  style={{
+                    flex: 1,
+                    padding: theme.spacing.sm,
+                    border: `1px solid ${theme.colors.border}`,
+                    borderRadius: 4,
+                    fontSize: theme.typography.small
+                  }}
+                >
+                  <option value="">Seleccionar rol...</option>
+                  {availableRoles
+                    .filter(r => !(rolesModalUser.roles || []).includes(r.nombre))
+                    .map(r => (
+                      <option key={r.id} value={r.nombre}>
+                        {getRoleLabel(r.nombre)} ({r.modulo})
+                      </option>
+                    ))
+                  }
+                </select>
+                <button
+                  onClick={() => addingRole && handleAddRole(rolesModalUser.id, addingRole)}
+                  disabled={!addingRole}
+                  style={{
+                    padding: `${theme.spacing.sm} ${theme.spacing.md}`,
+                    background: addingRole ? theme.colors.success : theme.colors.surfaceAlt,
+                    color: addingRole ? '#fff' : theme.colors.textMuted,
+                    border: 'none',
+                    borderRadius: 4,
+                    cursor: addingRole ? 'pointer' : 'not-allowed',
+                    fontSize: theme.typography.small
+                  }}
+                >
+                  Agregar
+                </button>
+              </div>
+            </div>
+
+            <div style={{ display: 'flex', justifyContent: 'flex-end' }}>
+              <button
+                onClick={() => { setRolesModalUser(null); setAddingRole(''); }}
+                style={{
+                  padding: `${theme.spacing.sm} ${theme.spacing.md}`,
+                  background: theme.colors.surfaceAlt,
+                  border: `1px solid ${theme.colors.border}`,
+                  borderRadius: 4,
+                  cursor: 'pointer'
+                }}
+              >
+                Cerrar
               </button>
             </div>
           </div>

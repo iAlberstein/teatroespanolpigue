@@ -18,7 +18,7 @@ export default function Login() {
     const result = await login(email, password);
 
     if (result.success) {
-      navigate('/cartelera');
+      navigate('/');
     } else {
       setError(result.error || 'Error al iniciar sesión');
     }
@@ -75,6 +75,12 @@ export default function Login() {
         >
           {loading ? 'Iniciando...' : 'Iniciar Sesión'}
         </button>
+
+        <div style={{ textAlign: 'center', marginTop: 8 }}>
+          <Link to="/recuperar-contrasena" style={{ color: '#007bff', textDecoration: 'none', fontSize: 14 }}>
+            ¿Olvidaste tu contraseña?
+          </Link>
+        </div>
 
         <div style={{ textAlign: 'center', marginTop: 8 }}>
           <span style={{ color: '#666' }}>¿No tenés cuenta? </span>

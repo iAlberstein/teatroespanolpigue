@@ -77,11 +77,14 @@ const shiftToPayload = (shiftInstance) => {
 
   const expectedCash = Math.round((openingTotal + cashSalesTotal + adjustmentsAmount) * 100) / 100;
 
+  const qrSalesTotal = toNumber(plain.closing_summary?.qr_sales_total || 0);
+  
   const summary = {
     opening_total_cash: openingTotal,
     closing_total_cash: closingTotal,
     cash_sales_total: cashSalesTotal,
     non_cash_sales_total: nonCashSalesTotal,
+    qr_sales_total: qrSalesTotal,
     cash_sales_count: Number(plain.cash_sales_count || 0),
     adjustments_amount: adjustmentsAmount,
     expected_cash: expectedCash,
@@ -234,6 +237,7 @@ router.post(
       let cashSalesTotal = 0;
       let cashSalesCount = 0;
       let nonCashSalesTotal = 0;
+      let qrSalesTotal = 0;
       let lastSaleAt = null;
       const orphanSalesToUpdate = [];
 
@@ -247,6 +251,9 @@ router.post(
           cashSalesCount += 1;
         } else {
           nonCashSalesTotal += amount;
+          if (method === 'qr') {
+            qrSalesTotal += amount;
+          }
         }
 
         if (createdAt && (!lastSaleAt || createdAt > lastSaleAt)) {
@@ -281,6 +288,7 @@ router.post(
         cash_sales_total: cashSalesTotal,
         cash_sales_count: cashSalesCount,
         non_cash_sales_total: nonCashSalesTotal,
+        qr_sales_total: qrSalesTotal,
         adjustments_amount: adjustmentsAmount,
         expected_cash: expectedCash,
         closing_total_cash: closingTotalCash,
@@ -556,11 +564,18 @@ router.post(
 
       sale.metadata = updatedMetadata;
 
-      // Calcular monto a devolver
+      // Calcular monto a devolver considerando descuentos aplicados
+      // El factor de descuento es: total_amount / suma_precios_base
+      const allTicketsBasePrice = allTickets.reduce((sum, t) => sum + toNumber(t.price), 0);
+      const saleTotalAmount = toNumber(sale.total_amount);
+      const discountFactor = allTicketsBasePrice > 0 ? saleTotalAmount / allTicketsBasePrice : 1;
+
       let refundAmount = 0;
       if (isPartial) {
-        const ticketsAmount = ticketsToRefund.reduce((sum, t) => sum + toNumber(t.price), 0);
-        refundAmount = -ticketsAmount;
+        const ticketsBaseAmount = ticketsToRefund.reduce((sum, t) => sum + toNumber(t.price), 0);
+        // Aplicar el mismo factor de descuento que tuvo la venta original
+        const ticketsDiscountedAmount = ticketsBaseAmount * discountFactor;
+        refundAmount = -Math.round(ticketsDiscountedAmount * 100) / 100;
 
         // Ajustar capacidad total de la venta si aplica
         const totalCapacityToRefund = ticketsToRefund.reduce(
@@ -570,7 +585,7 @@ router.post(
         const newTotalCapacity = Math.max(0, (sale.total_capacity || 0) - totalCapacityToRefund);
         sale.total_capacity = newTotalCapacity;
       } else {
-        refundAmount = -toNumber(sale.total_amount);
+        refundAmount = -saleTotalAmount;
       }
 
       await sale.save({ transaction });
@@ -593,9 +608,7 @@ router.post(
           metadata: {
             type: 'refund',
             refund_of: sale.id,
-            original_amount: isPartial
-              ? ticketsToRefund.reduce((sum, t) => sum + toNumber(t.price), 0)
-              : toNumber(sale.total_amount),
+            original_amount: Math.abs(refundAmount),
             reason: reason || null,
             refund_snapshot: refundSnapshot
           },
@@ -701,9 +714,7 @@ router.post(
             sessionTime,
             locations: refundSnapshot.locations || [],
             refundAmount: refundAmount,
-            originalAmount: isPartial
-              ? ticketsToRefund.reduce((sum, t) => sum + toNumber(t.price), 0)
-              : toNumber(sale.total_amount),
+            originalAmount: Math.abs(refundAmount),
             saleId: sale.id,
             reason: reason || null,
             channel: (sale.payment_method || '').toLowerCase() === 'mp' ? 'Online' : 'Boletería'
@@ -810,7 +821,15 @@ router.get(
 
       const operations = sales.map((sale) => {
         const saleTickets = sale.tickets || [];
-        const rawMetadata = sale.metadata || {};
+        // Asegurar que metadata sea objeto (puede venir como string en algunos casos)
+        let rawMetadata = sale.metadata || {};
+        if (typeof rawMetadata === 'string') {
+          try {
+            rawMetadata = JSON.parse(rawMetadata);
+          } catch (e) {
+            rawMetadata = {};
+          }
+        }
         const refundSnapshot = rawMetadata.refund_snapshot || null;
 
         let effectiveLocations = [];
@@ -851,7 +870,7 @@ router.get(
           (sale.customer_dni !== undefined ? sale.customer_dni : null) ||
           sale.user?.dni || null;
 
-        const discountCode = sale.discount?.code || null;
+        const discountCode = sale.discount?.alias || sale.discount?.code || null;
         const discountValue = sale.discount
           ? sale.discount.type === 'percentage'
             ? `${sale.discount.value}%`
@@ -897,6 +916,165 @@ router.get(
   }
 );
 
+// Obtener operaciones de un turno específico por ID
+router.get(
+  '/shift/:shiftId/operations',
+  authenticateToken,
+  requireRole('boleteria', 'admin'),
+  async (req, res) => {
+    try {
+      const { shiftId } = req.params;
+      const {
+        cash_register_shifts: CashRegisterShift,
+        sales: Sale,
+        sessions: Session,
+        shows: Show,
+        tickets: Ticket,
+        discounts: Discount,
+        users: User
+      } = sequelize.models;
+
+      const shift = await CashRegisterShift.findByPk(shiftId);
+
+      if (!shift) {
+        return res.status(404).json({ error: 'shift_not_found', message: 'Turno no encontrado' });
+      }
+
+      // Determinar el rango de fechas para buscar ventas
+      const endDate = shift.closed_at || new Date();
+
+      const sales = await Sale.findAll({
+        where: {
+          [Op.or]: [
+            { cash_register_shift_id: shift.id },
+            {
+              cash_register_shift_id: null,
+              sold_by: shift.user_id,
+              createdAt: {
+                [Op.between]: [shift.opened_at, endDate]
+              }
+            }
+          ]
+        },
+        include: [
+          {
+            model: Session,
+            as: 'session',
+            include: [
+              {
+                model: Show,
+                as: 'show',
+                attributes: ['id', 'title']
+              }
+            ]
+          },
+          {
+            model: Ticket,
+            as: 'tickets',
+            required: false
+          },
+          {
+            model: Discount,
+            as: 'discount',
+            required: false
+          },
+          {
+            model: User,
+            as: 'user',
+            attributes: ['id', 'name', 'email', 'phone', 'dni'],
+            required: false
+          }
+        ],
+        order: [['createdAt', 'DESC']]
+      });
+
+      const { formatSeatLocation } = await import('../lib/seatFormatter.js');
+
+      const operations = sales.map((sale) => {
+        const saleTickets = sale.tickets || [];
+        // Asegurar que metadata sea objeto (puede venir como string en algunos casos)
+        let rawMetadata = sale.metadata || {};
+        if (typeof rawMetadata === 'string') {
+          try {
+            rawMetadata = JSON.parse(rawMetadata);
+          } catch (e) {
+            rawMetadata = {};
+          }
+        }
+        const refundSnapshot = rawMetadata.refund_snapshot || null;
+
+        let effectiveLocations = [];
+        let effectiveTicketsCount = 0;
+        let effectivePeopleCount = 0;
+
+        if (saleTickets.length > 0) {
+          effectiveLocations = saleTickets.map((ticket) =>
+            formatSeatLocation(
+              ticket.type,
+              ticket.section,
+              ticket.seat_code,
+              ticket.capacity || 1
+            )
+          );
+          effectiveTicketsCount = saleTickets.length;
+          effectivePeopleCount = calculateRealPeople(saleTickets);
+        } else if (refundSnapshot && Array.isArray(refundSnapshot.locations) && refundSnapshot.locations.length > 0) {
+          effectiveLocations = refundSnapshot.locations;
+          effectiveTicketsCount = refundSnapshot.tickets_count || refundSnapshot.locations.length;
+          effectivePeopleCount = refundSnapshot.people_count || effectiveTicketsCount;
+        }
+
+        const isRefundOperation = rawMetadata.type === 'refund';
+        const refunded = !!rawMetadata.refunded;
+        const refundReason = rawMetadata.refund_reason || rawMetadata.reason || null;
+        const refundedAt = rawMetadata.refunded_at || null;
+
+        const customerName = sale.customer_name || sale.user?.name || 'N/A';
+        const customerEmail = sale.customer_email || sale.user?.email || null;
+        const customerPhone = (sale.customer_phone !== undefined ? sale.customer_phone : null) || sale.user?.phone || null;
+        const customerDni = (sale.customer_dni !== undefined ? sale.customer_dni : null) || sale.user?.dni || null;
+
+        const discountCode = sale.discount?.alias || sale.discount?.code || null;
+        const discountValue = sale.discount
+          ? sale.discount.type === 'percentage'
+            ? `${sale.discount.value}%`
+            : `$${sale.discount.value}`
+          : null;
+
+        return {
+          id: sale.id,
+          sale_date: sale.createdAt,
+          session_date: sale.session?.starts_at || null,
+          show_title: sale.session?.show?.title || null,
+          customer_name: customerName,
+          customer_email: customerEmail,
+          customer_phone: customerPhone,
+          customer_dni: customerDni,
+          locations: effectiveLocations.join(', '),
+          tickets_count: effectiveTicketsCount,
+          people_count: effectivePeopleCount,
+          payment_method: sale.payment_method || 'N/A',
+          discount_code: discountCode,
+          discount_value: discountValue,
+          total_amount: toNumber(sale.total_amount),
+          refunded,
+          is_refund_operation: isRefundOperation,
+          refund_reason: refundReason,
+          refunded_at: refundedAt
+        };
+      });
+
+      return res.json({ operations });
+    } catch (error) {
+      console.error('[CASH REGISTER] Shift operations error:', error);
+      return res.status(500).json({
+        error: 'internal_error',
+        message: 'No se pudieron obtener las operaciones del turno'
+      });
+    }
+  }
+);
+
 router.get(
   '/history',
   authenticateToken,
@@ -924,6 +1102,8 @@ router.get(
         where.status = status;
       }
 
+      const { sales: Sale } = sequelize.models;
+      
       const shifts = await CashRegisterShift.findAll({
         where,
         order: [['opened_at', 'DESC']],
@@ -931,7 +1111,28 @@ router.get(
         include: [{ model: User, as: 'cashier', attributes: ['id', 'name', 'email'] }]
       });
 
-      return res.json({ shifts: shifts.map(shiftToPayload) });
+      // Para cada turno, calcular qr_sales_total si no existe
+      const shiftsWithQR = await Promise.all(shifts.map(async (shift) => {
+        const payload = shiftToPayload(shift);
+        
+        // Si no tiene qr_sales_total, calcularlo de las ventas
+        if (!payload.summary?.qr_sales_total && payload.summary?.qr_sales_total !== 0) {
+          const qrSales = await Sale.findAll({
+            where: {
+              cash_register_shift_id: shift.id,
+              payment_method: 'qr',
+              payment_status: 'approved'
+            },
+            attributes: ['total_amount']
+          });
+          const qrTotal = qrSales.reduce((sum, s) => sum + Number(s.total_amount || 0), 0);
+          payload.summary = { ...payload.summary, qr_sales_total: qrTotal };
+        }
+        
+        return payload;
+      }));
+
+      return res.json({ shifts: shiftsWithQR });
     } catch (error) {
       console.error('[CASH REGISTER] History error:', error);
       return res.status(500).json({ error: 'internal_error', message: 'No se pudo obtener el historial de cajas' });

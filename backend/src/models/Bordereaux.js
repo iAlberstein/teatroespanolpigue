@@ -63,6 +63,12 @@ export default function defineBordereauxModel(sequelize) {
       defaultValue: []
     },
     
+    // Nombre del autor (editable por admin)
+    author_name: {
+      type: DataTypes.STRING(255),
+      allowNull: true
+    },
+    
     // Notas adicionales
     notes: {
       type: DataTypes.TEXT,

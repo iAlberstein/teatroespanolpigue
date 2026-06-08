@@ -1,8 +1,16 @@
 import { useEffect, useMemo, useState, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useAuth } from '../contexts/AuthContext';
-import { apiAuthFetch, API_URL } from '../lib/api';
+import { apiAuthFetch, apiFetch, API_URL } from '../lib/api';
 import { io } from 'socket.io-client';
+
+const DEFAULT_INSTRUCTIONS = [
+  'Presentá tu QR en la entrada del teatro',
+  'Recordá llegar al menos 30 minutos antes, las funciones comienzan puntual',
+  'Una vez comenzada la función, la ubicación pierde validez (el personal de la sala te asignará un nuevo lugar)',
+  'Podés compartir tus entradas por WhatsApp o Email',
+  'Las entradas no tienen cambio ni devolución, excepto en casos de cancelación/modificación del espectáculo'
+];
 
 export default function Perfil(){
   const { user, token } = useAuth();
@@ -14,6 +22,39 @@ export default function Perfil(){
   const [selectedTicket, setSelectedTicket] = useState(null);
   const [selectedSale, setSelectedSale] = useState(null); // para QR contenedor
   const [viewEntriesSaleId, setViewEntriesSaleId] = useState(null); // para "ver entradas" de una compra
+  const [isMobile, setIsMobile] = useState(() => typeof window !== 'undefined' && window.innerWidth < 768);
+  const [ticketInstructions, setTicketInstructions] = useState(DEFAULT_INSTRUCTIONS);
+  const [ticketInfoLines, setTicketInfoLines] = useState([]);
+  
+  // Track screen size for responsive
+  useEffect(() => {
+    const handleResize = () => setIsMobile(window.innerWidth < 768);
+    window.addEventListener('resize', handleResize);
+    return () => window.removeEventListener('resize', handleResize);
+  }, []);
+
+  // Cargar configuración de entradas (indicaciones y líneas de info)
+  useEffect(() => {
+    const loadTicketSettings = async () => {
+      try {
+        const [instrRes, linesRes] = await Promise.all([
+          apiFetch('/api/settings/ticket_instructions'),
+          apiFetch('/api/settings/ticket_info_lines')
+        ]);
+        const instrData = await instrRes.json();
+        const linesData = await linesRes.json();
+        if (instrData.value) {
+          try { setTicketInstructions(JSON.parse(instrData.value)); } catch { /* keep default */ }
+        }
+        if (linesData.value) {
+          try { setTicketInfoLines(JSON.parse(linesData.value)); } catch { /* keep empty */ }
+        }
+      } catch (err) {
+        console.error('Error loading ticket settings:', err);
+      }
+    };
+    loadTicketSettings();
+  }, []);
   
   // Estado para modal de email
   const [emailModalOpen, setEmailModalOpen] = useState(false);
@@ -174,7 +215,7 @@ export default function Perfil(){
       }, token);
       
       if (response.ok) {
-        alert('✉️ Email enviado exitosamente a ' + emailInput);
+        alert('Email enviado exitosamente a ' + emailInput);
         setEmailModalOpen(false);
       } else {
         const error = await response.json();
@@ -193,7 +234,7 @@ export default function Perfil(){
       const baseUrl = window.location.origin;
       const shareUrl = `${baseUrl}/api/share/sale/${saleId}`;
       
-      const message = `Hola! Te comparto tus entradas para el show ${showTitle} del día ${sessionDate} a las ${sessionTime}.\n\n🎭 Ver entradas: ${shareUrl}\n\nRecordá llegar al menos 30 minutos antes y mostrar el QR en el acceso.\n\n(Si no podés acceder al link, es porque no tenés agendado este número. Una vez que lo hagas, podrás acceder)\n\n¡Nos vemos!`;
+      const message = `Hola! Te comparto tus entradas para el show ${showTitle} del día ${sessionDate} a las ${sessionTime}.\n\nVer entradas: ${shareUrl}\n\nRecordá llegar al menos 30 minutos antes y mostrar el QR en el acceso. Una vez comenzada la función, la ubicación pierde validez (el personal de la sala te asignará un nuevo lugar).\n\n(Si no podés acceder al link, es porque no tenés agendado este número. Una vez que lo hagas, podrás acceder)\n\n¡Nos vemos!`;
       
       window.open(`https://wa.me/?text=${encodeURIComponent(message)}`, '_blank');
     } catch (err) {
@@ -208,7 +249,7 @@ export default function Perfil(){
       const baseUrl = window.location.origin;
       const shareUrl = `${baseUrl}/api/share/sale/${saleId}`;
       
-      const message = `Hola! Te comparto el QR general para el show ${showTitle} del día ${sessionDate} a las ${sessionTime}.\n\n🎭 Ver QR: ${shareUrl}\n\nRecordá llegar al menos 30 minutos antes y mostrar el QR en el acceso.\n\n(Si no podés acceder al link, es porque no tenés agendado este número. Una vez que lo hagas, podrás acceder)\n\n¡Nos vemos!`;
+      const message = `Hola! Te comparto el QR general para el show ${showTitle} del día ${sessionDate} a las ${sessionTime}.\n\nVer QR: ${shareUrl}\n\nRecordá llegar al menos 30 minutos antes y mostrar el QR en el acceso. Una vez comenzada la función, la ubicación pierde validez (el personal de la sala te asignará un nuevo lugar).\n\n(Si no podés acceder al link, es porque no tenés agendado este número. Una vez que lo hagas, podrás acceder)\n\n¡Nos vemos!`;
       
       window.open(`https://wa.me/?text=${encodeURIComponent(message)}`, '_blank');
     } catch (err) {
@@ -223,7 +264,7 @@ export default function Perfil(){
       const baseUrl = window.location.origin;
       const shareUrl = `${baseUrl}/api/share/ticket/${ticketId}`;
       
-      const message = `Hola! Te comparto tu entrada para el show ${showTitle} del día ${sessionDate} a las ${sessionTime}.\n\n📍 ${location}\n🎭 Ver entrada: ${shareUrl}\n\nRecordá llegar al menos 30 minutos antes y mostrar el QR en el acceso.\n\n(Si no podés acceder al link, es porque no tenés agendado este número. Una vez que lo hagas, podrás acceder)\n\n¡Nos vemos!`;
+      const message = `Hola! Te comparto tu entrada para el show ${showTitle} del día ${sessionDate} a las ${sessionTime}.\n\nUbicación: ${location}\nVer entrada: ${shareUrl}\n\nRecordá llegar al menos 30 minutos antes y mostrar el QR en el acceso. Una vez comenzada la función, la ubicación pierde validez (el personal de la sala te asignará un nuevo lugar).\n\n(Si no podés acceder al link, es porque no tenés agendado este número. Una vez que lo hagas, podrás acceder)\n\n¡Nos vemos!`;
       
       window.open(`https://wa.me/?text=${encodeURIComponent(message)}`, '_blank');
     } catch (err) {
@@ -271,7 +312,9 @@ export default function Perfil(){
     // Fallback
     if (!fullSection) fullSection = section || '';
     
-    if (type === 'butaca') {
+    if (type === 'service') {
+      return seat_code || 'Servicio';
+    } else if (type === 'butaca') {
       // Platea: "Platea Baja - Fila A - Asiento 1"
       const fila = seat_code ? seat_code.charAt(0).toUpperCase() : '';
       const asiento = seat_code ? seat_code.substring(1) : '';
@@ -283,6 +326,8 @@ export default function Perfil(){
       return `${fullSection} - Número ${numero}`;
     } else if (type === 'pullman') {
       return 'Pullman';
+    } else if (type === 'general') {
+      return 'Entrada General';
     }
     return '';
   };
@@ -308,6 +353,10 @@ export default function Perfil(){
         priorityA = 1;
       } else if (a.type === 'pullman') {
         priorityA = 4;
+      } else if (a.type === 'general') {
+        priorityA = 5;
+      } else if (a.type === 'service') {
+        priorityA = 6;
       }
 
       // Determinar prioridad de b
@@ -318,6 +367,10 @@ export default function Perfil(){
         priorityB = 1;
       } else if (b.type === 'pullman') {
         priorityB = 4;
+      } else if (b.type === 'general') {
+        priorityB = 5;
+      } else if (b.type === 'service') {
+        priorityB = 6;
       }
 
       // Si tienen misma prioridad, ordenar por seat_code alfanuméricamente
@@ -382,34 +435,30 @@ export default function Perfil(){
       );
     } else if (type === 'pullman') {
       return <div>Sector: <strong>Pullman</strong></div>;
+    } else if (type === 'service') {
+      return (
+        <>
+          <div>Servicio: <strong>{seat_code || 'Servicio'}</strong></div>
+          {ticket.capacity > 1 && <div>Personas: <strong>{ticket.capacity}</strong></div>}
+        </>
+      );
+    } else if (type === 'general') {
+      return <div>Sector: <strong>Entrada General</strong></div>;
     }
     return null;
   };
 
   return (
-    <div>
-      <h1>Mi Perfil</h1>
-      
-      {user && (
-        <div style={{ marginBottom: 16, padding: 12, background: '#f8f9fa', borderRadius: 6 }}>
-          <div style={{ fontSize: 14, color:'#666', marginBottom: 4 }}>Bienvenido/a</div>
-          <div style={{ fontSize: 18, fontWeight: 600, marginBottom: 4 }}>{user.name}</div>
-          <div style={{ fontSize: 14, color: '#666', marginBottom: 4 }}>{user.email}</div>
-          {user.phone && (
-            <div style={{ fontSize: 14, color: '#666', marginBottom: 4 }}>
-              📞 Teléfono: {user.phone}
-            </div>
-          )}
-          {user.dni && (
-            <div style={{ fontSize: 14, color: '#666', marginBottom: 4 }}>
-              🆔 DNI: {user.dni}
-            </div>
-          )}
-          <div style={{ fontSize: 12, color: '#999', marginTop: 8 }}>
-            Rol: <span style={{ fontWeight: 600 }}>{user.role}</span>
-          </div>
-        </div>
-      )}
+    <div style={{ padding: '24px', maxWidth: '1400px', margin: '0 auto' }}>
+      {/* Saludo personalizado */}
+      <div style={{ marginBottom: '32px' }}>
+        <h1 style={{ margin: 0, fontSize: '2rem', fontWeight: '700', color: '#111827' }}>
+          ¡Hola, {user?.name || 'Usuario'}!
+        </h1>
+        <p style={{ color: '#6b7280', margin: '8px 0 0 0', fontSize: '1rem' }}>
+          Gestioná tus entradas y tu información personal
+        </p>
+      </div>
 
       {/* Banner especial para productor */}
       {user?.role === 'productor' && (
@@ -438,7 +487,7 @@ export default function Perfil(){
         }}
         >
           <div style={{ display: 'flex', alignItems: 'center', gap: '16px' }}>
-            <div style={{ fontSize: '56px' }}>📊</div>
+            <div style={{ fontSize: '56px', fontWeight: '700' }}>REPORTES</div>
             <div style={{ flex: 1 }}>
               <h2 style={{ 
                 margin: 0, 
@@ -462,9 +511,70 @@ export default function Perfil(){
         </div>
       )}
 
-      <div style={{ display:'flex', gap:8, marginBottom:12 }}>
-        <button onClick={()=>setTab('proximos')} disabled={tab==='proximos'}>Próximos espectáculos</button>
-        <button onClick={()=>setTab('historial')} disabled={tab==='historial'}>Historial</button>
+      {/* Navegación estilo /admin */}
+      <div style={{ 
+        display: 'flex', 
+        gap: '16px',
+        marginBottom: '24px',
+        borderBottom: '2px solid #e5e7eb',
+        flexWrap: 'wrap'
+      }}>
+        <button
+          onClick={() => { setTab('proximos'); setViewEntriesSaleId(null); }}
+          style={{
+            padding: '12px 24px',
+            background: tab === 'proximos' ? '#0d6efd' : 'none',
+            border: 'none',
+            borderBottom: tab === 'proximos' ? '3px solid #0d6efd' : 'none',
+            color: tab === 'proximos' ? 'white' : '#6b7280',
+            fontWeight: 600,
+            fontSize: '1rem',
+            cursor: 'pointer',
+            marginBottom: '-2px',
+            transition: 'all 0.2s',
+            borderRadius: tab === 'proximos' ? '4px 4px 0 0' : 0
+          }}
+        >
+          Mis próximos eventos
+        </button>
+        
+        <button
+          onClick={() => { setTab('historial'); setViewEntriesSaleId(null); }}
+          style={{
+            padding: '12px 24px',
+            background: tab === 'historial' ? '#0d6efd' : 'none',
+            border: 'none',
+            borderBottom: tab === 'historial' ? '3px solid #0d6efd' : 'none',
+            color: tab === 'historial' ? 'white' : '#6b7280',
+            fontWeight: 600,
+            fontSize: '1rem',
+            cursor: 'pointer',
+            marginBottom: '-2px',
+            transition: 'all 0.2s',
+            borderRadius: tab === 'historial' ? '4px 4px 0 0' : 0
+          }}
+        >
+          Eventos pasados
+        </button>
+        
+        <button
+          onClick={() => { setTab('info'); setViewEntriesSaleId(null); }}
+          style={{
+            padding: '12px 24px',
+            background: tab === 'info' ? '#0d6efd' : 'none',
+            border: 'none',
+            borderBottom: tab === 'info' ? '3px solid #0d6efd' : 'none',
+            color: tab === 'info' ? 'white' : '#6b7280',
+            fontWeight: 600,
+            fontSize: '1rem',
+            cursor: 'pointer',
+            marginBottom: '-2px',
+            transition: 'all 0.2s',
+            borderRadius: tab === 'info' ? '4px 4px 0 0' : 0
+          }}
+        >
+          Mi información personal
+        </button>
       </div>
 
       {tab==='proximos' && !viewEntriesSaleId && (
@@ -474,64 +584,138 @@ export default function Perfil(){
             <div>No tenés próximos espectáculos. Cuando compres, verás aquí tus próximas funciones.</div>
           )}
           {!loading && upcomingSales.length>0 && (
+            <>
+            {/* Indicaciones previas al show */}
+            {ticketInfoLines.length > 0 && (
+              <div style={{ marginBottom: '12px' }}>
+                {ticketInfoLines.map((line, i) => (
+                  <div key={line.id || i} style={{
+                    background: '#f0fdf4',
+                    border: '1px solid #bbf7d0',
+                    borderRadius: '8px',
+                    padding: '10px 16px',
+                    marginBottom: '8px'
+                  }}>
+                    <div style={{ fontWeight: 700, fontSize: 14, color: '#166534' }}>{line.title}</div>
+                    {line.description && <div style={{ fontSize: 13, color: '#166534', marginTop: 2 }}>{line.description}</div>}
+                  </div>
+                ))}
+              </div>
+            )}
+            <div style={{
+              background: '#fff3cd',
+              borderLeft: '4px solid #ffc107',
+              padding: '16px 20px',
+              borderRadius: '8px',
+              marginBottom: '20px'
+            }}>
+              <strong style={{ color: '#856404', display: 'block', marginBottom: '8px' }}>📋 Antes del show:</strong>
+              <ul style={{ color: '#856404', margin: 0, paddingLeft: '20px' }}>
+                {ticketInstructions.map((instr, i) => (
+                  <li key={i} style={{ marginBottom: i < ticketInstructions.length - 1 ? '6px' : 0 }}>{instr}</li>
+                ))}
+              </ul>
+            </div>
             <div style={{ display:'grid', gap:16 }}>
               {upcomingSales.map(s => (
-                <div key={s.id} style={{ width:'100%', padding:16, border:'1px solid #d1d5db', borderRadius:16, background:'#e8e7d1', boxShadow:'0 2px 4px rgba(0,0,0,0.1)' }}>
-                  <div style={{ display:'grid', gridTemplateColumns:'120px 1px 1fr 1px auto 1px auto 1px auto', gap:16, alignItems:'center' }}>
-                    {/* 1) Imagen */}
-                    <div style={{ width:120, minHeight:96, overflow:'hidden', borderRadius:8, background:'#f3f4f6' }}>
-                      {s.session?.show?.image_url ? (
-                        <img src={s.session.show.image_url} alt={s.session?.show?.title} style={{ width:'100%', height:'100%', objectFit:'cover' }} />
-                      ) : (
-                        <div style={{ width:'100%', height:'100%', display:'flex', alignItems:'center', justifyContent:'center', color:'#9ca3af', fontSize:12 }}>Sin imagen</div>
-                      )}
-                    </div>
-                    {/* Separador */}
-                    <div style={{ width:1, height:'100%', background:'#d1d5db' }}></div>
-                    {/* 2) Título + fecha/hora + QR de acceso */}
-                    <div style={{ minWidth:0, textAlign:'center', padding:'0 8px' }}>
-                      <div style={{ fontSize:18, fontWeight:700, whiteSpace:'nowrap', overflow:'hidden', textOverflow:'ellipsis' }}>{s.session?.show?.title || 'Espectáculo'}</div>
-                      <div style={{ color:'#6b7280', marginTop:4 }}>
-                        {fmtDate(s.session?.starts_at)} • {fmtTime(s.session?.starts_at)}
-                      </div>
-                      {s.container_qr_code && (
-                        <div style={{ marginTop:10 }}>
-                          <button onClick={()=>setSelectedSale(s)} style={{ padding:'8px 12px', background:'#111827', color:'white', border:'none', borderRadius:8, fontWeight:600, cursor:'pointer' }}>QR de acceso</button>
+                <div key={s.id} style={{ width:'100%', padding: isMobile ? 12 : 16, border:'1px solid #d1d5db', borderRadius:16, background:'#e8e7d1', boxShadow:'0 2px 4px rgba(0,0,0,0.1)' }}>
+                  {isMobile ? (
+                    /* Mobile Layout - Vertical */
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+                      {/* Header: Imagen + Info */}
+                      <div style={{ display: 'flex', gap: 12, alignItems: 'flex-start' }}>
+                        <div style={{ width: 80, height: 64, flexShrink: 0, overflow: 'hidden', borderRadius: 8, background: '#f3f4f6' }}>
+                          {s.session?.show?.image_url ? (
+                            <img src={s.session.show.image_url} alt={s.session?.show?.title} style={{ width: '100%', height: '100%', objectFit: 'contain' }} />
+                          ) : (
+                            <div style={{ width: '100%', height: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#9ca3af', fontSize: 10 }}>Sin imagen</div>
+                          )}
                         </div>
-                      )}
-                    </div>
-                    {/* Separador */}
-                    <div style={{ width:1, height:'100%', background:'#d1d5db' }}></div>
-                    {/* 3) Compartir (vertical) */}
-                    <div style={{ display:'flex', flexDirection:'column', gap:8, alignItems:'stretch', minWidth:160, padding:'0 8px' }}>
-                      <div style={{ fontSize:12, color:'#6b7280', textAlign:'center' }}>compartí tus entradas</div>
-                      <button onClick={() => handleShareWhatsApp(s.id, s.session?.show?.title, fmtDate(s.session?.starts_at), fmtTime(s.session?.starts_at))} style={{ padding:'10px 12px', background:'#26894bff', color:'white', borderRadius:8, fontWeight:600, border:'none', cursor:'pointer', textAlign:'center' }}>WhatsApp</button>
-                      <button onClick={(e) => { e.stopPropagation(); handleShareEmail(s.id); }} style={{ padding:'10px 12px', background:'#111827', color:'white', borderRadius:8, fontWeight:600, border:'none', cursor:'pointer', textAlign:'center' }}>Email</button>
-                    </div>
-                    {/* Separador */}
-                    <div style={{ width:1, height:'100%', background:'#d1d5db' }}></div>
-                    {/* 4) Ver QR contenedor (botón cuadrado) */}
-                    <div style={{ padding:'0 8px' }}>
-                      {s.tickets && s.tickets.length > 0 && (s.tickets[0].container_qr_code || s.tickets.some(t => t.container_qr_code)) && (
-                        <button onClick={()=>setSelectedSale(s)} style={{ padding:'12px 16px', background:'#111827', color:'white', border:'none', borderRadius:8, fontWeight:700, cursor:'pointer', display:'flex', alignItems:'center', justifyContent:'center', minHeight:80, minWidth:100 }}>
-                          <span style={{ textAlign:'center', lineHeight:1.3 }}>Ver<br/>QR</span>
+                        <div style={{ flex: 1, minWidth: 0 }}>
+                          <div style={{ fontSize: 15, fontWeight: 700, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{s.session?.show?.title || 'Espectáculo'}</div>
+                          <div style={{ color: '#6b7280', fontSize: 13, marginTop: 2 }}>
+                            {fmtDate(s.session?.starts_at)}
+                          </div>
+                          <div style={{ color: '#6b7280', fontSize: 13 }}>
+                            {fmtTime(s.session?.starts_at)} hs
+                          </div>
+                        </div>
+                      </div>
+                      {/* Botones en 2 filas */}
+                      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8 }}>
+                        <button onClick={()=>setSelectedSale(s)} style={{ padding: '10px 8px', background: '#111827', color: 'white', border: 'none', borderRadius: 8, fontWeight: 600, cursor: 'pointer', fontSize: 13 }}>
+                          QR de acceso
                         </button>
-                      )}
+                        <button onClick={()=>setViewEntriesSaleId(s.id)} style={{ padding: '10px 8px', background: '#5758a3ff', color: 'white', border: 'none', borderRadius: 8, fontWeight: 600, cursor: 'pointer', fontSize: 13 }}>
+                          Ver entradas
+                        </button>
+                      </div>
+                      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8 }}>
+                        <button onClick={() => handleShareWhatsApp(s.id, s.session?.show?.title, fmtDate(s.session?.starts_at), fmtTime(s.session?.starts_at))} style={{ padding: '10px 8px', background: '#26894bff', color: 'white', borderRadius: 8, fontWeight: 600, border: 'none', cursor: 'pointer', fontSize: 13 }}>
+                          WhatsApp
+                        </button>
+                        <button onClick={(e) => { e.stopPropagation(); handleShareEmail(s.id); }} style={{ padding: '10px 8px', background: '#374151', color: 'white', borderRadius: 8, fontWeight: 600, border: 'none', cursor: 'pointer', fontSize: 13 }}>
+                          Email
+                        </button>
+                      </div>
                     </div>
-                    {/* Separador */}
-                    <div style={{ width:1, height:'100%', background:'#d1d5db' }}></div>
-                    {/* 5) Ver entradas (botón cuadrado) */}
-                    <div style={{ padding:'0 8px' }}>
-                      <button onClick={()=>setViewEntriesSaleId(s.id)} style={{ padding:'12px 16px', background:'#5758a3ff', color:'white', border:'none', borderRadius:8, fontWeight:700, cursor:'pointer', display:'flex', alignItems:'center', justifyContent:'center', minHeight:80, minWidth:100 }}>
-                        <span style={{ textAlign:'center', lineHeight:1.3 }}>Ver<br/>entradas</span>
-                      </button>
+                  ) : (
+                    /* Desktop Layout - Horizontal */
+                    <div style={{ display:'grid', gridTemplateColumns:'120px 1px 1fr 1px auto 1px auto 1px auto', gap:16, alignItems:'center' }}>
+                      {/* 1) Imagen */}
+                      <div style={{ width:120, minHeight:96, overflow:'hidden', borderRadius:8, background:'#f3f4f6' }}>
+                        {s.session?.show?.image_url ? (
+                          <img src={s.session.show.image_url} alt={s.session?.show?.title} style={{ width:'100%', height:'100%', objectFit:'cover' }} />
+                        ) : (
+                          <div style={{ width:'100%', height:'100%', display:'flex', alignItems:'center', justifyContent:'center', color:'#9ca3af', fontSize:12 }}>Sin imagen</div>
+                        )}
+                      </div>
+                      {/* Separador */}
+                      <div style={{ width:1, height:'100%', background:'#d1d5db' }}></div>
+                      {/* 2) Título + fecha/hora + QR de acceso */}
+                      <div style={{ minWidth:0, textAlign:'center', padding:'0 8px' }}>
+                        <div style={{ fontSize:18, fontWeight:700, whiteSpace:'nowrap', overflow:'hidden', textOverflow:'ellipsis' }}>{s.session?.show?.title || 'Espectáculo'}</div>
+                        <div style={{ color:'#6b7280', marginTop:4 }}>
+                          {fmtDate(s.session?.starts_at)} - {fmtTime(s.session?.starts_at)}
+                        </div>
+                        {s.container_qr_code && (
+                          <div style={{ marginTop:10 }}>
+                            <button onClick={()=>setSelectedSale(s)} style={{ padding:'8px 12px', background:'#111827', color:'white', border:'none', borderRadius:8, fontWeight:600, cursor:'pointer' }}>QR de acceso</button>
+                          </div>
+                        )}
+                      </div>
+                      {/* Separador */}
+                      <div style={{ width:1, height:'100%', background:'#d1d5db' }}></div>
+                      {/* 3) Compartir (vertical) */}
+                      <div style={{ display:'flex', flexDirection:'column', gap:8, alignItems:'stretch', minWidth:160, padding:'0 8px' }}>
+                        <div style={{ fontSize:12, color:'#6b7280', textAlign:'center' }}>compartí tus entradas</div>
+                        <button onClick={() => handleShareWhatsApp(s.id, s.session?.show?.title, fmtDate(s.session?.starts_at), fmtTime(s.session?.starts_at))} style={{ padding:'10px 12px', background:'#26894bff', color:'white', borderRadius:8, fontWeight:600, border:'none', cursor:'pointer', textAlign:'center' }}>WhatsApp</button>
+                        <button onClick={(e) => { e.stopPropagation(); handleShareEmail(s.id); }} style={{ padding:'10px 12px', background:'#111827', color:'white', borderRadius:8, fontWeight:600, border:'none', cursor:'pointer', textAlign:'center' }}>Email</button>
+                      </div>
+                      {/* Separador */}
+                      <div style={{ width:1, height:'100%', background:'#d1d5db' }}></div>
+                      {/* 4) Ver QR contenedor (botón cuadrado) */}
+                      <div style={{ padding:'0 8px' }}>
+                        {s.tickets && s.tickets.length > 0 && (s.tickets[0].container_qr_code || s.tickets.some(t => t.container_qr_code)) && (
+                          <button onClick={()=>setSelectedSale(s)} style={{ padding:'12px 16px', background:'#111827', color:'white', border:'none', borderRadius:8, fontWeight:700, cursor:'pointer', display:'flex', alignItems:'center', justifyContent:'center', minHeight:80, minWidth:100 }}>
+                            <span style={{ textAlign:'center', lineHeight:1.3 }}>Ver<br/>QR</span>
+                          </button>
+                        )}
+                      </div>
+                      {/* Separador */}
+                      <div style={{ width:1, height:'100%', background:'#d1d5db' }}></div>
+                      {/* 5) Ver entradas (botón cuadrado) */}
+                      <div style={{ padding:'0 8px' }}>
+                        <button onClick={()=>setViewEntriesSaleId(s.id)} style={{ padding:'12px 16px', background:'#5758a3ff', color:'white', border:'none', borderRadius:8, fontWeight:700, cursor:'pointer', display:'flex', alignItems:'center', justifyContent:'center', minHeight:80, minWidth:100 }}>
+                          <span style={{ textAlign:'center', lineHeight:1.3 }}>Ver<br/>entradas</span>
+                        </button>
+                      </div>
                     </div>
-                  </div>
-
-                  {/* Acciones secundarias: removidas para estilo minimalista y mantener 4 columnas */}
+                  )}
                 </div>
               ))}
             </div>
+            </>
           )}
         </div>
       )}
@@ -551,108 +735,174 @@ export default function Perfil(){
               <div style={{ display:'grid', gap:12 }}>
                 {saleTickets.length === 0 && <div>No se encontraron entradas asociadas todavía.</div>}
                 {saleTickets.map(t => (
-                  <div key={t.id} style={{ width:'100%', padding:14, border:'1px solid #d1d5db', borderRadius:12, background:'#e8e7d1', boxShadow:'0 2px 4px rgba(0,0,0,0.1)' }}>
-                    <div style={{ display:'grid', gridTemplateColumns:'100px 1px 1fr 1px auto 1px auto 1px auto', gap:12, alignItems:'center' }}>
-                      {/* 1) Imagen */}
-                      <div style={{ width:100, height:80, overflow:'hidden', borderRadius:8, background:'#f3f4f6' }}>
-                        {sale.session?.show?.image_url ? (
-                          <img src={sale.session.show.image_url} alt={sale.session?.show?.title} style={{ width:'100%', height:'100%', objectFit:'cover' }} />
-                        ) : (
-                          <div style={{ width:'100%', height:'100%', display:'flex', alignItems:'center', justifyContent:'center', color:'#9ca3af', fontSize:12 }}>Sin imagen</div>
-                        )}
-                      </div>
-                      {/* Separador */}
-                      <div style={{ width:1, height:'100%', background:'#d1d5db' }}></div>
-                      {/* 2) Título + fecha/hora */}
-                      <div style={{ minWidth:0, textAlign:'center', padding:'0 8px' }}>
-                        <div style={{ fontWeight:700, whiteSpace:'nowrap', overflow:'hidden', textOverflow:'ellipsis' }}>{sale.session?.show?.title || 'Espectáculo'}</div>
-                        <div style={{ color:'#6b7280', marginTop:2 }}>{fmtDate(sale.session?.starts_at)} • {fmtTime(sale.session?.starts_at)}</div>
-                      </div>
-                      {/* Separador */}
-                      <div style={{ width:1, height:'100%', background:'#d1d5db' }}></div>
-                      {/* 3) Ubicación */}
-                      <div style={{ flex:1, padding:'0 12px', display:'flex', flexDirection:'column', justifyContent:'center', gap:4 }}>
-                        {formatDetailedLocation(t)}
-                        {(() => {
-                          const currentValidated = t.capacity_validated || 0;
-                          const totalCapacity = t.capacity || 1;
-                          const isPartiallyValidated = currentValidated > 0 && currentValidated < totalCapacity;
-                          const isFullyValidated = t.status === 'validated' || currentValidated >= totalCapacity || !!t.validated_at;
-
-                          if (isPartiallyValidated) {
-                            return (
-                              <div style={{ 
-                                marginTop: 8, 
-                                padding: '4px 8px', 
-                                background: '#fef3c7', 
-                                border: '1px solid #fbbf24',
-                                borderRadius: 6, 
-                                fontSize: 12, 
-                                fontWeight: 700, 
-                                color: '#92400e',
-                                textAlign: 'center'
-                              }}>
-                                ⚠ VALIDACIÓN PARCIAL: {currentValidated}/{totalCapacity} ingresadas
-                              </div>
-                            );
-                          }
-
-                          if (isFullyValidated) {
-                            return (
-                              <div style={{ 
-                                marginTop: 8, 
-                                padding: '4px 8px', 
-                                background: '#dcfce7', 
-                                border: '1px solid #86efac',
-                                borderRadius: 6, 
-                                fontSize: 12, 
-                                fontWeight: 700, 
-                                color: '#166534',
-                                textAlign: 'center'
-                              }}>
-                                ✓ VALIDADA
-                              </div>
-                            );
-                          }
-
-                          return null;
-                        })()}
-                      </div>
-                      {/* Separador */}
-                      <div style={{ width:1, height:'100%', background:'#d1d5db' }}></div>
-                      {/* 4) Compartir entrada individual (vertical) */}
-                      <div style={{ display:'flex', flexDirection:'column', gap:8, alignItems:'stretch', minWidth:160, padding:'0 8px' }}>
-                        <div style={{ fontSize:12, color:'#6b7280', textAlign:'center' }}>Compartir esta entrada</div>
-                        <button 
-                          onClick={() => handleShareTicketWhatsApp(
-                            t.id,
-                            sale.session?.show?.title,
-                            fmtDate(sale.session?.starts_at),
-                            fmtTime(sale.session?.starts_at),
-                            formatFullLocation(t)
-                          )} 
-                          style={{ padding:'8px 10px', background:'#26894bff', color:'white', borderRadius:8, fontWeight:600, border:'none', cursor:'pointer', textAlign:'center' }}
-                        >
-                          WhatsApp
-                        </button>
-                        <button 
-                          onClick={(e) => { e.stopPropagation(); handleShareTicketEmail(t.id); }} 
-                          style={{ padding:'8px 10px', background:'#111827', color:'white', borderRadius:8, fontWeight:600, border:'none', cursor:'pointer', textAlign:'center' }}
-                        >
-                          Email
-                        </button>
-                      </div>
-                      {/* Separador */}
-                      <div style={{ width:1, height:'100%', background:'#d1d5db' }}></div>
-                      {/* 5) Ver QR (botón cuadrado) */}
-                      <div style={{ padding:'0 8px' }}>
-                        {t.qr_code && (
-                          <button onClick={()=>setSelectedTicket(t)} style={{ padding:'12px 16px', background:'#6366f1', color:'white', border:'none', borderRadius:8, fontWeight:700, cursor:'pointer', display:'flex', alignItems:'center', justifyContent:'center', minHeight:80, minWidth:80 }}>
-                            <span style={{ textAlign:'center', lineHeight:1.3 }}>Ver<br/>QR</span>
+                  <div key={t.id} style={{ width:'100%', padding: isMobile ? 12 : 14, border:'1px solid #d1d5db', borderRadius:12, background:'#e8e7d1', boxShadow:'0 2px 4px rgba(0,0,0,0.1)' }}>
+                    {isMobile ? (
+                      /* Mobile Layout - Vertical */
+                      <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+                        {/* Header: Imagen + Info */}
+                        <div style={{ display: 'flex', gap: 12, alignItems: 'flex-start' }}>
+                          <div style={{ width: 70, height: 56, flexShrink: 0, overflow: 'hidden', borderRadius: 8, background: '#f3f4f6' }}>
+                            {sale.session?.show?.image_url ? (
+                              <img src={sale.session.show.image_url} alt={sale.session?.show?.title} style={{ width: '100%', height: '100%', objectFit: 'contain' }} />
+                            ) : (
+                              <div style={{ width: '100%', height: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#9ca3af', fontSize: 10 }}>Sin imagen</div>
+                            )}
+                          </div>
+                          <div style={{ flex: 1, minWidth: 0 }}>
+                            <div style={{ fontSize: 14, fontWeight: 700, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{sale.session?.show?.title || 'Espectáculo'}</div>
+                            <div style={{ color: '#6b7280', fontSize: 12, marginTop: 2 }}>
+                              {fmtDate(sale.session?.starts_at)} - {fmtTime(sale.session?.starts_at)}
+                            </div>
+                          </div>
+                        </div>
+                        {/* Ubicación */}
+                        <div style={{ padding: '8px 12px', background: '#f3f4f6', borderRadius: 8 }}>
+                          {formatDetailedLocation(t)}
+                          {(() => {
+                            const currentValidated = t.capacity_validated || 0;
+                            const totalCapacity = t.capacity || 1;
+                            const isPartiallyValidated = currentValidated > 0 && currentValidated < totalCapacity;
+                            const isFullyValidated = t.status === 'validated' || currentValidated >= totalCapacity || !!t.validated_at;
+                            if (isPartiallyValidated) {
+                              return (
+                                <div style={{ marginTop: 8, padding: '4px 8px', background: '#fef3c7', border: '1px solid #fbbf24', borderRadius: 6, fontSize: 11, fontWeight: 700, color: '#92400e', textAlign: 'center' }}>
+                                  PARCIAL: {currentValidated}/{totalCapacity}
+                                </div>
+                              );
+                            }
+                            if (isFullyValidated) {
+                              return (
+                                <div style={{ marginTop: 8, padding: '4px 8px', background: '#dcfce7', border: '1px solid #86efac', borderRadius: 6, fontSize: 11, fontWeight: 700, color: '#166534', textAlign: 'center' }}>
+                                  VALIDADA
+                                </div>
+                              );
+                            }
+                            return null;
+                          })()}
+                        </div>
+                        {/* Botones */}
+                        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 8 }}>
+                          <button onClick={()=>setSelectedTicket(t)} style={{ padding: '10px 6px', background: '#6366f1', color: 'white', border: 'none', borderRadius: 8, fontWeight: 600, cursor: 'pointer', fontSize: 12 }}>
+                            Ver QR
                           </button>
-                        )}
+                          <button 
+                            onClick={() => handleShareTicketWhatsApp(t.id, sale.session?.show?.title, fmtDate(sale.session?.starts_at), fmtTime(sale.session?.starts_at), formatFullLocation(t))} 
+                            style={{ padding: '10px 6px', background: '#26894bff', color: 'white', borderRadius: 8, fontWeight: 600, border: 'none', cursor: 'pointer', fontSize: 12 }}
+                          >
+                            WhatsApp
+                          </button>
+                          <button 
+                            onClick={(e) => { e.stopPropagation(); handleShareTicketEmail(t.id); }} 
+                            style={{ padding: '10px 6px', background: '#374151', color: 'white', borderRadius: 8, fontWeight: 600, border: 'none', cursor: 'pointer', fontSize: 12 }}
+                          >
+                            Email
+                          </button>
+                        </div>
                       </div>
-                    </div>
+                    ) : (
+                      /* Desktop Layout - Horizontal */
+                      <div style={{ display:'grid', gridTemplateColumns:'100px 1px 1fr 1px auto 1px auto 1px auto', gap:12, alignItems:'center' }}>
+                        {/* 1) Imagen */}
+                        <div style={{ width:120, minHeight:96, overflow:'hidden', borderRadius:8, background:'#f3f4f6' }}>
+                          {sale.session?.show?.image_url ? (
+                            <img src={sale.session.show.image_url} alt={sale.session?.show?.title} style={{ width:'100%', height:'auto', objectFit:'contain' }} />
+                          ) : (
+                            <div style={{ width:'100%', height:'100%', display:'flex', alignItems:'center', justifyContent:'center', color:'#9ca3af', fontSize:12 }}>Sin imagen</div>
+                          )}
+                        </div>
+                        {/* Separador */}
+                        <div style={{ width:1, height:'100%', background:'#d1d5db' }}></div>
+                        {/* 2) Título + fecha/hora */}
+                        <div style={{ minWidth:0, textAlign:'center', padding:'0 8px' }}>
+                          <div style={{ fontWeight:700, whiteSpace:'nowrap', overflow:'hidden', textOverflow:'ellipsis' }}>{sale.session?.show?.title || 'Espectáculo'}</div>
+                          <div style={{ color:'#6b7280', marginTop:2 }}>{fmtDate(sale.session?.starts_at)} - {fmtTime(sale.session?.starts_at)}</div>
+                        </div>
+                        {/* Separador */}
+                        <div style={{ width:1, height:'100%', background:'#d1d5db' }}></div>
+                        {/* 3) Ubicación */}
+                        <div style={{ flex:1, padding:'0 12px', display:'flex', flexDirection:'column', justifyContent:'center', gap:4 }}>
+                          {formatDetailedLocation(t)}
+                          {(() => {
+                            const currentValidated = t.capacity_validated || 0;
+                            const totalCapacity = t.capacity || 1;
+                            const isPartiallyValidated = currentValidated > 0 && currentValidated < totalCapacity;
+                            const isFullyValidated = t.status === 'validated' || currentValidated >= totalCapacity || !!t.validated_at;
+
+                            if (isPartiallyValidated) {
+                              return (
+                                <div style={{ 
+                                  marginTop: 8, 
+                                  padding: '4px 8px', 
+                                  background: '#fef3c7', 
+                                  border: '1px solid #fbbf24',
+                                  borderRadius: 6, 
+                                  fontSize: 12, 
+                                  fontWeight: 700, 
+                                  color: '#92400e',
+                                  textAlign: 'center'
+                                }}>
+                                  VALIDACIÓN PARCIAL: {currentValidated}/{totalCapacity} ingresadas
+                                </div>
+                              );
+                            }
+
+                            if (isFullyValidated) {
+                              return (
+                                <div style={{ 
+                                  marginTop: 8, 
+                                  padding: '4px 8px', 
+                                  background: '#dcfce7', 
+                                  border: '1px solid #86efac',
+                                  borderRadius: 6, 
+                                  fontSize: 12, 
+                                  fontWeight: 700, 
+                                  color: '#166534',
+                                  textAlign: 'center'
+                                }}>
+                                  VALIDADA
+                                </div>
+                              );
+                            }
+
+                            return null;
+                          })()}
+                        </div>
+                        {/* Separador */}
+                        <div style={{ width:1, height:'100%', background:'#d1d5db' }}></div>
+                        {/* 4) Compartir entrada individual (vertical) */}
+                        <div style={{ display:'flex', flexDirection:'column', gap:8, alignItems:'stretch', minWidth:160, padding:'0 8px' }}>
+                          <div style={{ fontSize:12, color:'#6b7280', textAlign:'center' }}>Compartir esta entrada</div>
+                          <button 
+                            onClick={() => handleShareTicketWhatsApp(
+                              t.id,
+                              sale.session?.show?.title,
+                              fmtDate(sale.session?.starts_at),
+                              fmtTime(sale.session?.starts_at),
+                              formatFullLocation(t)
+                            )} 
+                            style={{ padding:'8px 10px', background:'#26894bff', color:'white', borderRadius:8, fontWeight:600, border:'none', cursor:'pointer', textAlign:'center' }}
+                          >
+                            WhatsApp
+                          </button>
+                          <button 
+                            onClick={(e) => { e.stopPropagation(); handleShareTicketEmail(t.id); }} 
+                            style={{ padding:'8px 10px', background:'#111827', color:'white', borderRadius:8, fontWeight:600, border:'none', cursor:'pointer', textAlign:'center' }}
+                          >
+                            Email
+                          </button>
+                        </div>
+                        {/* Separador */}
+                        <div style={{ width:1, height:'100%', background:'#d1d5db' }}></div>
+                        {/* 5) Ver QR (botón cuadrado) */}
+                        <div style={{ padding:'0 8px' }}>
+                          {t.qr_code && (
+                            <button onClick={()=>setSelectedTicket(t)} style={{ padding:'12px 16px', background:'#6366f1', color:'white', border:'none', borderRadius:8, fontWeight:700, cursor:'pointer', display:'flex', alignItems:'center', justifyContent:'center', minHeight:80, minWidth:80 }}>
+                              <span style={{ textAlign:'center', lineHeight:1.3 }}>Ver<br/>QR</span>
+                            </button>
+                          )}
+                        </div>
+                      </div>
+                    )}
                   </div>
                 ))}
               </div>
@@ -743,7 +993,7 @@ export default function Perfil(){
                       overflow: 'hidden',
                       textOverflow: 'ellipsis'
                     }}>
-                      <span>✓ YA INGRESADO — </span>
+                      <span> YA INGRESADO — </span>
                       <span>{formatFullLocation(selectedTicket)}</span>
                     </div>
                   </div>
@@ -772,8 +1022,32 @@ export default function Perfil(){
               </div>
             )}
             
-            <div style={{ fontSize: 12, color: '#999', marginBottom: 16 }}>
+            <div style={{ fontSize: 12, color: '#999', marginBottom: 8 }}>
               Mostrá este código en el acceso al evento
+            </div>
+            {ticketInfoLines.length > 0 && (
+              <div style={{ marginBottom: 10 }}>
+                {ticketInfoLines.map((line, i) => (
+                  <div key={line.id || i} style={{
+                    background: '#f0fdf4',
+                    border: '1px solid #bbf7d0',
+                    borderRadius: 8,
+                    padding: '8px 12px',
+                    marginBottom: 6,
+                    textAlign: 'left'
+                  }}>
+                    <div style={{ fontWeight: 700, fontSize: 13, color: '#166534' }}>{line.title}</div>
+                    {line.description && <div style={{ fontSize: 12, color: '#166534', marginTop: 2 }}>{line.description}</div>}
+                  </div>
+                ))}
+              </div>
+            )}
+            <div style={{ fontSize: 11, color: '#856404', background: '#fff3cd', padding: '8px 12px', borderRadius: 6, marginBottom: 16, textAlign: 'left' }}>
+              <ul style={{ margin: 0, paddingLeft: 16 }}>
+                {ticketInstructions.map((instr, i) => (
+                  <li key={i} style={{ marginBottom: i < ticketInstructions.length - 1 ? 4 : 0 }}>{instr}</li>
+                ))}
+              </ul>
             </div>
             
             <button
@@ -820,12 +1094,12 @@ export default function Perfil(){
                       <div style={{ fontWeight:700, fontSize:18, color:'#374151', marginBottom:8 }}>{s.session?.show?.title || 'Espectáculo'}</div>
                       <div style={{ display:'flex', flexDirection:'column', gap:4, fontSize:14 }}>
                         <div style={{ display:'flex', alignItems:'center', gap:6, color:'#6b7280' }}>
-                          <span>📅</span>
-                          <span style={{ fontWeight:600 }}>{fmtDate(s.session?.starts_at)}</span>
+                          <span style={{ fontWeight:600 }}>Fecha:</span>
+                          <span>{fmtDate(s.session?.starts_at)}</span>
                         </div>
                         <div style={{ display:'flex', alignItems:'center', gap:6, color:'#6b7280' }}>
-                          <span>🕐</span>
-                          <span style={{ fontWeight:600 }}>{fmtTime(s.session?.starts_at)}</span>
+                          <span style={{ fontWeight:600 }}>Hora:</span>
+                          <span>{fmtTime(s.session?.starts_at)}</span>
                         </div>
                       </div>
                       {/* Badge de completada */}
@@ -840,7 +1114,7 @@ export default function Perfil(){
                         color: '#3730a3',
                         display: 'inline-block'
                       }}>
-                        ✓ FUNCIÓN COMPLETADA
+                        FUNCIÓN COMPLETADA
                       </div>
                     </div>
                     {/* Separador */}
@@ -863,6 +1137,164 @@ export default function Perfil(){
               ))}
             </div>
           )}
+        </div>
+      )}
+
+      {/* Tab: Mi información personal */}
+      {tab==='info' && (
+        <div style={{ maxWidth: '800px', margin: '0 auto' }}>
+          <div style={{ 
+            background: 'white', 
+            padding: '32px', 
+            borderRadius: '12px', 
+            boxShadow: '0 2px 8px rgba(0,0,0,0.1)',
+            border: '1px solid #e5e7eb'
+          }}>
+            <h2 style={{ margin: '0 0 24px 0', fontSize: '1.5rem', fontWeight: '700', color: '#111827' }}>
+              Información Personal
+            </h2>
+            
+            <div style={{ display: 'grid', gap: '20px' }}>
+              {/* Nombre */}
+              <div>
+                <label style={{ display: 'block', marginBottom: '8px', fontWeight: '600', color: '#374151' }}>
+                  Nombre completo
+                </label>
+                <input
+                  type="text"
+                  value={user?.name || ''}
+                  readOnly
+                  style={{
+                    width: '100%',
+                    padding: '12px',
+                    borderRadius: '8px',
+                    border: '1px solid #d1d5db',
+                    background: '#f9fafb',
+                    fontSize: '1rem',
+                    color: '#111827'
+                  }}
+                />
+              </div>
+
+              {/* Email */}
+              <div>
+                <label style={{ display: 'block', marginBottom: '8px', fontWeight: '600', color: '#374151' }}>
+                  Email
+                </label>
+                <input
+                  type="email"
+                  value={user?.email || ''}
+                  readOnly
+                  style={{
+                    width: '100%',
+                    padding: '12px',
+                    borderRadius: '8px',
+                    border: '1px solid #d1d5db',
+                    background: '#f9fafb',
+                    fontSize: '1rem',
+                    color: '#111827'
+                  }}
+                />
+              </div>
+
+              {/* Teléfono */}
+              <div>
+                <label style={{ display: 'block', marginBottom: '8px', fontWeight: '600', color: '#374151' }}>
+                  Teléfono
+                </label>
+                <input
+                  type="tel"
+                  value={user?.phone || ''}
+                  readOnly
+                  style={{
+                    width: '100%',
+                    padding: '12px',
+                    borderRadius: '8px',
+                    border: '1px solid #d1d5db',
+                    background: '#f9fafb',
+                    fontSize: '1rem',
+                    color: '#111827'
+                  }}
+                />
+              </div>
+
+              {/* DNI */}
+              <div>
+                <label style={{ display: 'block', marginBottom: '8px', fontWeight: '600', color: '#374151' }}>
+                  DNI
+                </label>
+                <input
+                  type="text"
+                  value={user?.dni || ''}
+                  readOnly
+                  style={{
+                    width: '100%',
+                    padding: '12px',
+                    borderRadius: '8px',
+                    border: '1px solid #d1d5db',
+                    background: '#f9fafb',
+                    fontSize: '1rem',
+                    color: '#111827'
+                  }}
+                />
+              </div>
+
+              {/* Provincia */}
+              <div>
+                <label style={{ display: 'block', marginBottom: '8px', fontWeight: '600', color: '#374151' }}>
+                  Provincia
+                </label>
+                <input
+                  type="text"
+                  value={user?.provincia || 'No especificada'}
+                  readOnly
+                  style={{
+                    width: '100%',
+                    padding: '12px',
+                    borderRadius: '8px',
+                    border: '1px solid #d1d5db',
+                    background: '#f9fafb',
+                    fontSize: '1rem',
+                    color: '#111827'
+                  }}
+                />
+              </div>
+
+              {/* Localidad */}
+              <div>
+                <label style={{ display: 'block', marginBottom: '8px', fontWeight: '600', color: '#374151' }}>
+                  Localidad
+                </label>
+                <input
+                  type="text"
+                  value={user?.localidad || 'No especificada'}
+                  readOnly
+                  style={{
+                    width: '100%',
+                    padding: '12px',
+                    borderRadius: '8px',
+                    border: '1px solid #d1d5db',
+                    background: '#f9fafb',
+                    fontSize: '1rem',
+                    color: '#111827'
+                  }}
+                />
+              </div>
+
+              {/* Nota informativa */}
+              <div style={{ 
+                marginTop: '16px',
+                padding: '16px', 
+                background: '#eff6ff', 
+                border: '1px solid #bfdbfe',
+                borderRadius: '8px'
+              }}>
+                <p style={{ margin: 0, fontSize: '0.875rem', color: '#1e40af', lineHeight: 1.5 }}>
+                  <strong>Nota:</strong> Para modificar tu información personal, por favor contactá con el administrador del teatro.
+                </p>
+              </div>
+            </div>
+          </div>
         </div>
       )}
 
@@ -940,7 +1372,7 @@ export default function Perfil(){
                           overflow:'hidden',
                           textOverflow:'ellipsis'
                         }}>
-                          <span>✓ YA INGRESADO — </span>
+                          <span> YA INGRESADO — </span>
                           <span>{formatFullLocation(t)}</span>
                         </div>
                       </div>

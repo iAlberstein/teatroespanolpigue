@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { apiAuthFetch } from '../../lib/api.js';
 import { useAuth } from '../../contexts/AuthContext.jsx';
 import { theme } from '../../styles/theme.js';
@@ -7,14 +7,89 @@ import Button from '../ui/Button.jsx';
 import BordereauxModal from './BordereauxModal.jsx';
 import TicketViewModal from './TicketViewModal.jsx';
 
+// Helper para convertir YYYY-MM-DD a DD/MM/AAAA
+const formatDateDisplay = (isoDate) => {
+  if (!isoDate) return '';
+  const [year, month, day] = isoDate.split('-');
+  return `${day}/${month}/${year}`;
+};
+
+// Helper para convertir DD/MM/AAAA a YYYY-MM-DD
+const parseDateInput = (displayDate) => {
+  if (!displayDate) return '';
+  // Limpiar caracteres no numéricos excepto /
+  const cleaned = displayDate.replace(/[^0-9/]/g, '');
+  const parts = cleaned.split('/');
+  if (parts.length === 3 && parts[0].length === 2 && parts[1].length === 2 && parts[2].length === 4) {
+    return `${parts[2]}-${parts[1]}-${parts[0]}`;
+  }
+  return '';
+};
+
+// Componente de input de fecha con calendario y display DD/MM/AAAA
+const DateInput = ({ value, onChange, style }) => {
+  const displayValue = formatDateDisplay(value);
+  const inputRef = useRef(null);
+  
+  const handleContainerClick = () => {
+    if (inputRef.current) {
+      inputRef.current.focus();
+      inputRef.current.click();
+    }
+  };
+  
+  return (
+    <div 
+      onClick={handleContainerClick}
+      style={{ 
+        position: 'relative', 
+        display: 'inline-block', 
+        width: '100%',
+        cursor: 'pointer'
+      }}
+    >
+      <input
+        ref={inputRef}
+        type="date"
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+        style={{
+          ...style,
+          width: '100%',
+          position: 'absolute',
+          top: 0,
+          left: 0,
+          opacity: 0,
+          height: '100%',
+          cursor: 'pointer',
+          zIndex: 1
+        }}
+      />
+      <div style={{
+        ...style,
+        width: '100%',
+        display: 'flex',
+        alignItems: 'center',
+        justifyContent: 'space-between',
+        color: value ? '#1f2937' : '#9ca3af',
+        backgroundColor: '#fff',
+        boxSizing: 'border-box'
+      }}>
+        <span>{displayValue || 'DD/MM/AAAA'}</span>
+        <span style={{ fontSize: '14px' }}>📅</span>
+      </div>
+    </div>
+  );
+};
+
 export default function Reports({ shows }) {
   const { token, user } = useAuth();
   const isProductor = user?.role === 'productor';
   const isBoleteria = user?.role === 'boleteria';
-  const isAdmin = user?.role === 'admin';
+  const isAdmin = user?.role === 'admin' || (user?.roles && user.roles.some(r => r.name === 'admin'));
   const [reportType, setReportType] = useState('general'); // 'general' | 'individual'
   const [selectedShowId, setSelectedShowId] = useState('');
-  const [status, setStatus] = useState('all'); // 'all' | 'active' | 'finished'
+  const [status, setStatus] = useState('active'); // 'all' | 'active' | 'finished' - Default: active
   const [reportData, setReportData] = useState(null);
   const [loading, setLoading] = useState(false);
   const [isRefreshing, setIsRefreshing] = useState(false);
@@ -26,24 +101,36 @@ export default function Reports({ shows }) {
   const [filterSeller, setFilterSeller] = useState('');
   const [filterChannel, setFilterChannel] = useState('');
   const [filterProducer, setFilterProducer] = useState('');
+  const [searchQuery, setSearchQuery] = useState('');
   const [sellers, setSellers] = useState([]);
+  
+  // Paginación para detalle de ventas
+  const [currentPage, setCurrentPage] = useState(1);
+  const ITEMS_PER_PAGE = 20;
+  
+  // Paginación del servidor (nuevo)
+  const [salesPagination, setSalesPagination] = useState({
+    page: 1,
+    limit: 20,
+    total: 0,
+    totalPages: 0,
+    hasNext: false,
+    hasPrev: false
+  });
+  const [paginatedSales, setPaginatedSales] = useState([]);
+  const [loadingSales, setLoadingSales] = useState(false);
+  
+  // Filtros de período
+  const [dateFrom, setDateFrom] = useState('');
+  const [dateTo, setDateTo] = useState('');
   
   // Filtrar shows si es productor
   const availableShows = isProductor 
     ? shows.filter(show => {
         const hasProducer = show.producers?.some(p => p.id === user.id);
-        console.log(`[REPORTS] Show "${show.title}": producers=`, show.producers, 'hasProducer=', hasProducer);
         return hasProducer;
       })
     : shows;
-  
-  console.log('[REPORTS] =====================================');
-  console.log('[REPORTS] User role:', user?.role);
-  console.log('[REPORTS] User ID:', user?.id);
-  console.log('[REPORTS] All shows:', shows.length);
-  console.log('[REPORTS] Available shows for user:', availableShows.length);
-  console.log('[REPORTS] Available shows:', availableShows);
-  console.log('[REPORTS] =====================================');
   
   // Modal de entradas
   const [showTicketsModal, setShowTicketsModal] = useState(false);
@@ -60,9 +147,9 @@ export default function Reports({ shows }) {
   const [selectedRefundTicketIds, setSelectedRefundTicketIds] = useState([]);
   const [refundTicketsLoading, setRefundTicketsLoading] = useState(false);
 
-  // Cargar reporte general al montar
+  // Al montar, cargar solo el detalle de ventas paginado (sin reporte general)
   useEffect(() => {
-    loadGeneralReport();
+    loadSalesPaginated(1);
   }, []);
 
   const loadGeneralReport = async (isFilter = false) => {
@@ -83,16 +170,18 @@ export default function Reports({ shows }) {
       // Si es productor, agregar su ID como filtro
       if (user?.role === 'productor' && user.id) {
         params.append('producer_id', user.id);
-        console.log('[REPORTS] Filtering by producer_id:', user.id);
       }
       
-      const url = `/api/reports/general?${params.toString()}`;
-      console.log('[REPORTS] Loading report:', url);
-      const res = await apiAuthFetch(url, { method: 'GET' }, token);
+      if (dateFrom) params.append('startDate', dateFrom);
+      if (dateTo) params.append('endDate', dateTo);
       
+      const url = `/api/reports/general?${params.toString()}`;
+      const res = await apiAuthFetch(url, { method: 'GET' }, token);
+
       if (res.ok) {
         const data = await res.json();
-        console.log('[REPORTS] Report data:', data);
+        console.log('[REPORTS FRONTEND] General report data:', data);
+        console.log('[REPORTS FRONTEND] serviceBreakdown:', data.serviceBreakdown);
         setReportData(data);
       } else {
         setError('Error al cargar el reporte');
@@ -122,9 +211,11 @@ export default function Reports({ shows }) {
       
       const url = `/api/reports/show/${showId}${params.toString() ? '?' + params.toString() : ''}`;
       const res = await apiAuthFetch(url, { method: 'GET' }, token);
-      
+
       if (res.ok) {
         const data = await res.json();
+        console.log('[REPORTS FRONTEND] Show report data:', data);
+        console.log('[REPORTS FRONTEND] serviceBreakdown:', data.serviceBreakdown);
         setReportData(data);
       } else {
         setError('Error al cargar el reporte');
@@ -137,13 +228,104 @@ export default function Reports({ shows }) {
       setIsRefreshing(false);
     }
   };
-  
-  // Actualizar lista de vendedores basado en el reporte actual
+
+  // Nueva función para cargar ventas paginadas desde el servidor
+  const loadSalesPaginated = async (page = 1, isRefresh = false) => {
+    if (!isRefresh) setLoadingSales(true);
+    
+    try {
+      const params = new URLSearchParams();
+      params.append('page', page);
+      params.append('limit', ITEMS_PER_PAGE);
+      // Si se seleccionó un show específico, no filtrar por estado (mostrar todas sus ventas)
+      params.append('status', (reportType === 'individual' && selectedShowId) ? 'all' : status);
+      
+      if (reportType === 'individual' && selectedShowId) {
+        params.append('show_id', selectedShowId);
+      }
+      if (searchQuery) {
+        params.append('search', searchQuery);
+      }
+      if (filterDate) {
+        params.append('date', filterDate);
+      }
+      if (filterSeller) {
+        params.append('seller_id', filterSeller);
+      }
+      if (filterChannel) {
+        params.append('channel', filterChannel);
+      }
+      if (dateFrom) {
+        params.append('startDate', dateFrom);
+      }
+      if (dateTo) {
+        params.append('endDate', dateTo);
+      }
+      if (isProductor) {
+        params.append('producer_id', user.id);
+      }
+      
+      const url = `/api/reports/sales-detail?${params.toString()}`;
+      const res = await apiAuthFetch(url, { method: 'GET' }, token);
+      
+      if (res.ok) {
+        const data = await res.json();
+        setPaginatedSales(data.sales || []);
+        setSalesPagination(data.pagination || {
+          page: 1,
+          limit: ITEMS_PER_PAGE,
+          total: 0,
+          totalPages: 0,
+          hasNext: false,
+          hasPrev: false
+        });
+      } else {
+        console.error('Error loading paginated sales');
+      }
+    } catch (err) {
+      console.error('Error loading paginated sales:', err);
+    } finally {
+      setLoadingSales(false);
+    }
+  };
+
+  // Cargar ventas paginadas cuando cambian filtros relevantes
   useEffect(() => {
-    if (reportData && reportData.salesDetail) {
-      // Extraer vendedores únicos que tienen ventas en este reporte
+    if (reportData || reportType === 'general') {
+      setCurrentPage(1);
+      const timer = setTimeout(() => {
+        loadSalesPaginated(1, true);
+      }, 300);
+      return () => clearTimeout(timer);
+    }
+  }, [searchQuery, filterDate, filterSeller, filterChannel, status, reportData]);
+
+  // Cargar ventas cuando cambia la página
+  useEffect(() => {
+    if ((reportData || reportType === 'general') && currentPage !== salesPagination.page) {
+      loadSalesPaginated(currentPage);
+    }
+  }, [currentPage]);
+
+  // Reset página cuando cambia el tipo de reporte o show
+  useEffect(() => {
+    setCurrentPage(1);
+    setPaginatedSales([]);
+    setSalesPagination({
+      page: 1,
+      limit: ITEMS_PER_PAGE,
+      total: 0,
+      totalPages: 0,
+      hasNext: false,
+      hasPrev: false
+    });
+  }, [reportType, selectedShowId]);
+
+  // Actualizar lista de vendedores basado en las ventas paginadas cargadas
+  useEffect(() => {
+    if (paginatedSales && paginatedSales.length > 0) {
       const sellersWithSales = new Map();
-      reportData.salesDetail.forEach(sale => {
+      paginatedSales.forEach(sale => {
         if (sale.sold_by_id && sale.sold_by_name) {
           sellersWithSales.set(sale.sold_by_id, {
             id: sale.sold_by_id,
@@ -153,37 +335,32 @@ export default function Reports({ shows }) {
       });
       setSellers(Array.from(sellersWithSales.values()));
     }
-  }, [reportData]);
-
-  // Aplicar filtros automáticamente cuando cambian
-  useEffect(() => {
-    if (reportData && !loading) {
-      const timer = setTimeout(() => {
-        if (reportType === 'general') {
-          loadGeneralReport(true);
-        } else if (selectedShowId && reportType === 'show') {
-          loadShowReport(selectedShowId, true);
-        }
-      }, 300); // Debounce para evitar múltiples llamadas
-      
-      return () => clearTimeout(timer);
-    }
-  }, [filterDate, filterSeller, filterChannel]);
+  }, [paginatedSales]);
 
   const handleTypeChange = (type) => {
     setReportType(type);
     setReportData(null);
     setError('');
+    setCurrentPage(1);
     
     if (type === 'general') {
-      loadGeneralReport();
+      // Para reporte general, solo cargar ventas paginadas (sin totales)
+      // Los totales generales se verán en Analytics
+      setSelectedShowId(null);
+      loadSalesPaginated(1);
     }
   };
 
   const handleShowSelect = (showId) => {
     setSelectedShowId(showId);
+    setCurrentPage(1);
     if (showId) {
+      // Solo cargar reporte con totales cuando se selecciona un show específico
       loadShowReport(showId);
+    } else {
+      // Si no hay show seleccionado, limpiar datos y cargar solo ventas paginadas
+      setReportData(null);
+      loadSalesPaginated(1);
     }
   };
 
@@ -260,6 +437,7 @@ export default function Reports({ shows }) {
         refund_reason: sale.refund_reason || null,
         refunded_at: sale.refunded_at || null,
         is_refund_operation: sale.is_refund_operation || false,
+        service_items: sale.service_items || [],
         detailsOnly
       });
 
@@ -465,7 +643,177 @@ export default function Reports({ shows }) {
     }
   };
 
-  // Si es productor sin shows asignados, mostrar mensaje
+  // Helper para determinar si un show está activo (tiene funciones futuras)
+  const isShowActive = (show) => {
+    if (!show.sessions || show.sessions.length === 0) return false;
+    const now = new Date();
+    return show.sessions.some(session => {
+      const sessionDate = session.starts_at || session.date;
+      return sessionDate && new Date(sessionDate) > now;
+    });
+  };
+
+  // Helper para obtener la fecha de la próxima función
+  const getNextSessionDate = (show) => {
+    if (!show.sessions || show.sessions.length === 0) return null;
+    const now = new Date();
+    const futureSessions = show.sessions
+      .filter(s => {
+        const sessionDate = s.starts_at || s.date;
+        return sessionDate && new Date(sessionDate) > now;
+      })
+      .sort((a, b) => {
+        const dateA = new Date(a.starts_at || a.date);
+        const dateB = new Date(b.starts_at || b.date);
+        return dateA - dateB;
+      });
+    return futureSessions.length > 0 ? new Date(futureSessions[0].starts_at || futureSessions[0].date) : null;
+  };
+
+  // Helper para obtener la fecha de la última función
+  const getLastSessionDate = (show) => {
+    if (!show.sessions || show.sessions.length === 0) return null;
+    const dates = show.sessions.map(s => {
+      const d = s.starts_at;
+      return d ? new Date(d) : null;
+    }).filter(Boolean);
+    return dates.length > 0 ? new Date(Math.max(...dates)) : null;
+  };
+
+  // Separar shows en activos y finalizados, ordenados cronológicamente
+  const { activeShows, finishedShows } = React.useMemo(() => {
+    const active = [];
+    const finished = [];
+    
+    availableShows.forEach(show => {
+      if (isShowActive(show)) {
+        active.push(show);
+      } else {
+        finished.push(show);
+      }
+    });
+    
+    // Ordenar activos por fecha de próxima función (más próxima primero)
+    active.sort((a, b) => {
+      const dateA = getNextSessionDate(a);
+      const dateB = getNextSessionDate(b);
+      if (!dateA && !dateB) return 0;
+      if (!dateA) return 1;
+      if (!dateB) return -1;
+      return dateA - dateB;
+    });
+    
+    // Ordenar finalizados por fecha de última función (más reciente primero)
+    finished.sort((a, b) => {
+      const dateA = getLastSessionDate(a);
+      const dateB = getLastSessionDate(b);
+      if (!dateA && !dateB) return 0;
+      if (!dateA) return 1;
+      if (!dateB) return -1;
+      return dateB - dateA; // Más reciente primero
+    });
+    
+    return { activeShows: active, finishedShows: finished };
+  }, [availableShows]);
+
+  // Helper para filtrar ventas con paginación
+  const filterAndPaginateSales = (sales, additionalFilters = {}) => {
+    const filtered = sales.filter(sale => {
+      // Filtro por estado del show (si aplica)
+      if (additionalFilters.statusFilter && status !== 'all') {
+        if (status === 'active' && sale.show_status === 'finalizado') return false;
+        if (status === 'finished' && sale.show_status === 'activo') return false;
+      }
+      
+      // Filtro por búsqueda
+      if (!searchQuery) return true;
+      const q = searchQuery.toLowerCase();
+      return (
+        (sale.customer_name || '').toLowerCase().includes(q) ||
+        (sale.customer_dni || '').toLowerCase().includes(q) ||
+        (sale.customer_email || '').toLowerCase().includes(q) ||
+        (sale.customer_phone || '').toLowerCase().includes(q) ||
+        (sale.customer_localidad || '').toLowerCase().includes(q) ||
+        (sale.show_title || '').toLowerCase().includes(q) ||
+        (sale.locations || '').toLowerCase().includes(q) ||
+        (sale.sold_by_name || '').toLowerCase().includes(q) ||
+        (sale.payment_method || '').toLowerCase().includes(q) ||
+        (sale.discount_code || '').toLowerCase().includes(q)
+      );
+    });
+    
+    const totalItems = filtered.length;
+    const totalPages = Math.ceil(totalItems / ITEMS_PER_PAGE);
+    const startIndex = (currentPage - 1) * ITEMS_PER_PAGE;
+    const paginated = filtered.slice(startIndex, startIndex + ITEMS_PER_PAGE);
+    
+    return { filtered, paginated, totalItems, totalPages };
+  };
+
+  // Componente de controles de paginación
+  const PaginationControls = ({ currentPage, totalPages, totalItems, onPageChange }) => {
+    if (totalPages <= 1) return null;
+    
+    return (
+      <div style={{ 
+        display: 'flex', 
+        justifyContent: 'space-between', 
+        alignItems: 'center',
+        marginTop: theme.spacing.md,
+        paddingTop: theme.spacing.md,
+        borderTop: `1px solid ${theme.colors.borderLight}`,
+        flexWrap: 'wrap',
+        gap: theme.spacing.sm
+      }}>
+        <div style={{ fontSize: theme.typography.small, color: theme.colors.textSecondary }}>
+          Mostrando {Math.min((currentPage - 1) * ITEMS_PER_PAGE + 1, totalItems)}-{Math.min(currentPage * ITEMS_PER_PAGE, totalItems)} de {totalItems} transacciones
+        </div>
+        
+        <div style={{ display: 'flex', gap: theme.spacing.xs, alignItems: 'center' }}>
+          <button
+            onClick={() => onPageChange(currentPage - 1)}
+            disabled={currentPage <= 1}
+            style={{
+              padding: `${theme.spacing.xs} ${theme.spacing.sm}`,
+              border: `1px solid ${theme.colors.border}`,
+              borderRadius: theme.borderRadius.md,
+              background: theme.colors.surface,
+              color: currentPage <= 1 ? theme.colors.textMuted : theme.colors.textPrimary,
+              cursor: currentPage <= 1 ? 'not-allowed' : 'pointer',
+              fontSize: theme.typography.small
+            }}
+          >
+            ← Anterior
+          </button>
+          
+          <span style={{ 
+            padding: `${theme.spacing.xs} ${theme.spacing.sm}`,
+            fontSize: theme.typography.small,
+            color: theme.colors.textSecondary
+          }}>
+            Página {currentPage} de {totalPages}
+          </span>
+          
+          <button
+            onClick={() => onPageChange(currentPage + 1)}
+            disabled={currentPage >= totalPages}
+            style={{
+              padding: `${theme.spacing.xs} ${theme.spacing.sm}`,
+              border: `1px solid ${theme.colors.border}`,
+              borderRadius: theme.borderRadius.md,
+              background: theme.colors.surface,
+              color: currentPage >= totalPages ? theme.colors.textMuted : theme.colors.textPrimary,
+              cursor: currentPage >= totalPages ? 'not-allowed' : 'pointer',
+              fontSize: theme.typography.small
+            }}
+          >
+            Siguiente →
+          </button>
+        </div>
+      </div>
+    );
+  };
+
   if (user?.role === 'productor' && availableShows.length === 0) {
     return (
       <div style={{ padding: theme.spacing.lg }}>
@@ -475,7 +823,7 @@ export default function Reports({ shows }) {
             color: theme.colors.textPrimary,
             marginBottom: theme.spacing.sm
           }}>
-            📊 Reportes
+            Reportes
           </h1>
         </div>
         <Card variant="elevated" padding="lg">
@@ -484,7 +832,6 @@ export default function Reports({ shows }) {
             padding: '60px 20px',
             color: theme.colors.textSecondary 
           }}>
-            <div style={{ fontSize: 48, marginBottom: theme.spacing.lg }}>🎭</div>
             <h3 style={{ 
               fontSize: theme.typography.h4,
               color: theme.colors.textPrimary,
@@ -520,7 +867,7 @@ export default function Reports({ shows }) {
           color: theme.colors.textPrimary,
           marginBottom: theme.spacing.sm
         }}>
-          📊 Reportes {user?.role === 'productor' && `(${availableShows.length} show${availableShows.length > 1 ? 's' : ''})`}
+          Reportes {user?.role === 'productor' && `(${availableShows.length} show${availableShows.length > 1 ? 's' : ''})`}
         </h1>
         <p style={{ color: theme.colors.textSecondary }}>
           {user?.role === 'productor' ? 'Análisis de tus shows' : 'Análisis de ventas y asistencia'}
@@ -541,14 +888,14 @@ export default function Reports({ shows }) {
               Seleccionar Reporte
             </label>
             <select
-              value={reportType === 'general' ? 'general' : selectedShowId}
+              value={reportType === 'general' ? 'general' : (selectedShowId || '')}
               onChange={(e) => {
                 const value = e.target.value;
                 if (value === 'general') {
                   handleTypeChange('general');
                 } else {
                   setReportType('individual');
-                  handleShowSelect(value);
+                  handleShowSelect(value || null);
                 }
               }}
               style={{
@@ -560,15 +907,50 @@ export default function Reports({ shows }) {
                 fontFamily: theme.typography.fontFamily
               }}
             >
-              <option value="general">📊 General ({user?.role === 'productor' ? 'Mis Shows' : 'Todos los Shows'})</option>
-              <optgroup label="📄 Reportes Individuales">
-                {availableShows.map(show => (
-                  <option key={show.id} value={show.id}>
-                    {show.title}
-                  </option>
-                ))}
-              </optgroup>
+              <option value="general">General ({user?.role === 'productor' ? 'Mis Shows' : 'Todos los Shows'})</option>
+              
+              {activeShows.length > 0 && (
+                <optgroup label="Shows Activos (Próximas funciones)">
+                  {activeShows.map(show => (
+                    <option key={show.id} value={show.id}>
+                      {show.title}
+                    </option>
+                  ))}
+                </optgroup>
+              )}
+              
+              {activeShows.length > 0 && finishedShows.length > 0 && (
+                <option disabled style={{ color: '#9ca3af', fontStyle: 'italic' }}>
+                  ───────────────
+                </option>
+              )}
+              
+              {finishedShows.length > 0 && (
+                <optgroup label="Shows Finalizados">
+                  {finishedShows.map(show => (
+                    <option key={show.id} value={show.id}>
+                      {show.title}
+                    </option>
+                  ))}
+                </optgroup>
+              )}
             </select>
+            
+            {/* Leyenda de shows disponibles */}
+            <div style={{ 
+              marginTop: theme.spacing.xs, 
+              fontSize: theme.typography.tiny,
+              color: theme.colors.textMuted,
+              display: 'flex',
+              gap: theme.spacing.md
+            }}>
+              {activeShows.length > 0 && (
+                <span>{activeShows.length} activo{activeShows.length > 1 ? 's' : ''}</span>
+              )}
+              {finishedShows.length > 0 && (
+                <span>{finishedShows.length} finalizado{finishedShows.length > 1 ? 's' : ''}</span>
+              )}
+            </div>
           </div>
 
           {/* Filtro de estado */}
@@ -599,6 +981,75 @@ export default function Reports({ shows }) {
             </select>
           </div>
         </div>
+        
+        {/* Filtros de período */}
+        <div style={{ display: 'flex', gap: theme.spacing.lg, flexWrap: 'wrap', marginTop: theme.spacing.md, paddingTop: theme.spacing.md, borderTop: `1px solid ${theme.colors.border}` }}>
+          <div style={{ flex: 1, minWidth: '180px' }}>
+            <label style={{ 
+              display: 'block', 
+              marginBottom: theme.spacing.sm,
+              fontWeight: theme.typography.medium,
+              color: theme.colors.textPrimary
+            }}>
+              Desde
+            </label>
+            <DateInput
+              value={dateFrom}
+              onChange={setDateFrom}
+              style={{
+                width: '100%',
+                padding: theme.spacing.sm,
+                borderRadius: theme.borderRadius.md,
+                border: `1px solid ${theme.colors.border}`,
+                fontSize: theme.typography.body,
+                fontFamily: theme.typography.fontFamily
+              }}
+            />
+          </div>
+          <div style={{ flex: 1, minWidth: '180px' }}>
+            <label style={{ 
+              display: 'block', 
+              marginBottom: theme.spacing.sm,
+              fontWeight: theme.typography.medium,
+              color: theme.colors.textPrimary
+            }}>
+              Hasta
+            </label>
+            <DateInput
+              value={dateTo}
+              onChange={setDateTo}
+              style={{
+                width: '100%',
+                padding: theme.spacing.sm,
+                borderRadius: theme.borderRadius.md,
+                border: `1px solid ${theme.colors.border}`,
+                fontSize: theme.typography.body,
+                fontFamily: theme.typography.fontFamily
+              }}
+            />
+          </div>
+          {(dateFrom || dateTo) && (
+            <div style={{ display: 'flex', alignItems: 'flex-end' }}>
+              <button
+                onClick={() => {
+                  setDateFrom('');
+                  setDateTo('');
+                }}
+                style={{
+                  padding: theme.spacing.sm,
+                  background: 'transparent',
+                  color: theme.colors.textSecondary,
+                  border: `1px solid ${theme.colors.border}`,
+                  borderRadius: theme.borderRadius.md,
+                  cursor: 'pointer',
+                  fontSize: theme.typography.small
+                }}
+              >
+                Limpiar fechas
+              </button>
+            </div>
+          )}
+        </div>
       </Card>
 
       {/* Export Button - Oculto para productores */}
@@ -624,7 +1075,7 @@ export default function Reports({ shows }) {
             onMouseOver={(e) => e.currentTarget.style.background = '#059669'}
             onMouseOut={(e) => e.currentTarget.style.background = theme.colors.success}
           >
-            📥 Exportar a Excel (CSV)
+            Exportar a Excel (CSV)
           </button>
         </div>
       )}
@@ -649,390 +1100,7 @@ export default function Reports({ shows }) {
         </div>
       )}
 
-      {/* Reporte General */}
-      {!loading && reportData && reportType === 'general' && (
-        <>
-          {/* KPI Cards */}
-          <div style={{ 
-            display: 'grid', 
-            gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))',
-            gap: theme.spacing.md,
-            marginBottom: theme.spacing.lg
-          }}>
-            <Card variant="elevated" padding="lg">
-              <div style={{ fontSize: theme.typography.tiny, color: theme.colors.textSecondary, marginBottom: theme.spacing.xs }}>
-                💰 Ingresos Totales
-              </div>
-              <div style={{ fontSize: theme.typography.h3, fontWeight: theme.typography.bold, color: theme.colors.primary }}>
-                {formatCurrency(reportData.totals.totalRevenue)}
-              </div>
-            </Card>
-
-            <Card variant="elevated" padding="lg">
-              <div style={{ fontSize: theme.typography.tiny, color: theme.colors.textSecondary, marginBottom: theme.spacing.xs }}>
-                🎫 Tickets Vendidos
-              </div>
-              <div style={{ fontSize: theme.typography.h3, fontWeight: theme.typography.bold, color: theme.colors.primary }}>
-                {reportData.totals.totalTicketsSold}
-              </div>
-              <div style={{ fontSize: theme.typography.tiny, color: theme.colors.textMuted }}>
-                {reportData.totals.totalPeopleSold} personas
-              </div>
-            </Card>
-
-            <Card variant="elevated" padding="lg">
-              <div style={{ fontSize: theme.typography.tiny, color: theme.colors.textSecondary, marginBottom: theme.spacing.xs }}>
-                📊 Ocupación Promedio
-              </div>
-              <div style={{ fontSize: theme.typography.h3, fontWeight: theme.typography.bold, color: theme.colors.primary }}>
-                {reportData.totals.averageOccupancy}%
-              </div>
-            </Card>
-
-            <Card variant="elevated" padding="lg">
-              <div style={{ fontSize: theme.typography.tiny, color: theme.colors.textSecondary, marginBottom: theme.spacing.xs }}>
-                👥 Asistencia Real
-              </div>
-              <div style={{ fontSize: theme.typography.h3, fontWeight: theme.typography.bold, color: theme.colors.primary }}>
-                {reportData.totals.averageAttendance}%
-              </div>
-              <div style={{ fontSize: theme.typography.tiny, color: theme.colors.textMuted }}>
-                {reportData.totals.totalPeopleValidated} validados
-              </div>
-            </Card>
-          </div>
-
-          {/* Desglose por Ubicación */}
-          <Card variant="elevated" padding="lg" style={{ marginBottom: theme.spacing.lg }}>
-            <h3 style={{ marginBottom: theme.spacing.md, color: theme.colors.textPrimary }}>
-              Desglose por Ubicación
-            </h3>
-            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: theme.spacing.md }}>
-              <div>
-                <div style={{ fontSize: theme.typography.small, fontWeight: theme.typography.semibold, marginBottom: theme.spacing.xs }}>
-                  Platea General
-                </div>
-                <div style={{ fontSize: theme.typography.tiny, color: theme.colors.textSecondary }}>
-                  {reportData.locationBreakdown.platea_general.people} personas
-                </div>
-                <div style={{ fontSize: theme.typography.body, fontWeight: theme.typography.medium, color: theme.colors.primary }}>
-                  {formatCurrency(reportData.locationBreakdown.platea_general.revenue)}
-                </div>
-              </div>
-
-              <div>
-                <div style={{ fontSize: theme.typography.small, fontWeight: theme.typography.semibold, marginBottom: theme.spacing.xs }}>
-                  Palcos Bajos
-                </div>
-                <div style={{ fontSize: theme.typography.tiny, color: theme.colors.textSecondary }}>
-                  {reportData.locationBreakdown.palcos_bajos.count} palcos ({reportData.locationBreakdown.palcos_bajos.people} personas)
-                </div>
-                <div style={{ fontSize: theme.typography.body, fontWeight: theme.typography.medium, color: theme.colors.primary }}>
-                  {formatCurrency(reportData.locationBreakdown.palcos_bajos.revenue)}
-                </div>
-              </div>
-
-              <div>
-                <div style={{ fontSize: theme.typography.small, fontWeight: theme.typography.semibold, marginBottom: theme.spacing.xs }}>
-                  Palcos Altos
-                </div>
-                <div style={{ fontSize: theme.typography.tiny, color: theme.colors.textSecondary }}>
-                  {reportData.locationBreakdown.palcos_altos.count} palcos ({reportData.locationBreakdown.palcos_altos.people} personas)
-                </div>
-                <div style={{ fontSize: theme.typography.body, fontWeight: theme.typography.medium, color: theme.colors.primary }}>
-                  {formatCurrency(reportData.locationBreakdown.palcos_altos.revenue)}
-                </div>
-              </div>
-
-              <div>
-                <div style={{ fontSize: theme.typography.small, fontWeight: theme.typography.semibold, marginBottom: theme.spacing.xs }}>
-                  Pullman
-                </div>
-                <div style={{ fontSize: theme.typography.tiny, color: theme.colors.textSecondary }}>
-                  {reportData.locationBreakdown.pullman.people} personas
-                </div>
-                <div style={{ fontSize: theme.typography.body, fontWeight: theme.typography.medium, color: theme.colors.primary }}>
-                  {formatCurrency(reportData.locationBreakdown.pullman.revenue)}
-                </div>
-              </div>
-            </div>
-          </Card>
-
-          {/* Ranking de Shows */}
-          <Card variant="elevated" padding="lg" style={{ marginBottom: theme.spacing.lg }}>
-            <h3 style={{ marginBottom: theme.spacing.md, color: theme.colors.textPrimary }}>
-              Ranking de Shows por Ingresos
-            </h3>
-            <div style={{ overflowX: 'auto' }}>
-              <table style={{ width: '100%', borderCollapse: 'collapse' }}>
-                <thead>
-                  <tr style={{ borderBottom: `2px solid ${theme.colors.border}` }}>
-                    <th style={{ padding: theme.spacing.sm, textAlign: 'left' }}>#</th>
-                    <th style={{ padding: theme.spacing.sm, textAlign: 'left' }}>Show</th>
-                    <th style={{ padding: theme.spacing.sm, textAlign: 'center' }}>Sesiones</th>
-                    <th style={{ padding: theme.spacing.sm, textAlign: 'center' }}>Tickets</th>
-                    <th style={{ padding: theme.spacing.sm, textAlign: 'center' }}>Personas</th>
-                    <th style={{ padding: theme.spacing.sm, textAlign: 'right' }}>Ocupación</th>
-                    <th style={{ padding: theme.spacing.sm, textAlign: 'right' }}>Ingresos</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {reportData.shows.map((show, idx) => (
-                    <tr key={show.show_id} style={{ borderBottom: `1px solid ${theme.colors.borderLight}` }}>
-                      <td style={{ padding: theme.spacing.sm }}>{idx + 1}</td>
-                      <td style={{ padding: theme.spacing.sm, fontWeight: theme.typography.medium }}>{show.show_title}</td>
-                      <td style={{ padding: theme.spacing.sm, textAlign: 'center' }}>{show.sessions}</td>
-                      <td style={{ padding: theme.spacing.sm, textAlign: 'center' }}>{show.tickets}</td>
-                      <td style={{ padding: theme.spacing.sm, textAlign: 'center' }}>{show.people}</td>
-                      <td style={{ padding: theme.spacing.sm, textAlign: 'right' }}>{show.occupancy}%</td>
-                      <td style={{ padding: theme.spacing.sm, textAlign: 'right', fontWeight: theme.typography.semibold, color: theme.colors.primary }}>
-                        {formatCurrency(show.revenue)}
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          </Card>
-
-          {/* Detalle de Ventas - Oculto para productores */}
-          {reportData.salesDetail && !isProductor && (
-            <Card variant="elevated" padding="lg">
-              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: theme.spacing.md }}>
-                <h3 style={{ margin: 0, color: theme.colors.textPrimary }}>
-                  📝 Detalle de Ventas ({reportData.salesDetail.length} transacciones)
-                </h3>
-                {isRefreshing && (
-                  <span style={{ fontSize: theme.typography.small, color: theme.colors.textMuted }}>
-                    ⟳ Actualizando...
-                  </span>
-                )}
-              </div>
-              
-              {/* Filtros */}
-              <div style={{ 
-                display: 'flex', 
-                gap: theme.spacing.md, 
-                marginBottom: theme.spacing.md,
-                flexWrap: 'wrap'
-              }}>
-                <div style={{ flex: '1 1 200px' }}>
-                  <label style={{ 
-                    display: 'block', 
-                    fontSize: theme.typography.small, 
-                    marginBottom: theme.spacing.xs,
-                    color: theme.colors.textSecondary
-                  }}>
-                    📅 Fecha
-                  </label>
-                  <input
-                    type="date"
-                    value={filterDate}
-                    onChange={(e) => setFilterDate(e.target.value)}
-                    style={{
-                      width: '100%',
-                      padding: theme.spacing.sm,
-                      border: `1px solid ${theme.colors.border}`,
-                      borderRadius: theme.borderRadius.md,
-                      fontSize: theme.typography.small
-                    }}
-                  />
-                </div>
-                
-                <div style={{ flex: '1 1 200px' }}>
-                  <label style={{ 
-                    display: 'block', 
-                    fontSize: theme.typography.small, 
-                    marginBottom: theme.spacing.xs,
-                    color: theme.colors.textSecondary
-                  }}>
-                    👤 Vendedor
-                  </label>
-                  <select
-                    value={filterSeller}
-                    onChange={(e) => setFilterSeller(e.target.value)}
-                    style={{
-                      width: '100%',
-                      padding: theme.spacing.sm,
-                      border: `1px solid ${theme.colors.border}`,
-                      borderRadius: theme.borderRadius.md,
-                      fontSize: theme.typography.small
-                    }}
-                  >
-                    <option value="">Todos</option>
-                    {sellers.map(seller => (
-                      <option key={seller.id} value={seller.id}>{seller.name}</option>
-                    ))}
-                  </select>
-                </div>
-                
-                <div style={{ flex: '1 1 200px' }}>
-                  <label style={{ 
-                    display: 'block', 
-                    fontSize: theme.typography.small, 
-                    marginBottom: theme.spacing.xs,
-                    color: theme.colors.textSecondary
-                  }}>
-                    📍 Canal
-                  </label>
-                  <select
-                    value={filterChannel}
-                    onChange={(e) => setFilterChannel(e.target.value)}
-                    style={{
-                      width: '100%',
-                      padding: theme.spacing.sm,
-                      border: `1px solid ${theme.colors.border}`,
-                      borderRadius: theme.borderRadius.md,
-                      fontSize: theme.typography.small
-                    }}
-                  >
-                    <option value="">Todos</option>
-                    <option value="Online">Online</option>
-                    <option value="Boletería">Boletería</option>
-                  </select>
-                </div>
-              </div>
-              
-              <div style={{ overflowX: 'auto' }}>
-                <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: theme.typography.small }}>
-                  <thead>
-                    <tr style={{ borderBottom: `2px solid ${theme.colors.border}`, background: theme.colors.surfaceAlt }}>
-                      <th style={{ padding: theme.spacing.xs, textAlign: 'left', minWidth: '130px' }}>Fecha Venta</th>
-                      <th style={{ padding: theme.spacing.xs, textAlign: 'left', minWidth: '150px' }}>Show</th>
-                      <th style={{ padding: theme.spacing.xs, textAlign: 'left', minWidth: '130px' }}>Fecha Función</th>
-                      <th style={{ padding: theme.spacing.xs, textAlign: 'left', minWidth: '150px' }}>Cliente</th>
-                      <th style={{ padding: theme.spacing.xs, textAlign: 'left', minWidth: '120px' }}>Vendido por</th>
-                      <th style={{ padding: theme.spacing.xs, textAlign: 'center', minWidth: '80px' }}>Canal</th>
-                      <th style={{ padding: theme.spacing.xs, textAlign: 'left', minWidth: '200px' }}>Ubicaciones</th>
-                      <th style={{ padding: theme.spacing.xs, textAlign: 'center', minWidth: '70px' }}>Tickets</th>
-                      <th style={{ padding: theme.spacing.xs, textAlign: 'center', minWidth: '70px' }}>Personas</th>
-                      <th style={{ padding: theme.spacing.xs, textAlign: 'left', minWidth: '90px' }}>Pago</th>
-                      <th style={{ padding: theme.spacing.xs, textAlign: 'right', minWidth: '90px' }}>Total</th>
-                      <th style={{ padding: theme.spacing.xs, textAlign: 'center', minWidth: '100px' }}>Acciones</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {reportData.salesDetail.map((sale) => {
-                      const isRefunded = sale.refunded || false;
-                      const isRefundOperation = sale.is_refund_operation || false;
-                      const isRefundedOriginal = isRefunded && !isRefundOperation;
-                      const showDetailButton = isRefundOperation;
-                      const showRefundButton = canRefund && sale.channel === 'Boletería' && !isRefunded && !isRefundOperation;
-
-                      return (
-                      <tr key={sale.sale_id} style={{ borderBottom: `1px solid ${theme.colors.borderLight}` }}>
-                        <td style={{ padding: theme.spacing.xs }}>
-                          <div>{formatDateTime(sale.sale_date).date}</div>
-                          <div style={{ fontSize: theme.typography.tiny, color: theme.colors.textMuted }}>{formatDateTime(sale.sale_date).time}</div>
-                        </td>
-                        <td style={{ padding: theme.spacing.xs, fontWeight: theme.typography.medium }}>
-                          {sale.show_title}
-                        </td>
-                        <td style={{ padding: theme.spacing.xs }}>
-                          <div>{formatDateTime(sale.session_date).date}</div>
-                          <div style={{ fontSize: theme.typography.tiny, color: theme.colors.textMuted }}>{formatDateTime(sale.session_date).time}</div>
-                        </td>
-                        <td style={{ padding: theme.spacing.xs }}>
-                          <div style={{ fontWeight: theme.typography.medium }}>{sale.customer_name}</div>
-                          {sale.customer_dni && (
-                            <div style={{ fontSize: theme.typography.tiny, color: theme.colors.textMuted }}>DNI: {sale.customer_dni}</div>
-                          )}
-                          {sale.customer_email && sale.customer_email !== '-' && (
-                            <div style={{ fontSize: theme.typography.tiny, color: theme.colors.textMuted }}>{sale.customer_email}</div>
-                          )}
-                          {sale.customer_phone && sale.customer_phone !== '-' && (
-                            <div style={{ fontSize: theme.typography.tiny, color: theme.colors.textMuted }}>Tel: {sale.customer_phone}</div>
-                          )}
-                        </td>
-                        <td style={{ padding: theme.spacing.xs }}>
-                          <div style={{ fontWeight: theme.typography.medium }}>{sale.sold_by_name}</div>
-                          {sale.sold_by_email !== '-' && (
-                            <div style={{ fontSize: theme.typography.tiny, color: theme.colors.textMuted }}>{sale.sold_by_email}</div>
-                          )}
-                        </td>
-                        <td style={{ padding: theme.spacing.xs, textAlign: 'center' }}>
-                          <span style={{
-                            padding: '2px 8px',
-                            background: sale.channel === 'Boletería' ? theme.colors.info : theme.colors.success,
-                            borderRadius: theme.borderRadius.full,
-                            fontSize: theme.typography.tiny,
-                            color: theme.colors.surface
-                          }}>
-                            {sale.channel}
-                          </span>
-                        </td>
-                        <td style={{ padding: theme.spacing.xs, fontSize: theme.typography.tiny }}>
-                          {sale.locations.split(', ').map((loc, idx) => (
-                            <div key={idx}>{loc}</div>
-                          ))}
-                        </td>
-                        <td style={{ padding: theme.spacing.xs, textAlign: 'center' }}>{sale.tickets_count}</td>
-                        <td style={{ padding: theme.spacing.xs, textAlign: 'center' }}>{sale.people_count}</td>
-                        <td style={{ padding: theme.spacing.xs }}>
-                          <div>{normalizePaymentMethod(sale.payment_method)}</div>
-                          {sale.discount_code && (
-                            <div style={{ fontSize: theme.typography.tiny, color: theme.colors.accent }}>
-                              Desc: {sale.discount_code} ({sale.discount_value})
-                            </div>
-                          )}
-                        </td>
-                        <td style={{ padding: theme.spacing.xs, textAlign: 'right', fontWeight: theme.typography.semibold }}>
-                          {formatCurrency(sale.total_amount)}
-                        </td>
-                        <td style={{ padding: theme.spacing.xs, textAlign: 'center' }}>
-                          <div style={{ display: 'flex', gap: 8, justifyContent: 'center', flexWrap: 'wrap' }}>
-                            {isRefundedOriginal ? (
-                              <span style={{ fontSize: 12, color: theme.colors.textMuted }}>
-                                Reintegrada
-                              </span>
-                            ) : showDetailButton ? (
-                              <Button
-                                onClick={() => handleViewTickets(sale, { detailsOnly: true })}
-                                variant="secondary"
-                                style={{ fontSize: 12, padding: '4px 12px' }}
-                              >
-                                Ver detalle
-                              </Button>
-                            ) : (
-                              <>
-                                <Button
-                                  onClick={() => handleViewTickets(sale)}
-                                  variant="secondary"
-                                  style={{ fontSize: 12, padding: '4px 12px' }}
-                                >
-                                  Ver Entradas
-                                </Button>
-                                {showRefundButton && (
-                                  <Button
-                                    onClick={() => handleOpenRefundModal(sale)}
-                                    variant="danger"
-                                    style={{ fontSize: 12, padding: '4px 12px' }}
-                                  >
-                                    Devolver
-                                  </Button>
-                                )}
-                              </>
-                            )}
-                          </div>
-                        </td>
-                      </tr>
-                      );
-                    })}
-                  </tbody>
-                </table>
-              </div>
-              
-              {reportData.salesDetail.length === 0 && (
-                <div style={{ padding: theme.spacing.lg, textAlign: 'center', color: theme.colors.textMuted }}>
-                  No hay ventas que coincidan con los filtros seleccionados
-                </div>
-              )}
-            </Card>
-          )}
-        </>
-      )}
-
-      {/* Reporte Individual */}
+      {/* Reporte Individual - KPI cards y desglose PRIMERO (cuando hay un show seleccionado) */}
       {!loading && reportData && reportType === 'individual' && (
         <>
           {/* Información del Show */}
@@ -1042,9 +1110,6 @@ export default function Reports({ shows }) {
                 <h2 style={{ marginBottom: theme.spacing.sm, color: theme.colors.textPrimary }}>
                   {reportData.show.title}
                 </h2>
-                <p style={{ color: theme.colors.textSecondary, marginBottom: theme.spacing.xs }}>
-                  {reportData.show.description}
-                </p>
                 <p style={{ fontSize: theme.typography.small, color: theme.colors.textMuted }}>
                   {reportData.show.sessionsCount} funciones
                 </p>
@@ -1055,7 +1120,7 @@ export default function Reports({ shows }) {
                   onClick={() => setShowBordereauxModal(true)}
                   style={{ marginLeft: theme.spacing.md }}
                 >
-                  📄 Ver Bordereaux
+                  Ver Bordereaux
                 </Button>
               )}
             </div>
@@ -1068,18 +1133,20 @@ export default function Reports({ shows }) {
             gap: theme.spacing.md,
             marginBottom: theme.spacing.lg
           }}>
+            {!isBoleteria && (
             <Card variant="elevated" padding="md">
               <div style={{ fontSize: theme.typography.tiny, color: theme.colors.textSecondary, marginBottom: theme.spacing.xs }}>
-                💰 Ingresos
+                Ingresos
               </div>
               <div style={{ fontSize: theme.typography.h4, fontWeight: theme.typography.bold, color: theme.colors.primary }}>
                 {formatCurrency(reportData.summary.totalRevenue)}
               </div>
             </Card>
+            )}
 
             <Card variant="elevated" padding="md">
               <div style={{ fontSize: theme.typography.tiny, color: theme.colors.textSecondary, marginBottom: theme.spacing.xs }}>
-                🎫 Tickets
+                Tickets
               </div>
               <div style={{ fontSize: theme.typography.h4, fontWeight: theme.typography.bold, color: theme.colors.primary }}>
                 {reportData.summary.totalTicketsSold}
@@ -1091,7 +1158,7 @@ export default function Reports({ shows }) {
 
             <Card variant="elevated" padding="md">
               <div style={{ fontSize: theme.typography.tiny, color: theme.colors.textSecondary, marginBottom: theme.spacing.xs }}>
-                📊 Ocupación
+                Ocupación
               </div>
               <div style={{ fontSize: theme.typography.h4, fontWeight: theme.typography.bold, color: theme.colors.primary }}>
                 {reportData.summary.averageOccupancy}%
@@ -1100,72 +1167,102 @@ export default function Reports({ shows }) {
 
             <Card variant="elevated" padding="md">
               <div style={{ fontSize: theme.typography.tiny, color: theme.colors.textSecondary, marginBottom: theme.spacing.xs }}>
-                👥 Asistencia
+                Asistencia
               </div>
               <div style={{ fontSize: theme.typography.h4, fontWeight: theme.typography.bold, color: theme.colors.primary }}>
                 {reportData.summary.averageAttendance}%
+              </div>
+              <div style={{ fontSize: theme.typography.tiny, color: theme.colors.textMuted }}>
+                Faltan validar: {reportData.summary.totalPeopleSold - reportData.summary.totalPeopleValidated} personas
               </div>
             </Card>
 
           </div>
 
-          {/* Desglose por Ubicación */}
-          <Card variant="elevated" padding="lg" style={{ marginBottom: theme.spacing.lg }}>
-            <h3 style={{ marginBottom: theme.spacing.md, color: theme.colors.textPrimary }}>
-              Desglose por Ubicación
-            </h3>
-            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: theme.spacing.md }}>
-              <div>
-                <div style={{ fontSize: theme.typography.small, fontWeight: theme.typography.semibold, marginBottom: theme.spacing.xs }}>
-                  Platea General
+          {/* Desglose por Ubicación - Solo para Sala Principal, oculto para boletería */}
+          {!isBoleteria && reportData.show?.venue_type === 'sala_principal' && (
+            <Card variant="elevated" padding="lg" style={{ marginBottom: theme.spacing.lg }}>
+              <h3 style={{ marginBottom: theme.spacing.md, color: theme.colors.textPrimary }}>
+                Desglose por Ubicación
+              </h3>
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: theme.spacing.md }}>
+                <div>
+                  <div style={{ fontSize: theme.typography.small, fontWeight: theme.typography.semibold, marginBottom: theme.spacing.xs }}>
+                    Platea General
+                  </div>
+                  <div style={{ fontSize: theme.typography.tiny, color: theme.colors.textSecondary }}>
+                    {reportData.locationBreakdown.platea_general.people} personas
+                  </div>
+                  <div style={{ fontSize: theme.typography.body, fontWeight: theme.typography.medium, color: theme.colors.primary }}>
+                    {formatCurrency(reportData.locationBreakdown.platea_general.revenue)}
+                  </div>
                 </div>
-                <div style={{ fontSize: theme.typography.tiny, color: theme.colors.textSecondary }}>
-                  {reportData.locationBreakdown.platea_general.people} personas
+
+                <div>
+                  <div style={{ fontSize: theme.typography.small, fontWeight: theme.typography.semibold, marginBottom: theme.spacing.xs }}>
+                    Palcos Bajos (4 pers)
+                  </div>
+                  <div style={{ fontSize: theme.typography.tiny, color: theme.colors.textSecondary }}>
+                    {reportData.locationBreakdown.palcos_bajos.count} palcos ({reportData.locationBreakdown.palcos_bajos.people} personas)
+                  </div>
+                  <div style={{ fontSize: theme.typography.body, fontWeight: theme.typography.medium, color: theme.colors.primary }}>
+                    {formatCurrency(reportData.locationBreakdown.palcos_bajos.revenue)}
+                  </div>
                 </div>
-                <div style={{ fontSize: theme.typography.body, fontWeight: theme.typography.medium, color: theme.colors.primary }}>
-                  {formatCurrency(reportData.locationBreakdown.platea_general.revenue)}
+
+                <div>
+                  <div style={{ fontSize: theme.typography.small, fontWeight: theme.typography.semibold, marginBottom: theme.spacing.xs }}>
+                    Palcos Altos (2 pers)
+                  </div>
+                  <div style={{ fontSize: theme.typography.tiny, color: theme.colors.textSecondary }}>
+                    {reportData.locationBreakdown.palcos_altos.count} palcos ({reportData.locationBreakdown.palcos_altos.people} personas)
+                  </div>
+                  <div style={{ fontSize: theme.typography.body, fontWeight: theme.typography.medium, color: theme.colors.primary }}>
+                    {formatCurrency(reportData.locationBreakdown.palcos_altos.revenue)}
+                  </div>
+                </div>
+
+                <div>
+                  <div style={{ fontSize: theme.typography.small, fontWeight: theme.typography.semibold, marginBottom: theme.spacing.xs }}>
+                    Pullman
+                  </div>
+                  <div style={{ fontSize: theme.typography.tiny, color: theme.colors.textSecondary }}>
+                    {reportData.locationBreakdown.pullman.people} personas
+                  </div>
+                  <div style={{ fontSize: theme.typography.body, fontWeight: theme.typography.medium, color: theme.colors.primary }}>
+                    {formatCurrency(reportData.locationBreakdown.pullman.revenue)}
+                  </div>
                 </div>
               </div>
+            </Card>
+          )}
 
-              <div>
-                <div style={{ fontSize: theme.typography.small, fontWeight: theme.typography.semibold, marginBottom: theme.spacing.xs }}>
-                  Palcos Bajos (4 pers)
-                </div>
-                <div style={{ fontSize: theme.typography.tiny, color: theme.colors.textSecondary }}>
-                  {reportData.locationBreakdown.palcos_bajos.count} palcos ({reportData.locationBreakdown.palcos_bajos.people} personas)
-                </div>
-                <div style={{ fontSize: theme.typography.body, fontWeight: theme.typography.medium, color: theme.colors.primary }}>
-                  {formatCurrency(reportData.locationBreakdown.palcos_bajos.revenue)}
-                </div>
+          {/* Desglose por Servicios - Solo para admin */}
+          {isAdmin && reportData.serviceBreakdown && Object.keys(reportData.serviceBreakdown).length > 0 && (
+            <Card variant="elevated" padding="lg" style={{ marginBottom: theme.spacing.lg }}>
+              <h3 style={{ marginBottom: theme.spacing.md, color: theme.colors.textPrimary }}>
+                Desglose por Servicios
+              </h3>
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: theme.spacing.md }}>
+                {Object.entries(reportData.serviceBreakdown).map(([serviceName, data]) => (
+                  <div key={serviceName}>
+                    <div style={{ fontSize: theme.typography.small, fontWeight: theme.typography.semibold, marginBottom: theme.spacing.xs }}>
+                      {serviceName}
+                    </div>
+                    <div style={{ fontSize: theme.typography.tiny, color: theme.colors.textSecondary }}>
+                      {data.quantity} venta{data.quantity > 1 ? 's' : ''}
+                    </div>
+                    <div style={{ fontSize: theme.typography.body, fontWeight: theme.typography.medium, color: theme.colors.primary }}>
+                      {formatCurrency(data.total)}
+                    </div>
+                  </div>
+                ))}
               </div>
+            </Card>
+          )}
 
-              <div>
-                <div style={{ fontSize: theme.typography.small, fontWeight: theme.typography.semibold, marginBottom: theme.spacing.xs }}>
-                  Palcos Altos (2 pers)
-                </div>
-                <div style={{ fontSize: theme.typography.tiny, color: theme.colors.textSecondary }}>
-                  {reportData.locationBreakdown.palcos_altos.count} palcos ({reportData.locationBreakdown.palcos_altos.people} personas)
-                </div>
-                <div style={{ fontSize: theme.typography.body, fontWeight: theme.typography.medium, color: theme.colors.primary }}>
-                  {formatCurrency(reportData.locationBreakdown.palcos_altos.revenue)}
-                </div>
-              </div>
-
-              <div>
-                <div style={{ fontSize: theme.typography.small, fontWeight: theme.typography.semibold, marginBottom: theme.spacing.xs }}>
-                  Pullman
-                </div>
-                <div style={{ fontSize: theme.typography.tiny, color: theme.colors.textSecondary }}>
-                  {reportData.locationBreakdown.pullman.people} personas
-                </div>
-                <div style={{ fontSize: theme.typography.body, fontWeight: theme.typography.medium, color: theme.colors.primary }}>
-                  {formatCurrency(reportData.locationBreakdown.pullman.revenue)}
-                </div>
-              </div>
-            </div>
-          </Card>
-
-          {/* Detalle por Función */}
+          {/* Detalle por Función - Oculto para boletería */}
+          {!isBoleteria && (
           <Card variant="elevated" padding="lg" style={{ marginBottom: theme.spacing.lg }}>
             <h3 style={{ marginBottom: theme.spacing.md, color: theme.colors.textPrimary }}>
               Detalle por Función
@@ -1215,200 +1312,196 @@ export default function Reports({ shows }) {
               </table>
             </div>
           </Card>
+          )}
+        </>
+      )}
 
-          {/* Detalle de Ventas - Oculto para productores */}
-          {reportData.salesDetail && user?.role !== 'productor' && (
-            <Card variant="elevated" padding="lg">
-              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: theme.spacing.md }}>
-                <h3 style={{ margin: 0, color: theme.colors.textPrimary }}>
-                  📝 Detalle de Ventas ({reportData.salesDetail.length} transacciones)
-                </h3>
-                {isRefreshing && (
-                  <span style={{ fontSize: theme.typography.small, color: theme.colors.textMuted }}>
-                    ⟳ Actualizando...
-                  </span>
-                )}
-              </div>
-              
-              {/* Filtros */}
-              <div style={{ 
-                display: 'flex', 
-                gap: theme.spacing.md, 
-                marginBottom: theme.spacing.md,
-                flexWrap: 'wrap'
+      {/* Detalle de Ventas - AL FINAL, sin nada debajo */}
+      {!loading && !isProductor && (() => {
+        const totalItems = salesPagination.total;
+        const totalPages = salesPagination.totalPages;
+        
+        return (
+        <Card variant="elevated" padding="lg">
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: theme.spacing.md }}>
+            <h3 style={{ margin: 0, color: theme.colors.textPrimary }}>
+               Detalle de Ventas ({totalItems} transacciones)
+            </h3>
+            {loadingSales && (
+              <span style={{ fontSize: theme.typography.small, color: theme.colors.textMuted }}>
+                ⟳ Cargando...
+              </span>
+            )}
+          </div>
+          
+          {/* Barra de búsqueda */}
+          <div style={{ marginBottom: theme.spacing.md }}>
+            <input
+              type="text"
+              placeholder="🔍 Buscar por cliente, DNI, email, ubicación, show..."
+              value={searchQuery}
+              onChange={(e) => setSearchQuery(e.target.value)}
+              style={{
+                width: '100%',
+                padding: theme.spacing.sm,
+                border: `1px solid ${theme.colors.border}`,
+                borderRadius: theme.borderRadius.md,
+                fontSize: theme.typography.body
+              }}
+            />
+          </div>
+          
+          {/* Filtros */}
+          <div style={{ 
+            display: 'flex', 
+            gap: theme.spacing.md, 
+            marginBottom: theme.spacing.md,
+            flexWrap: 'wrap'
+          }}>
+            <div style={{ flex: '1 1 200px' }}>
+              <label style={{ 
+                display: 'block', 
+                fontSize: theme.typography.small, 
+                marginBottom: theme.spacing.xs,
+                color: theme.colors.textSecondary
               }}>
-                <div style={{ flex: '1 1 200px' }}>
-                  <label style={{ 
-                    display: 'block', 
-                    fontSize: theme.typography.small, 
-                    marginBottom: theme.spacing.xs,
-                    color: theme.colors.textSecondary
-                  }}>
-                    📅 Fecha
-                  </label>
-                  <input
-                    type="date"
-                    value={filterDate}
-                    onChange={(e) => setFilterDate(e.target.value)}
-                    style={{
-                      width: '100%',
-                      padding: theme.spacing.sm,
-                      border: `1px solid ${theme.colors.border}`,
-                      borderRadius: theme.borderRadius.md,
-                      fontSize: theme.typography.small
-                    }}
-                  />
-                </div>
-                
-                <div style={{ flex: '1 1 200px' }}>
-                  <label style={{ 
-                    display: 'block', 
-                    fontSize: theme.typography.small, 
-                    marginBottom: theme.spacing.xs,
-                    color: theme.colors.textSecondary
-                  }}>
-                    👤 Vendedor
-                  </label>
-                  <select
-                    value={filterSeller}
-                    onChange={(e) => setFilterSeller(e.target.value)}
-                    style={{
-                      width: '100%',
-                      padding: theme.spacing.sm,
-                      border: `1px solid ${theme.colors.border}`,
-                      borderRadius: theme.borderRadius.md,
-                      fontSize: theme.typography.small
-                    }}
-                  >
-                    <option value="">Todos</option>
-                    {sellers.map(seller => (
-                      <option key={seller.id} value={seller.id}>{seller.name}</option>
-                    ))}
-                  </select>
-                </div>
-                
-                <div style={{ flex: '1 1 200px' }}>
-                  <label style={{ 
-                    display: 'block', 
-                    fontSize: theme.typography.small, 
-                    marginBottom: theme.spacing.xs,
-                    color: theme.colors.textSecondary
-                  }}>
-                    📍 Canal
-                  </label>
-                  <select
-                    value={filterChannel}
-                    onChange={(e) => setFilterChannel(e.target.value)}
-                    style={{
-                      width: '100%',
-                      padding: theme.spacing.sm,
-                      border: `1px solid ${theme.colors.border}`,
-                      borderRadius: theme.borderRadius.md,
-                      fontSize: theme.typography.small
-                    }}
-                  >
-                    <option value="">Todos</option>
-                    <option value="Online">Online</option>
-                    <option value="Boletería">Boletería</option>
-                  </select>
-                </div>
-              </div>
-              
-              <div style={{ overflowX: 'auto' }}>
-                <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: theme.typography.small }}>
-                  <thead>
-                    <tr style={{ borderBottom: `2px solid ${theme.colors.border}`, background: theme.colors.surfaceAlt }}>
-                      <th style={{ padding: theme.spacing.xs, textAlign: 'left', minWidth: '130px' }}>Fecha Venta</th>
-                      <th style={{ padding: theme.spacing.xs, textAlign: 'left', minWidth: '130px' }}>Fecha Función</th>
-                      <th style={{ padding: theme.spacing.xs, textAlign: 'left', minWidth: '150px' }}>Cliente</th>
-                      <th style={{ padding: theme.spacing.xs, textAlign: 'left', minWidth: '120px' }}>Vendido por</th>
-                      <th style={{ padding: theme.spacing.xs, textAlign: 'center', minWidth: '80px' }}>Canal</th>
-                      <th style={{ padding: theme.spacing.xs, textAlign: 'left', minWidth: '200px' }}>Ubicaciones</th>
-                      <th style={{ padding: theme.spacing.xs, textAlign: 'center', minWidth: '70px' }}>Tickets</th>
-                      <th style={{ padding: theme.spacing.xs, textAlign: 'center', minWidth: '70px' }}>Personas</th>
-                      <th style={{ padding: theme.spacing.xs, textAlign: 'left', minWidth: '90px' }}>Pago</th>
-                      <th style={{ padding: theme.spacing.xs, textAlign: 'right', minWidth: '90px' }}>Total</th>
-                      <th style={{ padding: theme.spacing.xs, textAlign: 'center', minWidth: '100px' }}>Acciones</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {reportData.salesDetail.map((sale) => {
-                      const isRefunded = sale.refunded || false;
-                      const isRefundOperation = sale.is_refund_operation || false;
-                      const isRefundedOriginal = isRefunded && !isRefundOperation;
-                      const showDetailButton = isRefundOperation;
+                 Fecha
+              </label>
+              <DateInput
+                value={filterDate}
+                onChange={setFilterDate}
+                style={{
+                  width: '100%',
+                  padding: theme.spacing.sm,
+                  border: `1px solid ${theme.colors.border}`,
+                  borderRadius: theme.borderRadius.md,
+                  fontSize: theme.typography.small
+                }}
+              />
+            </div>
+            
+            <div style={{ flex: '1 1 200px' }}>
+              <label style={{ 
+                display: 'block', 
+                fontSize: theme.typography.small, 
+                marginBottom: theme.spacing.xs,
+                color: theme.colors.textSecondary
+              }}>
+                Vendedor
+              </label>
+              <select
+                value={filterSeller}
+                onChange={(e) => setFilterSeller(e.target.value)}
+                style={{
+                  width: '100%',
+                  padding: theme.spacing.sm,
+                  border: `1px solid ${theme.colors.border}`,
+                  borderRadius: theme.borderRadius.md,
+                  fontSize: theme.typography.small
+                }}
+              >
+                <option value="">Todos</option>
+                {sellers.map(seller => (
+                  <option key={seller.id} value={seller.id}>{seller.name}</option>
+                ))}
+              </select>
+            </div>
+            
+            <div style={{ flex: '1 1 200px' }}>
+              <label style={{ 
+                display: 'block', 
+                fontSize: theme.typography.small, 
+                marginBottom: theme.spacing.xs,
+                color: theme.colors.textSecondary
+              }}>
+                 Canal
+              </label>
+              <select
+                value={filterChannel}
+                onChange={(e) => setFilterChannel(e.target.value)}
+                style={{
+                  width: '100%',
+                  padding: theme.spacing.sm,
+                  border: `1px solid ${theme.colors.border}`,
+                  borderRadius: theme.borderRadius.md,
+                  fontSize: theme.typography.small
+                }}
+              >
+                <option value="">Todos</option>
+                <option value="Online">Online</option>
+                <option value="Boletería">Boletería</option>
+              </select>
+            </div>
+          </div>
+          
+          {paginatedSales.length === 0 && !loadingSales ? (
+            <div style={{ textAlign: 'center', padding: theme.spacing.xl, color: theme.colors.textMuted }}>
+              {searchQuery || filterDate || filterSeller || filterChannel
+                ? 'No se encontraron ventas con los filtros aplicados.'
+                : 'No hay ventas para mostrar. Seleccioná un período o ajustá los filtros.'}
+            </div>
+          ) : (
+          <div style={{ overflowX: 'auto' }}>
+            <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: theme.typography.small }}>
+              <thead>
+                <tr style={{ borderBottom: `2px solid ${theme.colors.border}`, background: theme.colors.surfaceAlt }}>
+                  <th style={{ padding: theme.spacing.xs, textAlign: 'left', minWidth: '130px' }}>Fecha Venta</th>
+                  <th style={{ padding: theme.spacing.xs, textAlign: 'left', minWidth: '150px' }}>Show</th>
+                  <th style={{ padding: theme.spacing.xs, textAlign: 'center', minWidth: '100px' }}>Acciones</th>
+                  <th style={{ padding: theme.spacing.xs, textAlign: 'left', minWidth: '200px' }}>Ubicaciones</th>
+                  <th style={{ padding: theme.spacing.xs, textAlign: 'left', minWidth: '130px' }}>Fecha Función</th>
+                  <th style={{ padding: theme.spacing.xs, textAlign: 'left', minWidth: '150px' }}>Cliente</th>
+                  <th style={{ padding: theme.spacing.xs, textAlign: 'left', minWidth: '100px' }}>Localidad</th>
+                  <th style={{ padding: theme.spacing.xs, textAlign: 'left', minWidth: '120px' }}>Vendido por</th>
+                  <th style={{ padding: theme.spacing.xs, textAlign: 'center', minWidth: '80px' }}>Canal</th>
+                  <th style={{ padding: theme.spacing.xs, textAlign: 'center', minWidth: '70px' }}>Tickets</th>
+                  <th style={{ padding: theme.spacing.xs, textAlign: 'center', minWidth: '70px' }}>Personas</th>
+                  <th style={{ padding: theme.spacing.xs, textAlign: 'left', minWidth: '90px' }}>Pago</th>
+                  <th style={{ padding: theme.spacing.xs, textAlign: 'right', minWidth: '90px' }}>Total</th>
+                </tr>
+              </thead>
+              <tbody>
+                {paginatedSales.map((sale) => {
+                  const isRefunded = sale.refunded || false;
+                  const isRefundOperation = sale.is_refund_operation || false;
+                  const isRefundedOriginal = isRefunded && !isRefundOperation;
+                  const showDetailButton = isRefundOperation;
+                  const showRefundButton = canRefund && sale.channel === 'Boletería' && !isRefunded && !isRefundOperation;
 
-                      return (
-                      <tr key={sale.sale_id} style={{ borderBottom: `1px solid ${theme.colors.borderLight}` }}>
-                        <td style={{ padding: theme.spacing.xs }}>
-                          <div>{formatDateTime(sale.sale_date).date}</div>
-                          <div style={{ fontSize: theme.typography.tiny, color: theme.colors.textMuted }}>{formatDateTime(sale.sale_date).time}</div>
-                        </td>
-                        <td style={{ padding: theme.spacing.xs }}>
-                          <div>{formatDateTime(sale.session_date).date}</div>
-                          <div style={{ fontSize: theme.typography.tiny, color: theme.colors.textMuted }}>{formatDateTime(sale.session_date).time}</div>
-                        </td>
-                        <td style={{ padding: theme.spacing.xs }}>
-                          <div style={{ fontWeight: theme.typography.medium }}>{sale.customer_name}</div>
-                          {sale.customer_dni && (
-                            <div style={{ fontSize: theme.typography.tiny, color: theme.colors.textMuted }}>DNI: {sale.customer_dni}</div>
-                          )}
-                          {sale.customer_email && sale.customer_email !== '-' && (
-                            <div style={{ fontSize: theme.typography.tiny, color: theme.colors.textMuted }}>{sale.customer_email}</div>
-                          )}
-                          {sale.customer_phone && sale.customer_phone !== '-' && (
-                            <div style={{ fontSize: theme.typography.tiny, color: theme.colors.textMuted }}>Tel: {sale.customer_phone}</div>
-                          )}
-                        </td>
-                        <td style={{ padding: theme.spacing.xs }}>
-                          <div style={{ fontWeight: theme.typography.medium }}>{sale.sold_by_name}</div>
-                          {sale.sold_by_email !== '-' && (
-                            <div style={{ fontSize: theme.typography.tiny, color: theme.colors.textMuted }}>{sale.sold_by_email}</div>
-                          )}
-                        </td>
-                        <td style={{ padding: theme.spacing.xs, textAlign: 'center' }}>
-                          <span style={{
-                            padding: '2px 8px',
-                            background: sale.channel === 'Boletería' ? theme.colors.info : theme.colors.success,
-                            borderRadius: theme.borderRadius.full,
-                            fontSize: theme.typography.tiny,
-                            color: theme.colors.surface
-                          }}>
-                            {sale.channel}
+                  return (
+                  <tr key={sale.sale_id} style={{ borderBottom: `1px solid ${theme.colors.borderLight}` }}>
+                    <td style={{ padding: theme.spacing.xs }}>
+                      <div>{formatDateTime(sale.sale_date).date}</div>
+                      <div style={{ fontSize: theme.typography.tiny, color: theme.colors.textMuted }}>{formatDateTime(sale.sale_date).time}</div>
+                    </td>
+                    <td style={{ padding: theme.spacing.xs }}>
+                      <div style={{ fontWeight: theme.typography.medium }}>{sale.show_title}</div>
+                      <span style={{
+                        padding: '1px 6px',
+                        background: sale.show_status === 'finalizado' ? theme.colors.textMuted : theme.colors.success,
+                        borderRadius: theme.borderRadius.full,
+                        fontSize: '10px',
+                        color: theme.colors.surface
+                      }}>
+                        {sale.show_status === 'finalizado' ? 'Finalizado' : 'Activo'}
+                      </span>
+                    </td>
+                    <td style={{ padding: theme.spacing.xs, textAlign: 'center' }}>
+                      <div style={{ display: 'flex', gap: 8, justifyContent: 'center', flexWrap: 'wrap' }}>
+                        {isRefundedOriginal ? (
+                          <span style={{ fontSize: 12, color: theme.colors.textMuted }}>
+                            Reintegrada
                           </span>
-                        </td>
-                        <td style={{ padding: theme.spacing.xs, fontSize: theme.typography.tiny }}>
-                          {sale.locations.split(', ').map((loc, idx) => (
-                            <div key={idx}>{loc}</div>
-                          ))}
-                        </td>
-                        <td style={{ padding: theme.spacing.xs, textAlign: 'center' }}>{sale.tickets_count}</td>
-                        <td style={{ padding: theme.spacing.xs, textAlign: 'center' }}>{sale.people_count}</td>
-                        <td style={{ padding: theme.spacing.xs }}>
-                          <div>{normalizePaymentMethod(sale.payment_method)}</div>
-                          {sale.discount_code && (
-                            <div style={{ fontSize: theme.typography.tiny, color: theme.colors.accent }}>
-                              Desc: {sale.discount_code} ({sale.discount_value})
-                            </div>
-                          )}
-                        </td>
-                        <td style={{ padding: theme.spacing.xs, textAlign: 'right', fontWeight: theme.typography.semibold }}>
-                          {formatCurrency(sale.total_amount)}
-                        </td>
-                        <td style={{ padding: theme.spacing.xs, textAlign: 'center' }}>
-                          {isRefundedOriginal ? (
-                            <span style={{ fontSize: 12, color: theme.colors.textMuted }}>
-                              Reintegrada
-                            </span>
-                          ) : showDetailButton ? (
-                            <Button
-                              onClick={() => handleViewTickets(sale, { detailsOnly: true })}
-                              variant="secondary"
-                              style={{ fontSize: 12, padding: '4px 12px' }}
-                            >
-                              Ver detalle
-                            </Button>
-                          ) : (
+                        ) : showDetailButton ? (
+                          <Button
+                            onClick={() => handleViewTickets(sale, { detailsOnly: true })}
+                            variant="secondary"
+                            style={{ fontSize: 12, padding: '4px 12px' }}
+                          >
+                            Ver detalle
+                          </Button>
+                        ) : (
+                          <>
                             <Button
                               onClick={() => handleViewTickets(sale)}
                               variant="secondary"
@@ -1416,24 +1509,113 @@ export default function Reports({ shows }) {
                             >
                               Ver Entradas
                             </Button>
-                          )}
-                        </td>
-                      </tr>
-                      );
-                    })}
-                  </tbody>
-                </table>
-              </div>
-              
-              {reportData.salesDetail.length === 0 && (
-                <div style={{ padding: theme.spacing.lg, textAlign: 'center', color: theme.colors.textMuted }}>
-                  No hay ventas que coincidan con los filtros seleccionados
-                </div>
-              )}
-            </Card>
+                            {showRefundButton && (
+                              <Button
+                                onClick={() => handleOpenRefundModal(sale)}
+                                variant="danger"
+                                style={{ fontSize: 12, padding: '4px 12px' }}
+                              >
+                                Devolver
+                              </Button>
+                            )}
+                          </>
+                        )}
+                      </div>
+                    </td>
+                    <td style={{ padding: theme.spacing.xs, fontSize: theme.typography.tiny }}>
+                      {sale.locations && sale.locations.split(', ').map((loc, idx) => (
+                        <div key={idx}>{loc}</div>
+                      ))}
+                      {(() => {
+                        let serviceItems = sale.service_items;
+                        // Forzar parseo si viene como string
+                        if (typeof serviceItems === 'string') {
+                          try {
+                            serviceItems = JSON.parse(serviceItems);
+                          } catch { serviceItems = []; }
+                        }
+                        const isArray = Array.isArray(serviceItems);
+                        const hasItems = isArray && serviceItems.length > 0;
+                        if (hasItems) {
+                          return serviceItems.map((svc, idx) => (
+                            <div key={`svc-${idx}`} style={{ color: '#000', fontWeight: 500, marginTop: 4 }}>{svc.name} - {svc.quantity} persona{svc.quantity > 1 ? 's' : ''}</div>
+                          ));
+                        }
+                        return null;
+                      })()}
+                    </td>
+                    <td style={{ padding: theme.spacing.xs }}>
+                      <div>{formatDateTime(sale.session_date).date}</div>
+                      <div style={{ fontSize: theme.typography.tiny, color: theme.colors.textMuted }}>{formatDateTime(sale.session_date).time}</div>
+                    </td>
+                    <td style={{ padding: theme.spacing.xs }}>
+                      <div style={{ fontWeight: theme.typography.medium }}>{sale.customer_name}</div>
+                      {sale.customer_dni && (
+                        <div style={{ fontSize: theme.typography.tiny, color: theme.colors.textMuted }}>DNI: {sale.customer_dni}</div>
+                      )}
+                      {sale.customer_email && sale.customer_email !== '-' && (
+                        <div style={{ fontSize: theme.typography.tiny, color: theme.colors.textMuted }}>{sale.customer_email}</div>
+                      )}
+                      {sale.customer_phone && sale.customer_phone !== '-' && (
+                        <div style={{ fontSize: theme.typography.tiny, color: theme.colors.textMuted }}>Tel: {sale.customer_phone}</div>
+                      )}
+                    </td>
+                    <td style={{ padding: theme.spacing.xs, fontSize: theme.typography.tiny }}>
+                      {sale.customer_localidad || '-'}
+                    </td>
+                    <td style={{ padding: theme.spacing.xs }}>
+                      <div style={{ fontWeight: theme.typography.medium }}>{sale.sold_by_name}</div>
+                      {sale.sold_by_email !== '-' && (
+                        <div style={{ fontSize: theme.typography.tiny, color: theme.colors.textMuted }}>{sale.sold_by_email}</div>
+                      )}
+                    </td>
+                    <td style={{ padding: theme.spacing.xs, textAlign: 'center' }}>
+                      <span style={{
+                        padding: '2px 8px',
+                        background: sale.channel === 'Boletería' ? theme.colors.info : theme.colors.success,
+                        borderRadius: theme.borderRadius.full,
+                        fontSize: theme.typography.tiny,
+                        color: theme.colors.surface
+                      }}>
+                        {sale.channel}
+                      </span>
+                    </td>
+                    <td style={{ padding: theme.spacing.xs, textAlign: 'center' }}>{sale.tickets_count}</td>
+                    <td style={{ padding: theme.spacing.xs, textAlign: 'center' }}>{sale.people_count}</td>
+                    <td style={{ padding: theme.spacing.xs }}>
+                      <div>{normalizePaymentMethod(sale.payment_method)}</div>
+                      {sale.discount_code && (
+                        <div style={{ fontSize: theme.typography.tiny, color: theme.colors.accent }}>
+                          Desc: {sale.discount_code} ({sale.discount_value})
+                        </div>
+                      )}
+                    </td>
+                    <td style={{ padding: theme.spacing.xs, textAlign: 'right', fontWeight: theme.typography.semibold }}>
+                      {formatCurrency(sale.total_amount)}
+                    </td>
+                  </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
           )}
-        </>
-      )}
+          
+          {loadingSales && (
+            <div style={{ padding: theme.spacing.lg, textAlign: 'center', color: theme.colors.textMuted }}>
+              Cargando ventas...
+            </div>
+          )}
+          
+          <PaginationControls
+            currentPage={currentPage}
+            totalPages={salesPagination.totalPages}
+            totalItems={salesPagination.total}
+            onPageChange={setCurrentPage}
+          />
+        </Card>
+        );
+      })()}
 
       {/* Modal de Bordereaux */}
       {showBordereauxModal && selectedShowId && (
@@ -1671,7 +1853,11 @@ export default function Reports({ shows }) {
                               type="checkbox"
                               checked={isSelected && !isValidated}
                               disabled={isValidated}
-                              onChange={() => toggleRefundTicketSelection(ticket)}
+                              onChange={(e) => {
+                                e.stopPropagation();
+                                toggleRefundTicketSelection(ticket);
+                              }}
+                              onClick={(e) => e.stopPropagation()}
                               style={{ cursor: isValidated ? 'not-allowed' : 'pointer' }}
                             />
                           </div>
@@ -1681,34 +1867,48 @@ export default function Reports({ shows }) {
                   </div>
                 )}
 
-                {refundTickets.length > 0 && selectedRefundTicketIds.length > 0 && (
-                  <div
-                    style={{
-                      marginTop: theme.spacing.xs,
-                      fontSize: theme.typography.small,
-                      color: theme.colors.textSecondary
-                    }}
-                  >
-                    Entradas seleccionadas:{' '}
-                    {selectedRefundTicketIds.length} de{' '}
-                    {
-                      refundTickets.filter(
-                        (t) =>
-                          !(t.status === 'validated' || (t.capacity_validated && t.capacity_validated > 0))
-                      ).length
-                    }
-                    . Total a devolver:{' '}
-                    {formatCurrency(
-                      refundTickets
-                        .filter(
+                {refundTickets.length > 0 && selectedRefundTicketIds.length > 0 && (() => {
+                  // Calcular factor de descuento: total_pagado / suma_precios_base
+                  const allTicketsBasePrice = refundTickets.reduce((sum, t) => sum + Number(t.price || 0), 0);
+                  const saleTotalAmount = Number(refundSale.total_amount || 0);
+                  const discountFactor = allTicketsBasePrice > 0 ? saleTotalAmount / allTicketsBasePrice : 1;
+                  
+                  const selectedTicketsBasePrice = refundTickets
+                    .filter(
+                      (t) =>
+                        selectedRefundTicketIds.includes(t.id) &&
+                        !(t.status === 'validated' || (t.capacity_validated && t.capacity_validated > 0))
+                    )
+                    .reduce((sum, t) => sum + Number(t.price || 0), 0);
+                  
+                  const totalToRefund = selectedTicketsBasePrice * discountFactor;
+                  
+                  return (
+                    <div
+                      style={{
+                        marginTop: theme.spacing.xs,
+                        fontSize: theme.typography.small,
+                        color: theme.colors.textSecondary
+                      }}
+                    >
+                      Entradas seleccionadas:{' '}
+                      {selectedRefundTicketIds.length} de{' '}
+                      {
+                        refundTickets.filter(
                           (t) =>
-                            selectedRefundTicketIds.includes(t.id) &&
                             !(t.status === 'validated' || (t.capacity_validated && t.capacity_validated > 0))
-                        )
-                        .reduce((sum, t) => sum + Number(t.price || 0), 0)
-                    )}
-                  </div>
-                )}
+                        ).length
+                      }
+                      . Total a devolver:{' '}
+                      {formatCurrency(totalToRefund)}
+                      {discountFactor < 1 && (
+                        <span style={{ marginLeft: 8, color: theme.colors.textMuted }}>
+                          (con descuento aplicado)
+                        </span>
+                      )}
+                    </div>
+                  );
+                })()}
               </div>
 
               <div style={{ marginTop: theme.spacing.sm, marginBottom: theme.spacing.md }}>

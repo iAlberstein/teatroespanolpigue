@@ -3,25 +3,54 @@ import { sequelize } from '../lib/sequelize.js';
 import { authenticateToken, requireRole } from '../middleware/auth.js';
 import { Op } from 'sequelize';
 
+function parseServiceItems(raw) {
+  if (!raw) return [];
+  try {
+    let val = raw;
+    if (typeof val === 'string') val = JSON.parse(val);
+    if (typeof val === 'string') val = JSON.parse(val);
+    return Array.isArray(val) ? val : [];
+  } catch { return []; }
+}
+
 const router = Router();
+
+// Helper: sync legacy users.role column from multi-role system
+// Priority order: admin > boleteria > productor > premium > espectador
+const ROLE_PRIORITY = ['admin', 'boleteria', 'productor', 'premium', 'espectador'];
+async function syncLegacyRole(userId) {
+  const rolesModel = sequelize.models.roles;
+  const userRolesModel = sequelize.models.user_roles;
+  const { users: User } = sequelize.models;
+  if (!rolesModel || !userRolesModel) return;
+  const userRoles = await userRolesModel.findAll({
+    where: { user_id: userId },
+    include: [{ model: rolesModel, as: 'role', attributes: ['nombre'] }]
+  });
+  const roleNames = userRoles.map(ur => ur.role?.nombre).filter(Boolean);
+  // Pick highest priority legacy-compatible role
+  const legacyRole = ROLE_PRIORITY.find(r => roleNames.includes(r)) || 'espectador';
+  await User.update({ role: legacyRole }, { where: { id: userId } });
+}
 
 /**
  * GET /api/users/search-quick
  * Quick search for customers by name, email, or DNI
  * For box office use
  * Query params: q (search query)
+ * Returns both registered users and guest customers (from sales without user_id)
  */
 router.get('/search-quick', authenticateToken, requireRole('admin', 'boleteria'), async (req, res) => {
   try {
     const { q } = req.query;
-    
+
     if (!q || q.length < 2) {
       return res.json({ users: [] });
     }
-    
-    const { users: User } = sequelize.models;
-    
-    // Search by name, email, or DNI
+
+    const { users: User, sales: Sale } = sequelize.models;
+
+    // 1. Search registered users
     const users = await User.findAll({
       where: {
         [Op.or]: [
@@ -31,15 +60,114 @@ router.get('/search-quick', authenticateToken, requireRole('admin', 'boleteria')
           { phone: { [Op.like]: `%${q}%` } }
         ]
       },
-      attributes: ['id', 'name', 'email', 'phone', 'dni'],
+      attributes: ['id', 'name', 'email', 'phone', 'dni', 'provincia', 'localidad'],
       limit: 10,
       order: [['name', 'ASC']]
     });
-    
-    return res.json({ users });
+
+    // 2. Search guest customers from sales (where user_id IS NULL)
+    // Only include sales that have at least customer_name or customer_email or customer_dni
+    let guestCustomers = [];
+    if (Sale) {
+      const guestSales = await Sale.findAll({
+        where: {
+          user_id: null,
+          [Op.and]: [
+            {
+              [Op.or]: [
+                { customer_name: { [Op.like]: `%${q}%` } },
+                { customer_email: { [Op.like]: `%${q}%` } },
+                { customer_dni: { [Op.like]: `%${q}%` } },
+                { customer_phone: { [Op.like]: `%${q}%` } }
+              ]
+            },
+            {
+              // Must have at least name or email to be a valid customer record
+              [Op.or]: [
+                { customer_name: { [Op.ne]: null } },
+                { customer_email: { [Op.ne]: null } }
+              ]
+            }
+          ]
+        },
+        attributes: [
+          'customer_name', 'customer_email', 'customer_phone', 'customer_dni',
+          'customer_provincia', 'customer_localidad'
+        ],
+        limit: 20,
+        order: [['created_at', 'DESC']]
+      });
+
+      // Deduplicate guest customers by DNI (prefer DNI) or email
+      const seenDnis = new Set();
+      const seenEmails = new Set();
+      const seenGuestKeys = new Set();
+
+      for (const sale of guestSales) {
+        const dni = sale.customer_dni?.toLowerCase().trim();
+        const email = sale.customer_email?.toLowerCase().trim();
+        const key = dni || email || `${sale.customer_name?.toLowerCase().trim()}_${sale.customer_phone?.toLowerCase().trim()}`;
+
+        // Skip if we've seen this DNI or email already
+        if (dni && seenDnis.has(dni)) continue;
+        if (email && seenEmails.has(email)) continue;
+        if (seenGuestKeys.has(key)) continue;
+
+        // Also skip if this DNI/email matches an existing registered user
+        const matchesRegisteredUser = users.some(u =>
+          (dni && u.dni?.toLowerCase() === dni) ||
+          (email && u.email?.toLowerCase() === email)
+        );
+        if (matchesRegisteredUser) continue;
+
+        if (dni) seenDnis.add(dni);
+        if (email) seenEmails.add(email);
+        seenGuestKeys.add(key);
+
+        guestCustomers.push({
+          id: `guest_${key.replace(/[^a-z0-9]/g, '_')}`,
+          name: sale.customer_name,
+          email: sale.customer_email,
+          phone: sale.customer_phone,
+          dni: sale.customer_dni,
+          provincia: sale.customer_provincia,
+          localidad: sale.customer_localidad,
+          is_registered: false
+        });
+      }
+    }
+
+    // Combine and format results
+    const registeredUsers = users.map(u => ({
+      id: u.id,
+      name: u.name,
+      email: u.email,
+      phone: u.phone,
+      dni: u.dni,
+      provincia: u.provincia,
+      localidad: u.localidad,
+      is_registered: true
+    }));
+
+    const combinedResults = [...registeredUsers, ...guestCustomers].slice(0, 10);
+
+    return res.json({ users: combinedResults });
   } catch (error) {
     console.error('[USERS] Error searching users:', error);
     return res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+// Get all available roles (admin only) - MUST be before /:id routes
+router.get('/meta/roles', authenticateToken, requireRole('admin'), async (req, res) => {
+  try {
+    const rolesModel = sequelize.models.roles;
+    if (!rolesModel) return res.json({ roles: [] });
+    const roles = await rolesModel.findAll({ order: [['modulo', 'ASC'], ['nombre', 'ASC']] });
+    res.json({ roles });
+  } catch (error) {
+    console.error('[USERS] Error fetching roles:', error);
+    res.status(500).json({ error: 'server_error' });
   }
 });
 
@@ -86,21 +214,41 @@ router.get('/', authenticateToken, requireRole('admin', 'boleteria'), async (req
         : { exclude: ['password_hash'] }
     });
     
-    const safeUsers = isBoleteria
-      ? users.map(user => ({
-          id: user.id,
-          name: user.name,
-          email: user.email,
-          phone: user.phone,
-          dni: user.dni,
-          active: user.active,
-          createdAt: user.createdAt,
-          updatedAt: user.updatedAt
-        }))
-      : users;
+    // Load multi-roles for each user
+    const rolesModel = sequelize.models.roles;
+    const userRolesModel = sequelize.models.user_roles;
+    
+    const usersWithRoles = await Promise.all(users.map(async (u) => {
+      const userData = u.toJSON();
+      if (isBoleteria) {
+        return {
+          id: userData.id,
+          name: userData.name,
+          email: userData.email,
+          phone: userData.phone,
+          dni: userData.dni,
+          active: userData.active,
+          createdAt: userData.createdAt,
+          updatedAt: userData.updatedAt
+        };
+      }
+      // Load roles from multi-role system
+      let roles = [];
+      if (userRolesModel && rolesModel) {
+        const userRoles = await userRolesModel.findAll({
+          where: { user_id: userData.id },
+          include: [{ model: rolesModel, as: 'role', attributes: ['nombre'] }]
+        });
+        roles = userRoles.map(ur => ur.role?.nombre).filter(Boolean);
+      }
+      if (roles.length === 0 && userData.role) {
+        roles = [userData.role];
+      }
+      return { ...userData, roles };
+    }));
 
     res.json({
-      users: safeUsers,
+      users: usersWithRoles,
       total: count,
       page: parseInt(page),
       totalPages: Math.ceil(count / parseInt(limit))
@@ -141,7 +289,7 @@ router.get('/:id', async (req, res) => {
 // Update user (admin and boleteria)
 router.put('/:id', authenticateToken, requireRole('admin', 'boleteria'), async (req, res) => {
   try {
-    const { name, email, phone, dni } = req.body;
+    const { name, email, phone, dni, provincia, localidad } = req.body;
     const { users: User } = sequelize.models;
     
     const user = await User.findByPk(req.params.id);
@@ -161,7 +309,9 @@ router.put('/:id', authenticateToken, requireRole('admin', 'boleteria'), async (
       name: name || user.name,
       email: email || user.email,
       phone: phone !== undefined ? phone : user.phone,
-      dni: dni !== undefined ? dni : user.dni
+      dni: dni !== undefined ? dni : user.dni,
+      provincia: provincia !== undefined ? provincia : user.provincia,
+      localidad: localidad !== undefined ? localidad : user.localidad
     });
     
     const updated = await User.findByPk(user.id, {
@@ -196,6 +346,22 @@ router.patch('/:id/role', authenticateToken, requireRole('admin'), async (req, r
     }
     
     await user.update({ role });
+
+    // Sync multi-role system: ensure the new role exists in user_roles
+    try {
+      const rolesModel = sequelize.models.roles;
+      const userRolesModel = sequelize.models.user_roles;
+      if (rolesModel && userRolesModel) {
+        const roleRecord = await rolesModel.findOne({ where: { nombre: role } });
+        if (roleRecord) {
+          await userRolesModel.findOrCreate({
+            where: { user_id: user.id, role_id: roleRecord.id }
+          });
+        }
+      }
+    } catch (syncErr) {
+      console.warn('[USERS] Unable to sync multi-role on legacy role change:', syncErr.message);
+    }
     
     const updated = await User.findByPk(user.id, {
       attributes: { exclude: ['password_hash'] }
@@ -298,6 +464,13 @@ router.get('/:id/tickets', authenticateToken, async (req, res) => {
     const { formatSeatLocation } = await import('../lib/seatFormatter.js');
     const now = new Date();
     
+    // Parse service_items per sale (once)
+    const serviceItemsBySale = {};
+    for (const sale of sales) {
+      const items = parseServiceItems(sale.service_items);
+      if (items.length > 0) serviceItemsBySale[sale.id] = items;
+    }
+
     const formattedTickets = tickets.map(t => {
       const sale = sales.find(s => s.id === t.sale_id);
       const session = sale?.session;
@@ -324,7 +497,7 @@ router.get('/:id/tickets', authenticateToken, async (req, res) => {
         used: isUsed,
         validated_at: t.validated_at,
         show_title: session?.show?.title || 'N/A',
-        show_image_url: session?.show?.image_url || null,
+        show_image_url: session?.show?.image_principal_mobile || session?.show?.image_url || null,
         session_starts_at: sessionDate ? sessionDate.toISOString() : null,
         session_date: sessionDate ? sessionDate.toLocaleDateString('es-AR', {
           day: '2-digit',
@@ -335,7 +508,8 @@ router.get('/:id/tickets', authenticateToken, async (req, res) => {
           hour: '2-digit',
           minute: '2-digit',
           hour12: false
-        }) : 'N/A'
+        }) : 'N/A',
+        service_items: serviceItemsBySale[t.sale_id] || []
       };
     });
     
@@ -349,6 +523,80 @@ router.get('/:id/tickets', authenticateToken, async (req, res) => {
   } catch (error) {
     console.error('[GET_USER_TICKETS] Error:', error);
     return res.status(500).json({ error: 'Error al obtener entradas del usuario' });
+  }
+});
+
+// Add role to user (admin only)
+router.post('/:id/roles', authenticateToken, requireRole('admin'), async (req, res) => {
+  try {
+    const { role: roleName } = req.body;
+    const rolesModel = sequelize.models.roles;
+    const userRolesModel = sequelize.models.user_roles;
+    const { users: User } = sequelize.models;
+
+    if (!roleName) {
+      return res.status(400).json({ error: 'role_required', message: 'El nombre del rol es requerido' });
+    }
+
+    const user = await User.findByPk(req.params.id);
+    if (!user) return res.status(404).json({ error: 'not_found' });
+
+    const role = await rolesModel.findOne({ where: { nombre: roleName } });
+    if (!role) return res.status(400).json({ error: 'invalid_role', message: `Rol '${roleName}' no existe` });
+
+    // Check if already has this role
+    const existing = await userRolesModel.findOne({ where: { user_id: user.id, role_id: role.id } });
+    if (existing) return res.status(400).json({ error: 'already_has_role', message: 'El usuario ya tiene este rol' });
+
+    await userRolesModel.create({ user_id: user.id, role_id: role.id });
+
+    // Sync legacy users.role column
+    await syncLegacyRole(user.id);
+
+    // Return updated roles
+    const userRoles = await userRolesModel.findAll({
+      where: { user_id: user.id },
+      include: [{ model: rolesModel, as: 'role', attributes: ['nombre'] }]
+    });
+    const roles = userRoles.map(ur => ur.role?.nombre).filter(Boolean);
+
+    res.json({ roles });
+  } catch (error) {
+    console.error('[USERS] Error adding role:', error);
+    res.status(500).json({ error: 'server_error' });
+  }
+});
+
+// Remove role from user (admin only)
+router.delete('/:id/roles/:roleName', authenticateToken, requireRole('admin'), async (req, res) => {
+  try {
+    const { roleName } = req.params;
+    const rolesModel = sequelize.models.roles;
+    const userRolesModel = sequelize.models.user_roles;
+    const { users: User } = sequelize.models;
+
+    const user = await User.findByPk(req.params.id);
+    if (!user) return res.status(404).json({ error: 'not_found' });
+
+    const role = await rolesModel.findOne({ where: { nombre: roleName } });
+    if (!role) return res.status(400).json({ error: 'invalid_role', message: `Rol '${roleName}' no existe` });
+
+    await userRolesModel.destroy({ where: { user_id: user.id, role_id: role.id } });
+
+    // Sync legacy users.role column
+    await syncLegacyRole(user.id);
+
+    // Return updated roles
+    const userRoles = await userRolesModel.findAll({
+      where: { user_id: user.id },
+      include: [{ model: rolesModel, as: 'role', attributes: ['nombre'] }]
+    });
+    const roles = userRoles.map(ur => ur.role?.nombre).filter(Boolean);
+
+    res.json({ roles });
+  } catch (error) {
+    console.error('[USERS] Error removing role:', error);
+    res.status(500).json({ error: 'server_error' });
   }
 });
 

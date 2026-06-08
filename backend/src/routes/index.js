@@ -14,6 +14,16 @@ import activityLogs from './activityLogs.js';
 import notifications from './notifications.js';
 import producers from './producers.js';
 import cashRegister from './cashRegister.js';
+import locations from './locations.js';
+import admin from './admin.js';
+import newsletter from './newsletter.js';
+import settings from './settings.js';
+import mailing from './mailing.js';
+import seatBlocks from './seatBlocks.js';
+import billing from './billing.js';
+import ateneoRouter from './ateneo/index.js';
+import sponsors from './sponsors.js';
+import seo from './seo.js';
 
 const router = Router();
 
@@ -32,5 +42,15 @@ router.use('/activity-logs', activityLogs);
 router.use('/notifications', notifications);
 router.use('/producers', producers);
 router.use('/cash-register', cashRegister);
+router.use('/locations', locations);
+router.use('/admin', admin);
+router.use('/newsletter', newsletter);
+router.use('/settings', settings);
+router.use('/mailing', mailing);
+router.use('/seat-blocks', seatBlocks);
+router.use('/billing', billing);
+router.use('/ateneo', ateneoRouter);
+router.use('/sponsors', sponsors);
+router.use('/seo', seo);
 
 export default router;

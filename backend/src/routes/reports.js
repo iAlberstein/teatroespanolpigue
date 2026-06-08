@@ -5,6 +5,20 @@ import { Op } from 'sequelize';
 
 const router = express.Router();
 
+// Helper: Get service fee percentage from settings
+async function getServiceFeePercent() {
+  try {
+    const { system_settings: SystemSettings } = sequelize.models;
+    if (!SystemSettings) return 10; // Default fallback
+    
+    const setting = await SystemSettings.findOne({ where: { key: 'service_fee_percent' } });
+    return setting ? parseFloat(setting.value) : 10;
+  } catch (err) {
+    console.error('[REPORTS] Error getting service fee:', err);
+    return 10; // Default fallback
+  }
+}
+
 // Helper: Calcular personas reales considerando palcos
 function calculateRealPeople(tickets) {
   let totalPeople = 0;
@@ -22,6 +36,9 @@ function calculateRealPeople(tickets) {
     } else if (ticket.type === 'pullman') {
       // Pullman usa el campo capacity
       totalPeople += ticket.capacity || 1;
+    } else if (ticket.type === 'general') {
+      // Entrada general = 1 persona
+      totalPeople += 1;
     } else {
       // Butacas = 1 persona
       totalPeople += 1;
@@ -32,10 +49,19 @@ function calculateRealPeople(tickets) {
 }
 
 // Helper: Capacidad real de una sesión
-function calculateSessionCapacity(capacityOverride) {
-  // Capacidad base: 62 butacas + 28 palcos bajos (4 cada uno = 112) + 4 palcos altos (2 cada uno = 8) + 92 pullman
-  // Total: 62 + 112 + 8 + 92 = 274 personas
-  return capacityOverride || 274;
+function calculateSessionCapacity(session, show) {
+  // Si la sesión tiene capacity_override, usarlo
+  if (session.capacity_override) {
+    return session.capacity_override;
+  }
+  
+  // Si el show es de entrada general, usar general_capacity
+  if (show && (show.venue_type === 'el_tablado' || show.venue_type === 'las_gemelas')) {
+    return show.general_capacity || 0;
+  }
+  
+  // Capacidad total sala principal: 446 personas
+  return 446;
 }
 
 /**
@@ -48,6 +74,10 @@ router.get('/show/:show_id', authenticateToken, requireRole('admin', 'boleteria'
     const { date, seller_id, channel } = req.query; // Filtros opcionales
     const { shows: Show, sessions: Session, tickets: Ticket, sales: Sale, discounts: Discount, users: User } = sequelize.models;
     
+    // Get dynamic service fee percentage
+    const serviceFeePercent = await getServiceFeePercent();
+    const serviceFeeDivisor = 1 + (serviceFeePercent / 100);
+    
     // Obtener show con todas sus sesiones
     const show = await Show.findByPk(show_id, {
       include: [{
@@ -58,12 +88,14 @@ router.get('/show/:show_id', authenticateToken, requireRole('admin', 'boleteria'
             model: Ticket,
             as: 'tickets',
             where: { status: { [Op.in]: ['sold', 'validated'] } },
-            required: false
+            required: false,
+            separate: true
           },
           {
             model: Sale,
             as: 'sales',
             required: false,
+            separate: true,
             include: [
               {
                 model: Discount,
@@ -73,7 +105,7 @@ router.get('/show/:show_id', authenticateToken, requireRole('admin', 'boleteria'
               {
                 model: User,
                 as: 'user',
-                attributes: ['id', 'name', 'email'],
+                attributes: ['id', 'name', 'email', 'phone', 'dni', 'localidad'],
                 required: false
               },
               {
@@ -91,7 +123,8 @@ router.get('/show/:show_id', authenticateToken, requireRole('admin', 'boleteria'
               {
                 model: Ticket,
                 as: 'tickets',
-                required: false
+                required: false,
+                separate: true
               }
             ]
           }
@@ -120,63 +153,112 @@ router.get('/show/:show_id', authenticateToken, requireRole('admin', 'boleteria'
       palcos_altos: { count: 0, people: 0, revenue: 0 },
       pullman: { count: 0, people: 0, revenue: 0 }
     };
-    
+
+    const serviceBreakdown = {};
+
     for (const session of show.sessions) {
-      const sessionCapacity = calculateSessionCapacity(session.capacity_override);
+      const sessionCapacity = calculateSessionCapacity(session, show);
       const soldTickets = session.tickets || [];
       const validatedTickets = soldTickets.filter(t => t.status === 'validated');
       const sessionSales = session.sales || [];
       
-      // Calcular revenue sin el cargo de servicio del 10%
-      // IMPORTANTE: Solo ventas online incluyen el 10%, boletería no lo incluye
+      // Calcular revenue (solo mp incluye service charge en total_amount)
       const sessionRevenue = sessionSales.reduce((sum, sale) => {
         const amount = parseFloat(sale.total_amount || 0);
-        // Una venta es ONLINE solo si payment_method es 'mp'
-        const isOnline = sale.payment_method === 'mp';
-        return sum + (isOnline ? amount / 1.10 : amount);
+        return sum + (sale.payment_method === 'mp' ? amount / serviceFeeDivisor : amount);
       }, 0);
       
       const sessionPeople = calculateRealPeople(soldTickets);
       const sessionValidatedPeople = calculateRealPeople(validatedTickets);
       
-      // Desglose por ubicación
-      soldTickets.forEach(ticket => {
-        const price = parseFloat(ticket.price || 0);
+      // Desglose por ubicación - usando precio real pagado (considerando descuentos)
+      // Iteramos por ventas para poder aplicar el factor de descuento
+      sessionSales.forEach(sale => {
+        const saleTickets = sale.tickets || [];
+        if (saleTickets.length === 0) return;
         
-        if (ticket.type === 'butaca') {
-          locationBreakdown.platea_general.count++;
-          locationBreakdown.platea_general.people++;
-          locationBreakdown.platea_general.revenue += price;
-        } else if (ticket.type === 'palco') {
-          if (ticket.seat_code?.startsWith('PB')) {
-            locationBreakdown.palcos_bajos.count++;
-            locationBreakdown.palcos_bajos.people += 4;
-            locationBreakdown.palcos_bajos.revenue += price;
-          } else if (ticket.seat_code?.startsWith('PA')) {
-            locationBreakdown.palcos_altos.count++;
-            locationBreakdown.palcos_altos.people += 2;
-            locationBreakdown.palcos_altos.revenue += price;
+        // Calcular el subtotal base de la venta (suma de precios de tickets)
+        const subtotalBase = saleTickets.reduce((sum, t) => sum + parseFloat(t.price || 0), 0);
+        
+        // Calcular factor de descuento: total_amount / subtotalBase
+        // Solo mp incluye service charge en total_amount, el resto no
+        const totalPaid = parseFloat(sale.total_amount || 0);
+        const netPaid = sale.payment_method === 'mp' ? totalPaid / serviceFeeDivisor : totalPaid;
+        const discountFactor = subtotalBase > 0 ? netPaid / subtotalBase : 1;
+        
+        saleTickets.forEach(ticket => {
+          const basePrice = parseFloat(ticket.price || 0);
+          // Precio real = precio base * factor de descuento
+          const realPrice = basePrice * discountFactor;
+          
+          if (ticket.type === 'butaca') {
+            locationBreakdown.platea_general.count++;
+            locationBreakdown.platea_general.people++;
+            locationBreakdown.platea_general.revenue += realPrice;
+          } else if (ticket.type === 'palco') {
+            if (ticket.seat_code?.startsWith('PB')) {
+              locationBreakdown.palcos_bajos.count++;
+              locationBreakdown.palcos_bajos.people += 4;
+              locationBreakdown.palcos_bajos.revenue += realPrice;
+            } else if (ticket.seat_code?.startsWith('PA')) {
+              locationBreakdown.palcos_altos.count++;
+              locationBreakdown.palcos_altos.people += 2;
+              locationBreakdown.palcos_altos.revenue += realPrice;
+            }
+          } else if (ticket.type === 'pullman') {
+            locationBreakdown.pullman.count++;
+            locationBreakdown.pullman.people += ticket.capacity || 1;
+            locationBreakdown.pullman.revenue += realPrice;
+          } else if (ticket.type === 'general') {
+            locationBreakdown.pullman.count++;
+            locationBreakdown.pullman.people += 1;
+            locationBreakdown.pullman.revenue += realPrice;
           }
-        } else if (ticket.type === 'pullman') {
-          locationBreakdown.pullman.count++;
-          locationBreakdown.pullman.people += ticket.capacity || 1;
-          locationBreakdown.pullman.revenue += price;
-        }
+        });
       });
-      
-      // Métodos de pago
+
       sessionSales.forEach(sale => {
         const method = sale.payment_method || 'unknown';
         paymentMethods[method] = (paymentMethods[method] || 0) + 1;
-        
+
         // Canal de venta
-        if (sale.payment_method === 'mp') {
+        if ((sale.payment_method === 'mp' || sale.payment_method === 'card')) {
           saleChannels.online++;
         } else {
           saleChannels.boleteria++;
         }
+
+        // Desglose por servicios
+        if (sale.service_items) {
+          let serviceItems = sale.service_items;
+          if (typeof serviceItems === 'string') {
+            try {
+              serviceItems = JSON.parse(serviceItems);
+              // Si el parse devuelve un string (problema de Sequelize), parsear de nuevo
+              if (typeof serviceItems === 'string') {
+                serviceItems = JSON.parse(serviceItems);
+              }
+            } catch (e) {
+              serviceItems = [];
+            }
+          }
+          // Forzar que sea un array
+          if (!Array.isArray(serviceItems)) {
+            serviceItems = [];
+          }
+          serviceItems.forEach(si => {
+            const name = si.name || 'Servicio';
+            const qty = Number(si.quantity || 1);
+            const price = Number(si.price || 0);
+            if (!serviceBreakdown[name]) {
+              serviceBreakdown[name] = { quantity: 0, total: 0 };
+            }
+            serviceBreakdown[name].quantity += qty;
+            serviceBreakdown[name].total += qty * price;
+          });
+        }
       });
-      
+
       sessionsData.push({
         session_id: session.id,
         date: session.starts_at,
@@ -215,104 +297,14 @@ router.get('/show/:show_id', authenticateToken, requireRole('admin', 'boleteria'
       return sum;
     }, 0);
     
-    // Construir detalle de ventas
-    const { formatSeatLocation } = await import('../lib/seatFormatter.js');
-    const salesDetail = [];
-    
-    for (const session of show.sessions) {
-      const sessionSales = session.sales || [];
-      
-      for (const sale of sessionSales) {
-        const saleTickets = sale.tickets || [];
-        const rawMetadata = sale.metadata || {};
-        const refundSnapshot = rawMetadata.refund_snapshot || null;
-
-        let effectiveLocations = [];
-        let effectiveTicketsCount = 0;
-        let effectivePeopleCount = 0;
-
-        if (saleTickets.length > 0) {
-          effectiveLocations = saleTickets.map(ticket =>
-            formatSeatLocation(ticket.type, ticket.section, ticket.seat_code, ticket.capacity || 1)
-          );
-          effectiveTicketsCount = saleTickets.length;
-          effectivePeopleCount = calculateRealPeople(saleTickets);
-        } else if (refundSnapshot && Array.isArray(refundSnapshot.locations) && refundSnapshot.locations.length > 0) {
-          effectiveLocations = refundSnapshot.locations;
-          effectiveTicketsCount = refundSnapshot.tickets_count || refundSnapshot.locations.length;
-          effectivePeopleCount = refundSnapshot.people_count || effectiveTicketsCount;
-        }
-
-        const isRefundOperation = rawMetadata.type === 'refund';
-        const refunded = !!rawMetadata.refunded;
-        const refundReason = rawMetadata.refund_reason || rawMetadata.reason || null;
-        const refundedAt = rawMetadata.refunded_at || null;
-
-        const saleChannel = (sale.payment_method === 'mp') ? 'Online' : 'Boletería';
-        const saleSellerId = sale.sold_by || null;
-        const saleDate = new Date(sale.createdAt);
-        
-        // Aplicar filtros
-        if (date) {
-          const filterDate = new Date(date);
-          if (saleDate.toDateString() !== filterDate.toDateString()) {
-            continue; // Skip esta venta
-          }
-        }
-        
-        if (seller_id && saleSellerId !== seller_id) {
-          continue; // Skip esta venta
-        }
-        
-        if (channel && saleChannel !== channel) {
-          continue; // Skip esta venta
-        }
-        
-        const saleData = {
-          sale_id: sale.id,
-          sale_date: sale.createdAt,
-          session_date: session.starts_at,
-          customer_name: sale.customer_name || (sale.user?.name) || 'N/A',
-          customer_email: sale.customer_email || (sale.user?.email) || 'N/A',
-          customer_phone: (sale.customer_phone !== undefined ? sale.customer_phone : null) || (sale.user?.phone) || null,
-          customer_dni: (sale.customer_dni !== undefined ? sale.customer_dni : null) || (sale.user?.dni) || null,
-          sold_by_name: sale.cashier?.name || sale.seller?.name || (sale.sold_by ? 'Boletería' : 'Online'),
-          sold_by_email: sale.cashier?.email || sale.seller?.email || '-',
-          sold_by_id: saleSellerId,
-          channel: saleChannel,
-          payment_method: sale.payment_method || 'N/A',
-          tickets_count: effectiveTicketsCount,
-          people_count: effectivePeopleCount,
-          locations: effectiveLocations.join(', '),
-          discount_code: sale.discount?.code || null,
-          discount_value: sale.discount ? 
-            (sale.discount.type === 'percentage' ? `${sale.discount.value}%` : `$${sale.discount.value}`) 
-            : null,
-          total_amount: (() => {
-            const amount = parseFloat(sale.total_amount || 0);
-            const isOnline = sale.payment_method === 'mp';
-            return (isOnline ? amount / 1.10 : amount).toFixed(2);
-          })(),
-          validated: saleTickets.filter(t => t.status === 'validated').length,
-          refunded,
-          refund_type: rawMetadata.type || null,
-          refund_reason: refundReason,
-          refunded_at: refundedAt,
-          is_refund_operation: isRefundOperation
-        };
-        
-        salesDetail.push(saleData);
-      }
-    }
-    
-    // Ordenar por fecha (más recientes primero)
-    salesDetail.sort((a, b) => new Date(b.sale_date) - new Date(a.sale_date));
+    // salesDetail se carga por separado via /api/reports/sales-detail paginado
     
     const report = {
       show: {
         id: show.id,
         title: show.title,
         description: show.description,
+        venue_type: show.venue_type || 'sala_principal',
         sessionsCount: show.sessions.length
       },
       summary: {
@@ -332,10 +324,11 @@ router.get('/show/:show_id', authenticateToken, requireRole('admin', 'boleteria'
         totalDiscountAmount: totalDiscountAmount.toFixed(2)
       },
       locationBreakdown,
+      serviceBreakdown,
       paymentMethods,
       saleChannels,
       sessions: sessionsData,
-      salesDetail  // Nueva sección
+      salesDetail: [] // Se carga por separado via /api/reports/sales-detail paginado
     };
     
     res.json(report);
@@ -354,7 +347,11 @@ router.get('/show/:show_id', authenticateToken, requireRole('admin', 'boleteria'
 router.get('/general', authenticateToken, requireRole('admin', 'boleteria', 'productor'), async (req, res) => {
   try {
     const { status = 'all', startDate, endDate, date, seller_id, channel, producer_id } = req.query;
-    const { shows: Show, sessions: Session, tickets: Ticket, sales: Sale, discounts: Discount, users: User, show_producer: ShowProducer } = sequelize.models;
+    const { shows: Show, sessions: Session, tickets: Ticket, sales: Sale, discounts: Discount, users: User, show_producer: ShowProducer, bordereaux: Bordereaux } = sequelize.models;
+    
+    // Get dynamic service fee percentage
+    const serviceFeePercent = await getServiceFeePercent();
+    const serviceFeeDivisor = 1 + (serviceFeePercent / 100);
     
     // Construir filtro de fechas
     const dateFilter = {};
@@ -365,17 +362,20 @@ router.get('/general', authenticateToken, requireRole('admin', 'boleteria', 'pro
       dateFilter[Op.lte] = new Date(endDate);
     }
     
-    // Filtro de estado
+    // Filtro de estado - no aplicamos filtro de fecha por status aquí,
+    // lo haremos después de incluir el bordereaux para considerar cierre de venta
     let sessionWhere = {};
     if (Object.keys(dateFilter).length > 0) {
       sessionWhere.starts_at = dateFilter;
     }
     
-    if (status === 'active') {
-      sessionWhere.starts_at = { ...sessionWhere.starts_at, [Op.gte]: new Date() };
-    } else if (status === 'finished') {
-      sessionWhere.starts_at = { ...sessionWhere.starts_at, [Op.lt]: new Date() };
-    }
+    // Obtener shows con bordereaux cerrado para determinar estado
+    const closedBordereaux = await Bordereaux.findAll({
+      where: { status: 'cerrado' },
+      attributes: ['show_id'],
+      raw: true
+    });
+    const showsWithClosedBordereaux = closedBordereaux.map(b => b.show_id);
     
     // Filtrar shows por productor si se especifica
     let showWhere = {};
@@ -388,7 +388,7 @@ router.get('/general', authenticateToken, requireRole('admin', 'boleteria', 'pro
       showWhere.id = { [Op.in]: showIds.map(sp => sp.show_id) };
     }
     
-    // Obtener todos los shows con sus sesiones
+    // Obtener todos los shows con sus sesiones (sin ventas - se cargan vía endpoint paginado)
     const shows = await Show.findAll({
       where: Object.keys(showWhere).length > 0 ? showWhere : undefined,
       include: [{
@@ -402,42 +402,8 @@ router.get('/general', authenticateToken, requireRole('admin', 'boleteria', 'pro
             as: 'tickets',
             where: { status: { [Op.in]: ['sold', 'validated'] } },
             required: false
-          },
-          {
-            model: Sale,
-            as: 'sales',
-            required: false,
-            include: [
-              {
-                model: Discount,
-                as: 'discount',
-                required: false
-              },
-              {
-                model: User,
-                as: 'user',
-                attributes: ['id', 'name', 'email'],
-                required: false
-              },
-              {
-                model: User,
-                as: 'cashier',
-                attributes: ['id', 'name', 'email'],
-                required: false
-              },
-              {
-                model: User,
-                as: 'seller',
-                attributes: ['id', 'name', 'email'],
-                required: false
-              },
-              {
-                model: Ticket,
-                as: 'tickets',
-                required: false
-              }
-            ]
           }
+          // Sales se cargan por separado via /api/reports/sales-detail paginado
         ]
       }]
     });
@@ -458,10 +424,22 @@ router.get('/general', authenticateToken, requireRole('admin', 'boleteria', 'pro
       palcos_altos: { count: 0, people: 0, revenue: 0 },
       pullman: { count: 0, people: 0, revenue: 0 }
     };
+
+    const serviceBreakdown = {};
     
     for (const show of shows) {
       const sessions = show.sessions || [];
       if (sessions.length === 0) continue;
+      
+      // Aplicar filtro de estado considerando bordereaux cerrado
+      if (status === 'active' || status === 'finished') {
+        const hasBordereauxClosed = showsWithClosedBordereaux.includes(show.id);
+        const hasAllSessionsPast = sessions.every(s => new Date(s.starts_at) < new Date());
+        const isFinished = hasBordereauxClosed || hasAllSessionsPast;
+        
+        if (status === 'active' && isFinished) continue;
+        if (status === 'finished' && !isFinished) continue;
+      }
       
       let showRevenue = 0;
       let showTickets = 0;
@@ -471,51 +449,88 @@ router.get('/general', authenticateToken, requireRole('admin', 'boleteria', 'pro
       let showPeopleValidated = 0;
       
       for (const session of sessions) {
-        const sessionCapacity = calculateSessionCapacity(session.capacity_override);
+        const sessionCapacity = calculateSessionCapacity(session, show);
         const soldTickets = session.tickets || [];
         const validatedTickets = soldTickets.filter(t => t.status === 'validated');
         const sessionSales = session.sales || [];
         
-        // Calcular revenue sin el cargo de servicio del 10%
-        // IMPORTANTE: Solo ventas online incluyen el 10%, boletería no lo incluye
+        // Calcular revenue (solo mp incluye service charge en total_amount)
         const sessionRevenue = sessionSales.reduce((sum, sale) => {
           const amount = parseFloat(sale.total_amount || 0);
-          const isOnline = sale.payment_method === 'mp';
-          return sum + (isOnline ? amount / 1.10 : amount);
+          return sum + (sale.payment_method === 'mp' ? amount / serviceFeeDivisor : amount);
         }, 0);
         
         const sessionPeople = calculateRealPeople(soldTickets);
         const sessionValidatedPeople = calculateRealPeople(validatedTickets);
         
-        // Acumular por ubicación
-        soldTickets.forEach(ticket => {
-          const price = parseFloat(ticket.price || 0);
+        // Acumular por ubicación - usando precio real pagado (considerando descuentos)
+        sessionSales.forEach(sale => {
+          const saleTickets = sale.tickets || [];
+          if (saleTickets.length === 0) return;
           
-          if (ticket.type === 'butaca') {
-            locationBreakdown.platea_general.count++;
-            locationBreakdown.platea_general.people++;
-            locationBreakdown.platea_general.revenue += price;
-          } else if (ticket.type === 'palco') {
-            if (ticket.seat_code?.startsWith('PB')) {
-              locationBreakdown.palcos_bajos.count++;
-              locationBreakdown.palcos_bajos.people += 4;
-              locationBreakdown.palcos_bajos.revenue += price;
-            } else if (ticket.seat_code?.startsWith('PA')) {
-              locationBreakdown.palcos_altos.count++;
-              locationBreakdown.palcos_altos.people += 2;
-              locationBreakdown.palcos_altos.revenue += price;
+          // Calcular el subtotal base de la venta (suma de precios de tickets)
+          const subtotalBase = saleTickets.reduce((sum, t) => sum + parseFloat(t.price || 0), 0);
+          
+          // Calcular factor de descuento
+          const totalPaid = parseFloat(sale.total_amount || 0);
+          // Solo mp incluye service charge en total_amount
+          const netPaid = sale.payment_method === 'mp' ? totalPaid / serviceFeeDivisor : totalPaid;
+          const discountFactor = subtotalBase > 0 ? netPaid / subtotalBase : 1;
+          
+          saleTickets.forEach(ticket => {
+            const basePrice = parseFloat(ticket.price || 0);
+            const realPrice = basePrice * discountFactor;
+            
+            if (ticket.type === 'butaca') {
+              locationBreakdown.platea_general.count++;
+              locationBreakdown.platea_general.people++;
+              locationBreakdown.platea_general.revenue += realPrice;
+            } else if (ticket.type === 'palco') {
+              if (ticket.seat_code?.startsWith('PB')) {
+                locationBreakdown.palcos_bajos.count++;
+                locationBreakdown.palcos_bajos.people += 4;
+                locationBreakdown.palcos_bajos.revenue += realPrice;
+              } else if (ticket.seat_code?.startsWith('PA')) {
+                locationBreakdown.palcos_altos.count++;
+                locationBreakdown.palcos_altos.people += 2;
+                locationBreakdown.palcos_altos.revenue += realPrice;
+              }
+            } else if (ticket.type === 'pullman') {
+              locationBreakdown.pullman.count++;
+              locationBreakdown.pullman.people += ticket.capacity || 1;
+              locationBreakdown.pullman.revenue += realPrice;
+            } else if (ticket.type === 'general') {
+              locationBreakdown.pullman.count++;
+              locationBreakdown.pullman.people += 1;
+              locationBreakdown.pullman.revenue += realPrice;
             }
-          } else if (ticket.type === 'pullman') {
-            locationBreakdown.pullman.count++;
-            locationBreakdown.pullman.people += ticket.capacity || 1;
-            locationBreakdown.pullman.revenue += price;
-          }
+          });
         });
         
         // Métodos de pago
         sessionSales.forEach(sale => {
           const method = sale.payment_method || 'unknown';
           paymentMethods[method] = (paymentMethods[method] || 0) + 1;
+
+          // Desglose por servicios
+          if (sale.service_items) {
+            let serviceItems = sale.service_items;
+            if (typeof serviceItems === 'string') {
+              try { serviceItems = JSON.parse(serviceItems); } catch { serviceItems = []; }
+            }
+            if (Array.isArray(serviceItems)) {
+              serviceItems.forEach(si => {
+                const name = si.name || 'Servicio';
+                const qty = Number(si.quantity || 1);
+                const price = Number(si.price || 0);
+                if (!serviceBreakdown[name]) {
+                  serviceBreakdown[name] = { quantity: 0, total: 0 };
+                }
+                serviceBreakdown[name].quantity += qty;
+                serviceBreakdown[name].total += qty * price;
+              });
+            }
+          }
         });
         
         showRevenue += sessionRevenue;
@@ -555,103 +570,7 @@ router.get('/general', authenticateToken, requireRole('admin', 'boleteria', 'pro
     // Ordenar shows por ingresos (ranking)
     showsData.sort((a, b) => parseFloat(b.revenue) - parseFloat(a.revenue));
     
-    // Construir detalle de ventas para todos los shows
-    const { formatSeatLocation } = await import('../lib/seatFormatter.js');
-    const salesDetail = [];
-    
-    for (const show of shows) {
-      const sessions = show.sessions || [];
-      
-      for (const session of sessions) {
-        const sessionSales = session.sales || [];
-        
-        for (const sale of sessionSales) {
-          const saleTickets = sale.tickets || [];
-          const rawMetadata = sale.metadata || {};
-          const refundSnapshot = rawMetadata.refund_snapshot || null;
-
-          let effectiveLocations = [];
-          let effectiveTicketsCount = 0;
-          let effectivePeopleCount = 0;
-
-          if (saleTickets.length > 0) {
-            effectiveLocations = saleTickets.map(ticket =>
-              formatSeatLocation(ticket.type, ticket.section, ticket.seat_code, ticket.capacity || 1)
-            );
-            effectiveTicketsCount = saleTickets.length;
-            effectivePeopleCount = calculateRealPeople(saleTickets);
-          } else if (refundSnapshot && Array.isArray(refundSnapshot.locations) && refundSnapshot.locations.length > 0) {
-            effectiveLocations = refundSnapshot.locations;
-            effectiveTicketsCount = refundSnapshot.tickets_count || refundSnapshot.locations.length;
-            effectivePeopleCount = refundSnapshot.people_count || effectiveTicketsCount;
-          }
-
-          const isRefundOperation = rawMetadata.type === 'refund';
-          const refunded = !!rawMetadata.refunded;
-          const refundReason = rawMetadata.refund_reason || rawMetadata.reason || null;
-          const refundedAt = rawMetadata.refunded_at || null;
-
-          const saleChannel = (sale.payment_method === 'mp') ? 'Online' : 'Boletería';
-          const saleSellerId = sale.sold_by || null;
-          const saleDate = new Date(sale.createdAt);
-          
-          // Aplicar filtros
-          if (date) {
-            const filterDate = new Date(date);
-            if (saleDate.toDateString() !== filterDate.toDateString()) {
-              continue; // Skip esta venta
-            }
-          }
-          
-          if (seller_id && saleSellerId !== seller_id) {
-            continue; // Skip esta venta
-          }
-          
-          if (channel && saleChannel !== channel) {
-            continue; // Skip esta venta
-          }
-          
-          const saleData = {
-            sale_id: sale.id,
-            sale_date: sale.createdAt,
-            show_title: show.title,
-            session_date: session.starts_at,
-            customer_name: sale.customer_name || (sale.user?.name) || 'N/A',
-            customer_email: sale.customer_email || (sale.user?.email) || 'N/A',
-            customer_phone: (sale.customer_phone !== undefined ? sale.customer_phone : null) || (sale.user?.phone) || null,
-            customer_dni: (sale.customer_dni !== undefined ? sale.customer_dni : null) || (sale.user?.dni) || null,
-            sold_by_name: sale.seller ? sale.seller.name : (sale.user ? sale.user.name : 'Sistema'),
-            sold_by_email: sale.seller ? sale.seller.email : (sale.user ? sale.user.email : '-'),
-            sold_by_id: saleSellerId,
-            channel: sale.payment_method === 'mp' ? 'Online' : 'Boletería',
-            payment_method: sale.payment_method || 'N/A',
-            tickets_count: effectiveTicketsCount,
-            people_count: effectivePeopleCount,
-            locations: effectiveLocations.join(', '),
-            discount_code: sale.discount?.code || null,
-            discount_value: sale.discount ? 
-              (sale.discount.type === 'percentage' ? `${sale.discount.value}%` : `$${sale.discount.value}`) 
-              : null,
-            total_amount: (() => {
-              const amount = parseFloat(sale.total_amount || 0);
-              const isOnline = sale.payment_method === 'mp';
-              return (isOnline ? amount / 1.10 : amount).toFixed(2);
-            })(),
-            validated: saleTickets.filter(t => t.status === 'validated').length,
-            refunded,
-            refund_type: rawMetadata.type || null,
-            refund_reason: refundReason,
-            refunded_at: refundedAt,
-            is_refund_operation: isRefundOperation
-          };
-          
-          salesDetail.push(saleData);
-        }
-      }
-    }
-    
-    // Ordenar por fecha (más recientes primero)
-    salesDetail.sort((a, b) => new Date(b.sale_date) - new Date(a.sale_date));
+    // salesDetail ahora se carga por separado via /api/reports/sales-detail paginado
     
     const report = {
       period: {
@@ -675,10 +594,11 @@ router.get('/general', authenticateToken, requireRole('admin', 'boleteria', 'pro
           : 0
       },
       locationBreakdown,
+      serviceBreakdown,
       paymentMethods,
       shows: showsData,
       topShow: showsData[0] || null,
-      salesDetail  // Nueva sección
+      salesDetail: [] // Se carga por separado via /api/reports/sales-detail paginado
     };
     
     res.json(report);
@@ -695,6 +615,10 @@ router.get('/export/csv', authenticateToken, requireRole('admin', 'boleteria', '
     const { show_id, start_date, end_date, channel } = req.query;
     
     const { shows: Show, sessions: Session, sales: Sale, tickets: Ticket, users: User, discounts: Discount } = sequelize.models;
+    
+    // Get service fee for mp total_amount calculation
+    const serviceFeePercent = await getServiceFeePercent();
+    const serviceFeeDivisor = 1 + (serviceFeePercent / 100);
     
     // Build query filters
     const sessionWhere = {};
@@ -771,7 +695,7 @@ router.get('/export/csv', authenticateToken, requireRole('admin', 'boleteria', '
         const refundSnapshot = rawMetadata.refund_snapshot || null;
 
         // Channel filter
-        const saleChannel = sale.payment_method === 'mp' ? 'Online' : 'Boletería';
+        const saleChannel = (sale.payment_method === 'mp' || sale.payment_method === 'card') ? 'Online' : 'Boletería';
         if (channel && saleChannel !== channel) continue;
         
         // Build locations and counts, using snapshot when no tickets are linked
@@ -780,14 +704,15 @@ router.get('/export/csv', authenticateToken, requireRole('admin', 'boleteria', '
         let effectivePeopleCount = 0;
 
         if (saleTickets.length > 0) {
-          effectiveLocations = saleTickets.map(t => {
+          const regularTickets = saleTickets.filter(t => t.type !== 'service');
+          effectiveLocations = regularTickets.map(t => {
             if (t.type === 'butaca') return t.seat_code;
             if (t.type === 'palco') return t.seat_code;
             if (t.type === 'pullman') return `Pullman`;
             return t.type;
           });
-          effectiveTicketsCount = saleTickets.length;
-          effectivePeopleCount = calculateRealPeople(saleTickets);
+          effectiveTicketsCount = regularTickets.length;
+          effectivePeopleCount = calculateRealPeople(regularTickets);
         } else if (refundSnapshot && Array.isArray(refundSnapshot.locations) && refundSnapshot.locations.length > 0) {
           effectiveLocations = refundSnapshot.locations;
           effectiveTicketsCount = refundSnapshot.tickets_count || refundSnapshot.locations.length;
@@ -806,9 +731,9 @@ router.get('/export/csv', authenticateToken, requireRole('admin', 'boleteria', '
           (sale.discount.type === 'percentage' ? `${sale.discount.value}%` : `$${sale.discount.value}`) 
           : '';
         
-        const amount = parseFloat(sale.total_amount || 0);
-        const isOnline = sale.payment_method === 'mp';
-        const totalAmount = (isOnline ? amount / 1.10 : amount).toFixed(2);
+        // Solo mp incluye service charge en total_amount
+        const rawAmount = parseFloat(sale.total_amount || 0);
+        const totalAmount = (sale.payment_method === 'mp' ? rawAmount / serviceFeeDivisor : rawAmount).toFixed(2);
         
         const validatedCount = saleTickets.filter(t => t.status === 'validated').length;
         const status = validatedCount === saleTickets.length ? 'Validado' : 
@@ -873,9 +798,13 @@ router.get('/export/csv', authenticateToken, requireRole('admin', 'boleteria', '
 router.get('/trends', authenticateToken, requireRole('admin'), async (req, res) => {
   try {
     const { days = 30, show_id } = req.query;
-    const daysNum = Math.min(parseInt(days), 365);
+    const daysNum = Math.min(parseInt(days) || 30, 1825);
     
     const { sales: Sale, sessions: Session, shows: Show, tickets: Ticket } = sequelize.models;
+    
+    // Get service fee for mp total_amount calculation
+    const serviceFeePercent = await getServiceFeePercent();
+    const serviceFeeDivisor = 1 + (serviceFeePercent / 100);
     
     // Calculate date range (include today)
     const endDate = new Date();
@@ -920,6 +849,8 @@ router.get('/trends', authenticateToken, requireRole('admin'), async (req, res) 
     // Group sales by date
     const salesByDate = {};
     const revenueByDate = {};
+    const revenueOnlineByDate = {};
+    const revenueBoxofficeByDate = {};
     const ticketsByDate = {};
     
     sales.forEach((sale, index) => {
@@ -929,7 +860,7 @@ router.get('/trends', authenticateToken, requireRole('admin'), async (req, res) 
       const saleDate = new Date(sale.createdAt);
       if (isNaN(saleDate.getTime())) return; // Invalid date
       
-      // Use local date string to avoid timezone issues
+      // Use local date (server runs in Argentina -03)
       const year = saleDate.getFullYear();
       const month = String(saleDate.getMonth() + 1).padStart(2, '0');
       const day = String(saleDate.getDate()).padStart(2, '0');
@@ -938,11 +869,23 @@ router.get('/trends', authenticateToken, requireRole('admin'), async (req, res) 
       if (!salesByDate[date]) {
         salesByDate[date] = 0;
         revenueByDate[date] = 0;
+        revenueOnlineByDate[date] = 0;
+        revenueBoxofficeByDate[date] = 0;
         ticketsByDate[date] = 0;
       }
       
+      const rawAmount = Number(sale.total_amount || 0);
+      // Solo mp incluye service charge en total_amount
+      const amount = sale.payment_method === 'mp' ? rawAmount / serviceFeeDivisor : rawAmount;
+      const isOnline = (sale.payment_method === 'mp' || sale.payment_method === 'card');
+      
       salesByDate[date]++;
-      revenueByDate[date] += Number(sale.total_amount || 0);
+      revenueByDate[date] += amount;
+      if (isOnline) {
+        revenueOnlineByDate[date] += amount;
+      } else {
+        revenueBoxofficeByDate[date] += amount;
+      }
       ticketsByDate[date] += sale.tickets?.length || 0;
     });
     
@@ -950,13 +893,15 @@ router.get('/trends', authenticateToken, requireRole('admin'), async (req, res) 
     const dates = [];
     const salesData = [];
     const revenueData = [];
+    const revenueOnlineData = [];
+    const revenueBoxofficeData = [];
     const ticketsData = [];
     
     for (let i = 0; i < daysNum; i++) {
       const date = new Date(startDate);
       date.setDate(date.getDate() + i);
       
-      // Use local date string to avoid timezone issues
+      // Use local date (server runs in Argentina -03)
       const year = date.getFullYear();
       const month = String(date.getMonth() + 1).padStart(2, '0');
       const day = String(date.getDate()).padStart(2, '0');
@@ -965,6 +910,8 @@ router.get('/trends', authenticateToken, requireRole('admin'), async (req, res) 
       dates.push(dateStr);
       salesData.push(salesByDate[dateStr] || 0);
       revenueData.push(revenueByDate[dateStr] || 0);
+      revenueOnlineData.push(revenueOnlineByDate[dateStr] || 0);
+      revenueBoxofficeData.push(revenueBoxofficeByDate[dateStr] || 0);
       ticketsData.push(ticketsByDate[dateStr] || 0);
     }
     
@@ -975,10 +922,11 @@ router.get('/trends', authenticateToken, requireRole('admin'), async (req, res) 
     };
     
     sales.forEach(sale => {
-      if (sale.payment_method === 'mp') {
-        channelData.online++;
+      const ticketCount = sale.tickets?.length || 1;
+      if ((sale.payment_method === 'mp' || sale.payment_method === 'card')) {
+        channelData.online += ticketCount;
       } else {
-        channelData.boxoffice++;
+        channelData.boxoffice += ticketCount;
       }
     });
     
@@ -998,7 +946,9 @@ router.get('/trends', authenticateToken, requireRole('admin'), async (req, res) 
       }
       
       showStats[showId].sales++;
-      showStats[showId].revenue += Number(sale.total_amount || 0);
+      // Solo mp incluye service charge en total_amount
+      const rawAmt = Number(sale.total_amount || 0);
+      showStats[showId].revenue += sale.payment_method === 'mp' ? rawAmt / serviceFeeDivisor : rawAmt;
       showStats[showId].tickets += sale.tickets?.length || 0;
     });
     
@@ -1016,6 +966,8 @@ router.get('/trends', authenticateToken, requireRole('admin'), async (req, res) 
         dates,
         sales: salesData,
         revenue: revenueData,
+        revenueOnline: revenueOnlineData,
+        revenueBoxoffice: revenueBoxofficeData,
         tickets: ticketsData
       },
       channels: channelData,
@@ -1071,8 +1023,8 @@ router.get('/compare', authenticateToken, requireRole('admin'), async (req, res)
       const totalTickets = sales.reduce((sum, sale) => sum + (sale.tickets?.length || 0), 0);
       
       const channelBreakdown = {
-        online: sales.filter(s => s.payment_method === 'mp').length,
-        boxoffice: sales.filter(s => s.payment_method !== 'mp').length
+        online: sales.filter(s => (s.payment_method === 'mp' || s.payment_method === 'card')).length,
+        boxoffice: sales.filter(s => (s.payment_method !== 'mp' && s.payment_method !== 'card')).length
       };
       
       return {
@@ -1117,6 +1069,327 @@ router.get('/compare', authenticateToken, requireRole('admin'), async (req, res)
     res.json(comparison);
   } catch (error) {
     console.error('[REPORTS] Error comparing periods:', error);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+/**
+ * GET /api/reports/sales-detail
+ * Get paginated sales detail with fast count
+ * Query params:
+ *  - show_id: optional show filter
+ *  - status: active/finished/all
+ *  - page: page number (default 1)
+ *  - limit: items per page (default 20, max 100)
+ *  - search: search query
+ *  - date: filter by sale date
+ *  - seller_id: filter by seller
+ *  - channel: filter by channel (Online/Boletería)
+ *  - startDate: filter by date range start
+ *  - endDate: filter by date range end
+ */
+router.get('/sales-detail', authenticateToken, requireRole('admin', 'boleteria', 'productor'), async (req, res) => {
+  try {
+    const { 
+      show_id, 
+      status = 'all', 
+      page = 1, 
+      limit = 20, 
+      search = '',
+      date,
+      seller_id,
+      channel,
+      startDate,
+      endDate,
+      producer_id
+    } = req.query;
+    
+    const pageNum = Math.max(1, parseInt(page));
+    const limitNum = Math.min(100, Math.max(1, parseInt(limit)));
+    const offset = (pageNum - 1) * limitNum;
+    
+    const { 
+      shows: Show, 
+      sessions: Session, 
+      tickets: Ticket, 
+      sales: Sale, 
+      discounts: Discount, 
+      users: User,
+      show_producer: ShowProducer,
+      bordereaux: Bordereaux
+    } = sequelize.models;
+    
+    // Get service fee for mp total_amount calculation
+    const serviceFeePercent = await getServiceFeePercent();
+    const serviceFeeDivisor = 1 + (serviceFeePercent / 100);
+    
+    // Build show filter
+    let showWhere = {};
+    if (show_id) {
+      showWhere.id = show_id;
+    }
+    if (producer_id) {
+      const showIds = await ShowProducer.findAll({
+        where: { producer_id },
+        attributes: ['show_id'],
+        raw: true
+      });
+      showWhere.id = { [Op.in]: showIds.map(sp => sp.show_id) };
+    }
+    
+    // Get closed bordereaux for status filtering
+    const closedBordereaux = await Bordereaux.findAll({
+      where: { status: 'cerrado' },
+      attributes: ['show_id'],
+      raw: true
+    });
+    const showsWithClosedBordereaux = closedBordereaux.map(b => b.show_id);
+    
+    // Build date filters for sales
+    let saleDateFilter = {};
+    if (startDate || endDate) {
+      saleDateFilter.created_at = {};
+      if (startDate) saleDateFilter.created_at[Op.gte] = new Date(startDate);
+      if (endDate) {
+        const endDateTime = new Date(endDate);
+        endDateTime.setHours(23, 59, 59, 999);
+        saleDateFilter.created_at[Op.lte] = endDateTime;
+      }
+    }
+    if (date) {
+      const startOfDay = new Date(date);
+      startOfDay.setHours(0, 0, 0, 0);
+      const endOfDay = new Date(date);
+      endOfDay.setHours(23, 59, 59, 999);
+      saleDateFilter.created_at = { [Op.gte]: startOfDay, [Op.lte]: endOfDay };
+    }
+    
+    // Build seller filter
+    if (seller_id) {
+      saleDateFilter.sold_by = seller_id;
+    }
+    
+    // Build channel filter  
+    if (channel) {
+      if (channel === 'Online') {
+        saleDateFilter.payment_method = { [Op.in]: ['mp', 'card'] };
+      } else if (channel === 'Boletería') {
+        saleDateFilter.payment_method = { [Op.notIn]: ['mp', 'card'] };
+      }
+    }
+    
+    // First, get total count (fast query)
+    const countQuery = await Sale.findAll({
+      where: Object.keys(saleDateFilter).length > 0 ? saleDateFilter : undefined,
+      include: [
+        {
+          model: Session,
+          as: 'session',
+          required: true,
+          where: show_id ? { show_id } : undefined,
+          include: [{
+            model: Show,
+            as: 'show',
+            required: true,
+            where: Object.keys(showWhere).length > 0 ? showWhere : undefined
+          }]
+        }
+      ],
+      attributes: [[sequelize.fn('COUNT', sequelize.col('sales.id')), 'total']],
+      raw: true
+    });
+    
+    const totalCount = parseInt(countQuery[0]?.total || 0);
+    
+    // When searching, fetch more records to allow proper filtering and pagination
+    const fetchLimit = search ? 1000 : limitNum; // Fetch up to 1000 when searching
+    const fetchOffset = search ? 0 : offset; // Start from beginning when searching
+    
+    // Get paginated sales with all details
+    const sales = await Sale.findAll({
+      where: Object.keys(saleDateFilter).length > 0 ? saleDateFilter : undefined,
+      include: [
+        {
+          model: Session,
+          as: 'session',
+          required: true,
+          where: show_id ? { show_id } : undefined,
+          include: [{
+            model: Show,
+            as: 'show',
+            required: true,
+            where: Object.keys(showWhere).length > 0 ? showWhere : undefined
+          }]
+        },
+        {
+          model: User,
+          as: 'user',
+          attributes: ['id', 'name', 'email', 'phone', 'dni', 'localidad'],
+          required: false
+        },
+        {
+          model: User,
+          as: 'seller',
+          attributes: ['id', 'name', 'email'],
+          required: false
+        },
+        {
+          model: User,
+          as: 'cashier',
+          attributes: ['id', 'name', 'email'],
+          required: false
+        },
+        {
+          model: Discount,
+          as: 'discount',
+          required: false
+        },
+        {
+          model: Ticket,
+          as: 'tickets',
+          required: false
+        }
+      ],
+      order: [['created_at', 'DESC']],
+      limit: fetchLimit,
+      offset: fetchOffset
+    });
+    
+    // Format sales data
+    const { formatSeatLocation } = await import('../lib/seatFormatter.js');
+    const salesDetail = [];
+    
+    for (const sale of sales) {
+      const saleTickets = sale.tickets || [];
+      const rawMetadata = sale.metadata || {};
+      const refundSnapshot = rawMetadata.refund_snapshot || null;
+      const session = sale.session;
+      const show = session?.show;
+      
+      if (!show) continue;
+      
+      // Check status filter
+      const hasBordereauxClosed = showsWithClosedBordereaux.includes(show.id);
+      const hasAllSessionsPast = new Date(session?.starts_at) < new Date();
+      const showIsFinished = hasBordereauxClosed || hasAllSessionsPast;
+      
+      if (status === 'active' && showIsFinished) continue;
+      if (status === 'finished' && !showIsFinished) continue;
+      
+      // Search filter (applied in JS for complex fields)
+      if (search) {
+        const q = search.toLowerCase();
+        const searchable = [
+          sale.customer_name || '',
+          sale.customer_email || '',
+          sale.user?.name || '',
+          sale.user?.email || '',
+          sale.user?.dni || '',
+          sale.user?.phone || '',
+          sale.user?.localidad || '',
+          show.title || '',
+          sale.seller?.name || '',
+          sale.cashier?.name || '',
+          sale.discount?.code || '',
+          sale.discount?.alias || ''
+        ].join(' ').toLowerCase();
+        
+        if (!searchable.includes(q)) continue;
+      }
+      
+      let effectiveLocations = [];
+      let effectiveTicketsCount = 0;
+      let effectivePeopleCount = 0;
+      
+      if (saleTickets.length > 0) {
+        const regularTickets = saleTickets.filter(t => t.type !== 'service');
+        effectiveLocations = regularTickets.map(ticket =>
+          formatSeatLocation(ticket.type, ticket.section, ticket.seat_code, ticket.capacity || 1)
+        );
+        effectiveTicketsCount = regularTickets.length;
+        effectivePeopleCount = calculateRealPeople(regularTickets);
+      } else if (refundSnapshot && Array.isArray(refundSnapshot.locations) && refundSnapshot.locations.length > 0) {
+        effectiveLocations = refundSnapshot.locations;
+        effectiveTicketsCount = refundSnapshot.tickets_count || refundSnapshot.locations.length;
+        effectivePeopleCount = refundSnapshot.people_count || effectiveTicketsCount;
+      }
+      
+      const isRefundOperation = rawMetadata.type === 'refund';
+      const refunded = !!rawMetadata.refunded;
+      
+      const saleChannel = ((sale.payment_method === 'mp' || sale.payment_method === 'card')) ? 'Online' : 'Boletería';
+      
+      salesDetail.push({
+        sale_id: sale.id,
+        sale_date: sale.createdAt,
+        show_title: show.title,
+        show_status: showIsFinished ? 'finalizado' : 'activo',
+        session_date: session?.starts_at,
+        customer_name: sale.customer_name || (sale.user?.name) || 'N/A',
+        customer_email: sale.customer_email || (sale.user?.email) || 'N/A',
+        customer_phone: (sale.customer_phone !== undefined ? sale.customer_phone : null) || (sale.user?.phone) || null,
+        customer_dni: (sale.customer_dni !== undefined ? sale.customer_dni : null) || (sale.user?.dni) || null,
+        customer_localidad: (sale.customer_localidad !== undefined ? sale.customer_localidad : null) || (sale.user?.localidad) || null,
+        sold_by_name: sale.cashier?.name || sale.seller?.name || (sale.sold_by ? 'Boletería' : 'Online'),
+        sold_by_email: sale.cashier?.email || sale.seller?.email || '-',
+        sold_by_id: sale.sold_by || null,
+        channel: saleChannel,
+        payment_method: sale.payment_method || 'N/A',
+        tickets_count: effectiveTicketsCount,
+        people_count: effectivePeopleCount,
+        locations: effectiveLocations.join(', '),
+        discount_code: sale.discount?.alias || sale.discount?.code || null,
+        discount_value: sale.discount ? 
+          (sale.discount.type === 'percentage' ? `${sale.discount.value}%` : `$${sale.discount.value}`) 
+          : null,
+        total_amount: (sale.payment_method === 'mp' ? parseFloat(sale.total_amount || 0) / serviceFeeDivisor : parseFloat(sale.total_amount || 0)).toFixed(2),
+        validated: saleTickets.filter(t => t.status === 'validated').length,
+        refunded,
+        refund_type: rawMetadata.type || null,
+        refund_reason: rawMetadata.refund_reason || rawMetadata.reason || null,
+        refunded_at: rawMetadata.refunded_at || null,
+        is_refund_operation: isRefundOperation,
+        service_items: (() => {
+          try {
+            if (!sale.service_items) return [];
+            const parsed = typeof sale.service_items === 'string' ? JSON.parse(sale.service_items) : sale.service_items;
+            return parsed;
+          } catch { return []; }
+        })()
+      });
+    }
+    
+    // When searching, manually paginate the filtered results
+    let paginatedSales = salesDetail;
+    let filteredTotal = salesDetail.length;
+    let totalPages = Math.ceil(filteredTotal / limitNum);
+    
+    if (search) {
+      // Apply manual pagination to filtered results
+      const startIndex = offset;
+      const endIndex = startIndex + limitNum;
+      paginatedSales = salesDetail.slice(startIndex, endIndex);
+    } else {
+      // Use normal pagination for non-search queries
+      filteredTotal = status !== 'all' ? salesDetail.length : Math.min(totalCount - offset, limitNum);
+      totalPages = Math.ceil(totalCount / limitNum);
+    }
+    
+    res.json({
+      pagination: {
+        page: pageNum,
+        limit: limitNum,
+        total: search ? salesDetail.length : totalCount,
+        totalPages: search ? Math.ceil(salesDetail.length / limitNum) : totalPages,
+        hasNext: search ? (pageNum * limitNum < salesDetail.length) : (pageNum * limitNum < totalCount),
+        hasPrev: pageNum > 1
+      },
+      sales: paginatedSales,
+      totalCount: search ? salesDetail.length : totalCount
+    });
+    
+  } catch (error) {
+    console.error('[REPORTS] Error getting paginated sales:', error);
     res.status(500).json({ error: 'Internal server error' });
   }
 });
