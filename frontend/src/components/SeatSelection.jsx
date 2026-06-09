@@ -3,6 +3,7 @@ import { useNavigate } from 'react-router-dom';
 import { io } from 'socket.io-client';
 import { apiFetch, API_URL } from '../lib/api';
 import SalaPrincipalGrid from './SalaPrincipalGrid';
+import PriceTiersDisplay from './PriceTiersDisplay';
 import matrix from './SalaPrincipalMatrix.js';
 import { TransformWrapper, TransformComponent } from 'react-zoom-pan-pinch';
 
@@ -75,6 +76,9 @@ export default function SeatSelection({
     palcos_altos: 0,
     pullman: 0
   });
+  
+  // Price tiers for display with different prices per zone
+  const [priceTiers, setPriceTiers] = useState([]);
 
   // Limit message state (for online purchases)
   const [limitMessage, setLimitMessage] = useState(null);
@@ -113,6 +117,11 @@ export default function SeatSelection({
         // Set pricing if available
         if (data.pricing) {
           setPricing(data.pricing);
+        }
+        
+        // Set price tiers if available
+        if (data.priceTiers) {
+          setPriceTiers(data.priceTiers);
         }
         
         // Filter held items by socket ID or guest ID
@@ -603,6 +612,7 @@ export default function SeatSelection({
                     onTogglePalco={handleTogglePalco}
                     cellSize={BASE_CELL_SIZE}
                     mode={mode}
+                    priceTiers={priceTiers}
                   />
                 </TransformComponent>
               </div>

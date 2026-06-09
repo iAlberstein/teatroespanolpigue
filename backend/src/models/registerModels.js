@@ -385,6 +385,38 @@ export default function registerModels(sequelize) {
   SeatBlock.belongsTo(User, { foreignKey: 'blocked_by', as: 'blocker' });
 
   // =====================================================
+  // SEAT PRICING - Precios por ubicacion
+  // =====================================================
+
+  const SeatPricing = sequelize.define('seat_pricing', {
+    id: { type: DataTypes.INTEGER, autoIncrement: true, primaryKey: true },
+    show_id: { type: DataTypes.UUID, allowNull: true },
+    session_id: { type: DataTypes.UUID, allowNull: true },
+    seat_code: { type: DataTypes.STRING(20), allowNull: true },
+    row_letter: { type: DataTypes.CHAR(1), allowNull: true },
+    row_from: { type: DataTypes.CHAR(1), allowNull: true },
+    row_to: { type: DataTypes.CHAR(1), allowNull: true },
+    palco_numbers: { type: DataTypes.STRING(255), allowNull: true },
+    palco_from: { type: DataTypes.INTEGER, allowNull: true },
+    palco_to: { type: DataTypes.INTEGER, allowNull: true },
+    is_palco_alto: { type: DataTypes.BOOLEAN, defaultValue: false },
+    price: { type: DataTypes.DECIMAL(10,2), allowNull: false },
+    priority: { type: DataTypes.INTEGER, defaultValue: 0 },
+    label: { type: DataTypes.STRING(100), allowNull: true }
+  }, {
+    timestamps: true,
+    createdAt: 'created_at',
+    updatedAt: 'updated_at'
+  });
+
+  // Associations
+  Show.hasMany(SeatPricing, { foreignKey: 'show_id', as: 'seat_pricings' });
+  SeatPricing.belongsTo(Show, { foreignKey: 'show_id', as: 'show' });
+  
+  Session.hasMany(SeatPricing, { foreignKey: 'session_id', as: 'seat_pricings' });
+  SeatPricing.belongsTo(Session, { foreignKey: 'session_id', as: 'session' });
+
+  // =====================================================
   // SISTEMA MULTI-ROL
   // =====================================================
 
@@ -702,6 +734,8 @@ export default function registerModels(sequelize) {
   return { 
     User, Show, Session, Reservation, Ticket, Discount, Sale, CashRegisterShift, Validation, 
     Bordereaux, ActivityLog, Producer, ShowProducer, NewsletterSubscriber, SystemSettings, SeatBlock,
+    // Seat pricing
+    SeatPricing,
     // Multi-rol
     Role, UserRole,
     // Ateneo models

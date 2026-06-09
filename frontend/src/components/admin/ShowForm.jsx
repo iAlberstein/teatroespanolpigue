@@ -2,6 +2,7 @@ import { useState, useEffect, useRef } from 'react';
 import { useAuth } from '../../contexts/AuthContext';
 import { apiAuthFetch } from '../../lib/api';
 import { resolveMediaUrl } from '../../lib/media';
+import SeatPricingManager from './SeatPricingManager';
 
 /**
  * Form to create or edit a show with pricing
@@ -917,6 +918,16 @@ export default function ShowForm({ show, onSave, onCancel }) {
               </p>
             </div>
           ) : null}
+
+          {/* Precios especiales por ubicación - solo para sala principal */}
+          {!formData.external_sale && formData.venue_type === 'sala_principal' && show?.id && (
+            <div style={{ marginTop: 24 }}>
+              <SeatPricingManager 
+                showId={show.id} 
+                sessionId={null}
+              />
+            </div>
+          )}
         </div>
 
         {/* Productores - solo si no es venta externa */}

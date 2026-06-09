@@ -1,4 +1,5 @@
 import { useState } from 'react';
+import SeatPricingManager from './SeatPricingManager';
 
 /**
  * Component to manage sessions for a show
@@ -580,6 +581,16 @@ export default function SessionManager({ show, sessions, onAddSession, onDeleteS
                               </div>
                             </div>
                           )}
+                        </div>
+                      )}
+
+                      {/* Precios especiales por ubicación para esta sesión */}
+                      {!isGeneralAdmission && (
+                        <div style={{ marginTop: 16, marginBottom: 16 }}>
+                          <SeatPricingManager 
+                            showId={show.id} 
+                            sessionId={editingSession.id}
+                          />
                         </div>
                       )}
 

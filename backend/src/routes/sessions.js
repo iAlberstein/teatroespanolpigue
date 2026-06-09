@@ -1,6 +1,7 @@
 import { Router } from 'express';
 import { sequelize } from '../lib/sequelize.js';
 import { authenticateToken, requireRole } from '../middleware/auth.js';
+import { getPriceTiers } from '../lib/seatPricing.js';
 
 const router = Router();
 
@@ -96,6 +97,15 @@ router.get('/:id/availability', async (req, res) => {
     return res.status(500).json({ error: 'internal_error' });
   }
 
+  // Get price tiers for display
+  let priceTiers = [];
+  try {
+    priceTiers = await getPriceTiers(sessionId, session.show_id, pricing);
+  } catch (err) {
+    console.error('[SESSIONS] Error getting price tiers:', err);
+    // Don't fail the request, just skip price tiers
+  }
+
   res.json({
     heldSeats: Array.from(seatMap.entries()).map(([seatId, hold]) => ({ 
       seatId, 
@@ -113,7 +123,8 @@ router.get('/:id/availability', async (req, res) => {
     blockedPalcos: Array.from(blockedPalcos.get(sessionId) || []),
     blockedGeneral: blockedGeneralCount,
     pullman: { capacity: pull.capacity || 92, available, sold: soldCount, blocked: blockedGeneralCount },
-    pricing  // Include pricing in response
+    pricing,  // Include pricing in response
+    priceTiers  // Include price tiers with section/range breakdown
   });
 });
 

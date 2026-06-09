@@ -1,6 +1,18 @@
 import React, { useMemo } from 'react';
 import matrix from './SalaPrincipalMatrix.js';
 import stepsIcon from '../../media/images/steps.png';
+import { getSeatPriceTier, getSeatColor, getSeatBorderColor } from '../lib/seatPriceColors.js';
+
+// Price formatter for tooltips
+function formatPrice(price) {
+  if (!price) return '';
+  return new Intl.NumberFormat('es-AR', {
+    style: 'currency',
+    currency: 'ARS',
+    minimumFractionDigits: 0,
+    maximumFractionDigits: 0
+  }).format(price);
+}
 
 // Build blocks for all tokens; for merge tokens (ESC, PULL, PA/PB) expand right then down; others are 1x1
 function computeBlocks(mat) {
@@ -59,7 +71,8 @@ export default function SalaPrincipalGrid({
   onPullmanChange,
   showPullmanCounter = true,
   cellSize = 28,
-  mode = 'spectator'
+  mode = 'spectator',
+  priceTiers = []  // Array of price tier objects from API
 }) {
   const isBlockingMode = mode === 'blocking';
   const rows = matrix.length;
@@ -273,13 +286,24 @@ export default function SalaPrincipalGrid({
             const isAdminBlocked = blockedPalcosLabels.has(label);
             const isHeldByOther = !isSold && !isAdminBlocked && heldByOtherPalcosLabels.has(label) && !isSelectedPalco;
             
-            // Determine background color based on state
-            let bgColor = isPA ? '#6b8e6b' : '#8fbc8f'; // default available
+            // Get price tier info for this palco to determine color
+            const section = isPA ? 'palcos_altos' : 'palcos_bajos';
+            const tierInfo = getSeatPriceTier(label, priceTiers);
+            const priceColor = tierInfo.section && !isSold && !isAdminBlocked && !isHeldByOther && !isSelectedPalco
+              ? getSeatColor(section, tierInfo.tierIndex, tierInfo.totalTiers)
+              : null;
+            
+            // Determine background color based on state (price color takes precedence for available seats)
+            let bgColor = priceColor || (isPA ? '#6b8e6b' : '#8fbc8f'); // default or price-based
             if (isSold) bgColor = '#808080'; // sold - gray
             else if (isAdminBlocked && isBlockingMode) bgColor = '#dc2626'; // blocked - red for admin
             else if (isAdminBlocked && !isBlockingMode) bgColor = '#808080'; // blocked - gray for regular users
             else if (isSelectedPalco) bgColor = '#ffd700'; // selected - yellow
             else if (isHeldByOther) bgColor = '#9370db'; // held by other - purple
+            
+            // Determine border color
+            let borderColor = isSelectedPalco ? '#e0b200' : 
+              (priceColor ? getSeatBorderColor(section, tierInfo.tierIndex, tierInfo.totalTiers) : 'rgba(0,0,0,0.2)');
             
             // In blocking mode, admin can click on blocked palcos to unblock them
             const isClickable = isBlockingMode 
@@ -295,13 +319,13 @@ export default function SalaPrincipalGrid({
                   color: (isPA || (isAdminBlocked && isBlockingMode)) ? '#fff' : '#333',
                   fontWeight: 600,
                   cursor: isClickable ? 'pointer' : 'not-allowed',
-                  border: isSelectedPalco ? `${Math.max(2, Math.round(cellSize * 0.08))}px solid #e0b200` : '1px solid rgba(0,0,0,0.2)',
+                  border: `${Math.max(2, Math.round(cellSize * 0.08))}px solid ${borderColor}`,
                   opacity: isSold ? 0.9 : 1,
                   fontSize: `${palcoFontSize}px`
                 }}
                 aria-pressed={isSelectedPalco}
                 disabled={!isClickable}
-                title={`${token} (pack ${isPA ? 2 : 4})${isAdminBlocked ? ' - BLOQUEADO' : ''}`}
+                title={`${token} (pack ${isPA ? 2 : 4})${tierInfo.price ? ` - ${formatPrice(tierInfo.price)}` : ''}${isAdminBlocked ? ' - BLOQUEADO' : ''}`}
               >{token}</button>
             );
           }
@@ -330,13 +354,23 @@ export default function SalaPrincipalGrid({
             const isSelected = !isSold && selectedSeatIds.has(seatId);
             const isHeldByOther = !isSold && !isAdminBlocked && heldByOtherSeatIds.has(seatId);
             
-            // Determine background color based on state
-            let bgColor = '#a8d8a8'; // default available - green
+            // Get price tier info for this seat to determine color
+            const tierInfo = getSeatPriceTier(seatId, priceTiers);
+            const priceColor = tierInfo.section && !isSold && !isAdminBlocked && !isHeldByOther && !isSelected
+              ? getSeatColor('platea', tierInfo.tierIndex, tierInfo.totalTiers)
+              : null;
+            
+            // Determine background color based on state (price color takes precedence for available seats)
+            let bgColor = priceColor || '#a8d8a8'; // default or price-based
             if (isSold) bgColor = '#808080'; // sold - gray
             else if (isAdminBlocked && isBlockingMode) bgColor = '#dc2626'; // blocked - red for admin
             else if (isAdminBlocked && !isBlockingMode) bgColor = '#808080'; // blocked - gray for regular users
             else if (isSelected) bgColor = '#ffd700'; // selected - yellow
             else if (isHeldByOther) bgColor = '#9370db'; // held by other - purple
+            
+            // Determine border color
+            let borderColor = isSelected ? '#e0b200' : 
+              (priceColor ? getSeatBorderColor('platea', tierInfo.tierIndex, tierInfo.totalTiers) : '#7fbf7f');
             
             // In blocking mode, admin can click on blocked seats to unblock them
             const isClickable = isBlockingMode 
@@ -351,12 +385,12 @@ export default function SalaPrincipalGrid({
                   ...singleCellDimensions,
                   cursor: isClickable ? 'pointer' : 'not-allowed',
                   background: bgColor,
-                  border: '1px solid #7fbf7f',
+                  border: `1px solid ${borderColor}`,
                   opacity: isSold ? 0.9 : 1
                 }}
                 aria-pressed={isSelected}
                 disabled={!isClickable}
-                title={row ? `Fila ${row} - Asiento ${token}${isAdminBlocked ? ' - BLOQUEADO' : ''}` : `Asiento ${token}${isAdminBlocked ? ' - BLOQUEADO' : ''}`}
+                title={row ? `Fila ${row} - Asiento ${token}${tierInfo.price ? ` - ${formatPrice(tierInfo.price)}` : ''}${isAdminBlocked ? ' - BLOQUEADO' : ''}` : `Asiento ${token}${isAdminBlocked ? ' - BLOQUEADO' : ''}`}
               >{token}</button>
             );
           }
