@@ -361,28 +361,53 @@ router.get('/show/:show_id', authenticateToken, async (req, res) => {
       return null;
     }
     
-    // Consolidado: agrupa online+boletería pero mantiene precio y descuento separados
-    const sectorTotals = {};
+    // Consolidado: agrupa por sector (ubicación) con subtítulos para precios especiales
+    // Primero agrupamos por ubicación+precio para detectar precios especiales
+    const locationPriceGroups = {};
     Object.values(salesByLocationPriceChannel).forEach(item => {
-      const sectorKey = `${item.location}|${item.price.toFixed(2)}|${item.discountCode || 'none'}`;
-      if (!sectorTotals[sectorKey]) {
-        // Check for special pricing
+      const key = `${item.location}|${item.price.toFixed(2)}`;
+      if (!locationPriceGroups[key]) {
         const specialPricing = findSpecialPricingRule(item.location, item.price);
-        
-        sectorTotals[sectorKey] = { 
-          location: item.location, 
-          price: item.price, 
-          discountCode: item.discountCode, 
-          quantity: 0, 
-          people: 0, 
-          total: 0,
-          specialPricing: specialPricing
+        locationPriceGroups[key] = {
+          location: item.location,
+          price: item.price,
+          specialPricing: specialPricing,
+          quantity: 0,
+          people: 0,
+          total: 0
         };
       }
-      sectorTotals[sectorKey].quantity += item.quantity;
-      sectorTotals[sectorKey].people += item.people || item.quantity;
-      sectorTotals[sectorKey].total += item.total;
+      locationPriceGroups[key].quantity += item.quantity;
+      locationPriceGroups[key].people += item.people || item.quantity;
+      locationPriceGroups[key].total += item.total;
     });
+    
+    // Ahora agrupamos por ubicación (sector) para el consolidado
+    const sectorGroups = {};
+    Object.values(locationPriceGroups).forEach(group => {
+      if (!sectorGroups[group.location]) {
+        sectorGroups[group.location] = {
+          location: group.location,
+          quantity: 0,
+          people: 0,
+          total: 0,
+          items: []
+        };
+      }
+      sectorGroups[group.location].quantity += group.quantity;
+      sectorGroups[group.location].people += group.people;
+      sectorGroups[group.location].total += group.total;
+      sectorGroups[group.location].items.push({
+        price: group.price,
+        quantity: group.quantity,
+        people: group.people,
+        total: group.total,
+        specialPricing: group.specialPricing
+      });
+    });
+    
+    // Convertir a array y ordenar
+    const sectorTotals = Object.values(sectorGroups);
     // NO incluir servicios en sector totals (se agregan debajo de deducciones A)
     // Object.values(servicesByNameChannel).forEach(item => {
     //   const sectorKey = `svc|${item.name}|${item.price.toFixed(2)}`;

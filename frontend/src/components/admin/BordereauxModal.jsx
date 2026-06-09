@@ -453,42 +453,62 @@ export default function BordereauxModal({ showId, onClose }) {
                 <thead>
                   <tr style={{ borderBottom: `2px solid ${theme.colors.border}` }}>
                     <th style={{ padding: theme.spacing.xs, textAlign: 'left' }}>SECTOR</th>
-                    <th style={{ padding: theme.spacing.xs, textAlign: 'right' }}>VALOR</th>
-                    <th style={{ padding: theme.spacing.xs, textAlign: 'right' }}>PERSONAS</th>
+                    <th style={{ padding: theme.spacing.xs, textAlign: 'right' }}>CANTIDAD</th>
                     <th style={{ padding: theme.spacing.xs, textAlign: 'right' }}>TOTAL</th>
                   </tr>
                 </thead>
                 <tbody>
                   {data.sales.sectorTotals.map((sector, idx) => (
-                    <tr 
-                      key={idx} 
-                      style={{ 
-                        borderBottom: `1px solid ${theme.colors.border}`,
-                        backgroundColor: sector.specialPricing ? '#f0f9ff' : 'transparent'
-                      }}
-                    >
-                      <td style={{ padding: theme.spacing.xs }}>
-                        <div style={{ fontWeight: sector.specialPricing ? 600 : 400 }}>
+                    <>
+                      {/* Fila principal del sector */}
+                      <tr 
+                        key={idx} 
+                        style={{ 
+                          borderBottom: sector.items?.length > 1 ? 'none' : `1px solid ${theme.colors.border}`,
+                          background: theme.colors.surfaceAlt,
+                          fontWeight: 600
+                        }}
+                      >
+                        <td style={{ padding: theme.spacing.xs }}>
                           {sector.location}
-                        </div>
-                        {sector.specialPricing && (
-                          <div style={{ fontSize: '0.85em', color: '#0369a1', marginTop: 2 }}>
-                            {sector.specialPricing.label}
-                          </div>
-                        )}
-                        {sector.discountCode && (
-                          <span style={{ fontSize: '0.85em', color: '#666', marginLeft: 4 }}>
-                            ({sector.discountCode})
-                          </span>
-                        )}
-                      </td>
-                      <td style={{ padding: theme.spacing.xs, textAlign: 'right' }}>{formatCurrency(sector.price)}</td>
-                      <td style={{ padding: theme.spacing.xs, textAlign: 'right' }}>{sector.people || sector.quantity}</td>
-                      <td style={{ padding: theme.spacing.xs, textAlign: 'right' }}>{formatCurrency(sector.total)}</td>
-                    </tr>
+                        </td>
+                        <td style={{ padding: theme.spacing.xs, textAlign: 'right' }}>
+                          {sector.people || sector.quantity}
+                        </td>
+                        <td style={{ padding: theme.spacing.xs, textAlign: 'right' }}>
+                          {formatCurrency(sector.total)}
+                        </td>
+                      </tr>
+                      
+                      {/* Subtítulos para precios especiales (solo si hay múltiples items) */}
+                      {sector.items?.length > 1 && sector.items.map((item, itemIdx) => (
+                        <tr 
+                          key={`${idx}-item-${itemIdx}`}
+                          style={{ 
+                            borderBottom: itemIdx === sector.items.length - 1 ? `1px solid ${theme.colors.border}` : 'none',
+                            backgroundColor: '#f8fafc'
+                          }}
+                        >
+                          <td style={{ padding: `${theme.spacing.xs}px ${theme.spacing.xs}px ${theme.spacing.xs}px 24px` }}>
+                            <span style={{ fontSize: '0.9em', color: '#0369a1' }}>
+                              {item.specialPricing 
+                                ? item.specialPricing.label 
+                                : `Precio base (${formatCurrency(item.price)})`
+                              }
+                            </span>
+                          </td>
+                          <td style={{ padding: theme.spacing.xs, textAlign: 'right', fontSize: '0.9em' }}>
+                            {item.people || item.quantity}
+                          </td>
+                          <td style={{ padding: theme.spacing.xs, textAlign: 'right', fontSize: '0.9em' }}>
+                            {formatCurrency(item.total)}
+                          </td>
+                        </tr>
+                      ))}
+                    </>
                   ))}
                   <tr style={{ borderTop: `2px solid ${theme.colors.border}`, fontWeight: 'bold', background: theme.colors.surfaceAlt }}>
-                    <td style={{ padding: theme.spacing.xs }} colSpan="2">TOTAL</td>
+                    <td style={{ padding: theme.spacing.xs }}>TOTAL GENERAL</td>
                     <td style={{ padding: theme.spacing.xs, textAlign: 'right' }}>{data.sales.totals.people || data.sales.totals.tickets}</td>
                     <td style={{ padding: theme.spacing.xs, textAlign: 'right' }}>{formatCurrency(data.sales.totals.amount)}</td>
                   </tr>

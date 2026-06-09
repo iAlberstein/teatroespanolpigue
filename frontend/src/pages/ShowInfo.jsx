@@ -8,6 +8,7 @@ export default function ShowInfo() {
   const navigate = useNavigate();
   const [show, setShow] = useState(null);
   const [sessions, setSessions] = useState([]);
+  const [seatPricing, setSeatPricing] = useState([]);
   const [isMobile, setIsMobile] = useState(() => {
     if (typeof window === 'undefined') return false;
     return window.innerWidth < 768;
@@ -47,6 +48,16 @@ export default function ShowInfo() {
       .catch(err => {
         console.error('[ShowInfo] Error loading sessions:', err);
       });
+
+    // Load seat pricing for this show
+    apiFetch(`/api/seat-pricing/show/${id}`)
+      .then(res => res.json())
+      .then(pricing => {
+        if (Array.isArray(pricing)) {
+          setSeatPricing(pricing);
+        }
+      })
+      .catch(() => {});
 
     // Inject JSON-LD structured data for SEO (Google rich results with correct timezone)
     apiFetch(`/api/seo/show/${id}`)
@@ -210,9 +221,20 @@ export default function ShowInfo() {
             </div>
           )}
 
-          {pricing && (() => {
-            const priceCount = [pricing.platea_general, pricing.palcos_bajos, pricing.palcos_altos, pricing.pullman, pricing.general].filter(Boolean).length;
+          {(() => {
             const isGeneralAdmission = (show.venue_type === 'el_tablado' || show.venue_type === 'las_gemelas');
+            
+            // Group seat pricing by sector
+            const plateaPricing = seatPricing.filter(p => p.row_from && p.row_to);
+            const palcoBajoPricing = seatPricing.filter(p => p.palco_from !== null && !p.is_palco_alto);
+            const palcoAltoPricing = seatPricing.filter(p => p.palco_from !== null && p.is_palco_alto);
+            
+            // Check if we have special pricing for each sector
+            const hasMultiplePlateaPrices = plateaPricing.length > 0;
+            const hasMultiplePalcoBajoPrices = palcoBajoPricing.length > 0;
+            const hasMultiplePalcoAltoPrices = palcoAltoPricing.length > 0;
+            
+            if (!pricing && seatPricing.length === 0) return null;
             
             return (
               <div>
@@ -226,7 +248,8 @@ export default function ShowInfo() {
                     gap: 12
                   }}
                 >
-                  {pricing.platea_general && (
+                  {/* Platea General - show multiple prices if special pricing exists */}
+                  {(pricing?.platea_general || hasMultiplePlateaPrices) && (
                     <div
                       style={{
                         padding: 12,
@@ -235,13 +258,41 @@ export default function ShowInfo() {
                         border: '1px solid #e5e7eb'
                       }}
                     >
-                      <div style={{ fontSize: 12, color: '#64748b' }}>Platea General</div>
-                      <div style={{ fontSize: 16, color: '#0f172a', fontWeight: 700 }}>
-                        ${Number(pricing.platea_general).toLocaleString('es-AR')}
-                      </div>
+                      <div style={{ fontSize: 12, color: '#64748b', fontWeight: 600 }}>Platea General</div>
+                      {hasMultiplePlateaPrices ? (
+                        <div style={{ marginTop: 8 }}>
+                          {plateaPricing.map((p, idx) => (
+                            <div key={idx} style={{ marginBottom: 4 }}>
+                              <span style={{ fontSize: 11, color: '#0369a1' }}>
+                                Filas {p.row_from} a {p.row_to}:{' '}
+                              </span>
+                              <span style={{ fontSize: 14, color: '#0f172a', fontWeight: 600 }}>
+                                ${Number(p.price).toLocaleString('es-AR')}
+                              </span>
+                            </div>
+                          ))}
+                          {/* Show base price if exists */}
+                          {pricing?.platea_general && (
+                            <div>
+                              <span style={{ fontSize: 11, color: '#64748b' }}>
+                                Resto:{' '}
+                              </span>
+                              <span style={{ fontSize: 14, color: '#0f172a', fontWeight: 600 }}>
+                                ${Number(pricing.platea_general).toLocaleString('es-AR')}
+                              </span>
+                            </div>
+                          )}
+                        </div>
+                      ) : (
+                        <div style={{ fontSize: 16, color: '#0f172a', fontWeight: 700 }}>
+                          ${Number(pricing?.platea_general).toLocaleString('es-AR')}
+                        </div>
+                      )}
                     </div>
                   )}
-                  {pricing.palcos_bajos && (
+                  
+                  {/* Palcos Bajos */}
+                  {(pricing?.palcos_bajos || hasMultiplePalcoBajoPrices) && (
                     <div
                       style={{
                         padding: 12,
@@ -250,13 +301,42 @@ export default function ShowInfo() {
                         border: '1px solid #e5e7eb'
                       }}
                     >
-                      <div style={{ fontSize: 12, color: '#64748b' }}>Palcos Bajos{!palcosIndividualSeats && ' (x4 localidades)'}</div>
-                      <div style={{ fontSize: 16, color: '#0f172a', fontWeight: 700 }}>
-                        ${Number(pricing.palcos_bajos).toLocaleString('es-AR')}
+                      <div style={{ fontSize: 12, color: '#64748b', fontWeight: 600 }}>
+                        Palcos Bajos{!palcosIndividualSeats && ' (x4 localidades)'}
                       </div>
+                      {hasMultiplePalcoBajoPrices ? (
+                        <div style={{ marginTop: 8 }}>
+                          {palcoBajoPricing.map((p, idx) => (
+                            <div key={idx} style={{ marginBottom: 4 }}>
+                              <span style={{ fontSize: 11, color: '#0369a1' }}>
+                                PB {p.palco_from} a {p.palco_to}:{' '}
+                              </span>
+                              <span style={{ fontSize: 14, color: '#0f172a', fontWeight: 600 }}>
+                                ${Number(p.price).toLocaleString('es-AR')}
+                              </span>
+                            </div>
+                          ))}
+                          {pricing?.palcos_bajos && (
+                            <div>
+                              <span style={{ fontSize: 11, color: '#64748b' }}>
+                                Resto:{' '}
+                              </span>
+                              <span style={{ fontSize: 14, color: '#0f172a', fontWeight: 600 }}>
+                                ${Number(pricing.palcos_bajos).toLocaleString('es-AR')}
+                              </span>
+                            </div>
+                          )}
+                        </div>
+                      ) : (
+                        <div style={{ fontSize: 16, color: '#0f172a', fontWeight: 700 }}>
+                          ${Number(pricing?.palcos_bajos).toLocaleString('es-AR')}
+                        </div>
+                      )}
                     </div>
                   )}
-                  {pricing.palcos_altos && (
+                  
+                  {/* Palcos Altos */}
+                  {(pricing?.palcos_altos || hasMultiplePalcoAltoPrices) && (
                     <div
                       style={{
                         padding: 12,
@@ -265,13 +345,41 @@ export default function ShowInfo() {
                         border: '1px solid #e5e7eb'
                       }}
                     >
-                      <div style={{ fontSize: 12, color: '#64748b' }}>Palcos Altos{!palcosIndividualSeats && ' (x2 localidades)'}</div>
-                      <div style={{ fontSize: 16, color: '#0f172a', fontWeight: 700 }}>
-                        ${Number(pricing.palcos_altos).toLocaleString('es-AR')}
+                      <div style={{ fontSize: 12, color: '#64748b', fontWeight: 600 }}>
+                        Palcos Altos{!palcosIndividualSeats && ' (x2 localidades)'}
                       </div>
+                      {hasMultiplePalcoAltoPrices ? (
+                        <div style={{ marginTop: 8 }}>
+                          {palcoAltoPricing.map((p, idx) => (
+                            <div key={idx} style={{ marginBottom: 4 }}>
+                              <span style={{ fontSize: 11, color: '#0369a1' }}>
+                                PA {p.palco_from} a {p.palco_to}:{' '}
+                              </span>
+                              <span style={{ fontSize: 14, color: '#0f172a', fontWeight: 600 }}>
+                                ${Number(p.price).toLocaleString('es-AR')}
+                              </span>
+                            </div>
+                          ))}
+                          {pricing?.palcos_altos && (
+                            <div>
+                              <span style={{ fontSize: 11, color: '#64748b' }}>
+                                Resto:{' '}
+                              </span>
+                              <span style={{ fontSize: 14, color: '#0f172a', fontWeight: 600 }}>
+                                ${Number(pricing.palcos_altos).toLocaleString('es-AR')}
+                              </span>
+                            </div>
+                          )}
+                        </div>
+                      ) : (
+                        <div style={{ fontSize: 16, color: '#0f172a', fontWeight: 700 }}>
+                          ${Number(pricing?.palcos_altos).toLocaleString('es-AR')}
+                        </div>
+                      )}
                     </div>
                   )}
-                  {pricing.pullman && (
+                  
+                  {pricing?.pullman && (
                     <div
                       style={{
                         padding: 12,
@@ -286,7 +394,7 @@ export default function ShowInfo() {
                       </div>
                     </div>
                   )}
-                  {pricing.general && (
+                  {pricing?.general && (
                     <div
                       style={{
                         padding: 12,

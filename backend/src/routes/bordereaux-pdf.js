@@ -84,36 +84,48 @@ export function generateBordereauxPDF(doc, data) {
     doc.moveTo(startX, doc.y).lineTo(startX + pageWidth, doc.y).stroke();
     doc.moveDown(0.3);
     
-    doc.font('Helvetica').fontSize(8);
     let sectorGrandTotal = 0;
     for (const sector of sectorTotals) {
       const y = doc.y;
+      const hasMultipleItems = sector.items && sector.items.length > 1;
       
-      // Main location name
+      // Fila principal del sector (negrita, fondo gris claro simulado con rect)
       doc.font('Helvetica-Bold').fontSize(8);
-      doc.text(sector.location, startX, y, { width: colWidths.location });
-      
-      // Special pricing label (if exists)
-      if (sector.specialPricing) {
-        doc.font('Helvetica').fontSize(7).fillColor('#1e40af');
-        doc.text(sector.specialPricing.label, startX, y + 10, { width: colWidths.location });
-        doc.fillColor('#000000');
-        doc.font('Helvetica-Bold').fontSize(8);
-      }
-      
-      const rowHeight = sector.specialPricing ? 20 : 12;
-      
+      doc.rect(startX, y - 2, pageWidth, 14).fill('#f5f5f5');
+      doc.fillColor('#000000');
+      doc.text(sector.location, startX + 4, y, { width: colWidths.location - 8 });
       doc.text(sector.quantity.toString(), startX + colWidths.location, y, { width: colWidths.price + colWidths.quantity, align: 'right' });
       doc.text(formatCurrency(parseFloat(sector.total)), importeX, y, { width: importeWidth, align: 'right' });
-      doc.moveDown(sector.specialPricing ? 1.2 : 0.5);
+      doc.moveDown(0.6);
       sectorGrandTotal += parseFloat(sector.total);
+      
+      // Subtítulos para precios especiales (solo si hay múltiples items)
+      if (hasMultipleItems) {
+        doc.font('Helvetica').fontSize(7).fillColor('#0369a1');
+        for (const item of sector.items) {
+          const itemY = doc.y;
+          const label = item.specialPricing 
+            ? item.specialPricing.label 
+            : `Precio base`;
+          doc.text(label, startX + 16, itemY, { width: colWidths.location - 20 });
+          doc.fillColor('#666666');
+          doc.text((item.people || item.quantity).toString(), startX + colWidths.location, itemY, { width: colWidths.price + colWidths.quantity, align: 'right' });
+          doc.text(formatCurrency(parseFloat(item.total)), importeX, itemY, { width: importeWidth, align: 'right' });
+          doc.fillColor('#0369a1');
+          doc.moveDown(0.4);
+        }
+        doc.fillColor('#000000');
+        doc.moveDown(0.2);
+      } else {
+        doc.moveDown(0.3);
+      }
     }
     
     doc.moveTo(startX, doc.y).lineTo(startX + pageWidth, doc.y).lineWidth(1.5).stroke();
     doc.moveDown(0.3);
     doc.font('Helvetica-Bold').fontSize(8);
     const sectorTotY = doc.y;
-    doc.text('TOTAL', startX, sectorTotY);
+    doc.text('TOTAL GENERAL', startX, sectorTotY);
     doc.text(formatCurrency(sectorGrandTotal), importeX, sectorTotY, { width: importeWidth, align: 'right' });
     doc.moveDown(1);
   }
