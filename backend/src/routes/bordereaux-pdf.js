@@ -88,10 +88,24 @@ export function generateBordereauxPDF(doc, data) {
     let sectorGrandTotal = 0;
     for (const sector of sectorTotals) {
       const y = doc.y;
+      
+      // Main location name
+      doc.font('Helvetica-Bold').fontSize(8);
       doc.text(sector.location, startX, y, { width: colWidths.location });
+      
+      // Special pricing label (if exists)
+      if (sector.specialPricing) {
+        doc.font('Helvetica').fontSize(7).fillColor('#1e40af');
+        doc.text(sector.specialPricing.label, startX, y + 10, { width: colWidths.location });
+        doc.fillColor('#000000');
+        doc.font('Helvetica-Bold').fontSize(8);
+      }
+      
+      const rowHeight = sector.specialPricing ? 20 : 12;
+      
       doc.text(sector.quantity.toString(), startX + colWidths.location, y, { width: colWidths.price + colWidths.quantity, align: 'right' });
       doc.text(formatCurrency(parseFloat(sector.total)), importeX, y, { width: importeWidth, align: 'right' });
-      doc.moveDown(0.5);
+      doc.moveDown(sector.specialPricing ? 1.2 : 0.5);
       sectorGrandTotal += parseFloat(sector.total);
     }
     

@@ -41,7 +41,7 @@ function calculateRealPeople(tickets) {
 router.get('/show/:show_id', authenticateToken, async (req, res) => {
   try {
     const { show_id } = req.params;
-    const { bordereaux: Bordereaux, shows: Show, sessions: Session, tickets: Ticket, sales: Sale } = sequelize.models;
+    const { bordereaux: Bordereaux, shows: Show, sessions: Session, tickets: Ticket, sales: Sale, seat_pricing: SeatPricing } = sequelize.models;
     
     // Get service fee for mp total_amount calculation
     const serviceFeePercent = await getServiceFeePercent();
@@ -120,6 +120,20 @@ router.get('/show/:show_id', authenticateToken, async (req, res) => {
     
     if (!show) {
       return res.status(404).json({ error: 'Show not found' });
+    }
+    
+    // Cargar reglas de precios especiales del show y sus sesiones
+    let seatPricingRules = [];
+    if (SeatPricing) {
+      const sessionIds = show.sessions.map(s => s.id);
+      seatPricingRules = await SeatPricing.findAll({
+        where: {
+          [Op.or]: [
+            { show_id: show_id },
+            { session_id: { [Op.in]: sessionIds } }
+          ]
+        }
+      });
     }
     
     // Agrupar ventas por ubicación, precio y canal (online/boletería)
@@ -297,12 +311,73 @@ router.get('/show/:show_id', authenticateToken, async (req, res) => {
     // -------------------------------------------------------
     // CONSOLIDADO POR SECTOR: totales de cada sector (todas las sesiones, todos los canales)
     // -------------------------------------------------------
+    // Helper: Find matching seat pricing rule for a location and price
+    function findSpecialPricingRule(location, price) {
+      const priceNum = parseFloat(price);
+      
+      // Determine if this is platea or palcos
+      const isPlatea = location === 'butaca' || location === 'platea_general';
+      const isPalcoBajo = location === 'palcos_bajos';
+      const isPalcoAlto = location === 'palcos_altos';
+      
+      for (const rule of seatPricingRules) {
+        const rulePrice = parseFloat(rule.price);
+        
+        // Check if price matches
+        if (Math.abs(rulePrice - priceNum) > 0.01) continue;
+        
+        // Check if location type matches
+        if (isPlatea && rule.row_from && rule.row_to) {
+          return {
+            isSpecial: true,
+            label: `Filas ${rule.row_from} a ${rule.row_to}`,
+            rowFrom: rule.row_from,
+            rowTo: rule.row_to,
+            type: 'platea_range'
+          };
+        }
+        
+        if (isPalcoBajo && rule.palco_from !== null && rule.palco_to !== null && !rule.is_palco_alto) {
+          return {
+            isSpecial: true,
+            label: `PB ${rule.palco_from} a ${rule.palco_to}`,
+            palcoFrom: rule.palco_from,
+            palcoTo: rule.palco_to,
+            type: 'palco_bajo_range'
+          };
+        }
+        
+        if (isPalcoAlto && rule.palco_from !== null && rule.palco_to !== null && rule.is_palco_alto) {
+          return {
+            isSpecial: true,
+            label: `PA ${rule.palco_from} a ${rule.palco_to}`,
+            palcoFrom: rule.palco_from,
+            palcoTo: rule.palco_to,
+            type: 'palco_alto_range'
+          };
+        }
+      }
+      
+      return null;
+    }
+    
     // Consolidado: agrupa online+boletería pero mantiene precio y descuento separados
     const sectorTotals = {};
     Object.values(salesByLocationPriceChannel).forEach(item => {
       const sectorKey = `${item.location}|${item.price.toFixed(2)}|${item.discountCode || 'none'}`;
       if (!sectorTotals[sectorKey]) {
-        sectorTotals[sectorKey] = { location: item.location, price: item.price, discountCode: item.discountCode, quantity: 0, people: 0, total: 0 };
+        // Check for special pricing
+        const specialPricing = findSpecialPricingRule(item.location, item.price);
+        
+        sectorTotals[sectorKey] = { 
+          location: item.location, 
+          price: item.price, 
+          discountCode: item.discountCode, 
+          quantity: 0, 
+          people: 0, 
+          total: 0,
+          specialPricing: specialPricing
+        };
       }
       sectorTotals[sectorKey].quantity += item.quantity;
       sectorTotals[sectorKey].people += item.people || item.quantity;

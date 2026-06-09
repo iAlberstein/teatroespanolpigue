@@ -460,10 +460,27 @@ export default function BordereauxModal({ showId, onClose }) {
                 </thead>
                 <tbody>
                   {data.sales.sectorTotals.map((sector, idx) => (
-                    <tr key={idx} style={{ borderBottom: `1px solid ${theme.colors.border}` }}>
+                    <tr 
+                      key={idx} 
+                      style={{ 
+                        borderBottom: `1px solid ${theme.colors.border}`,
+                        backgroundColor: sector.specialPricing ? '#f0f9ff' : 'transparent'
+                      }}
+                    >
                       <td style={{ padding: theme.spacing.xs }}>
-                        {sector.location}
-                        {sector.discountCode && <span style={{ fontSize: '0.85em', color: '#666', marginLeft: 4 }}>({sector.discountCode})</span>}
+                        <div style={{ fontWeight: sector.specialPricing ? 600 : 400 }}>
+                          {sector.location}
+                        </div>
+                        {sector.specialPricing && (
+                          <div style={{ fontSize: '0.85em', color: '#0369a1', marginTop: 2 }}>
+                            {sector.specialPricing.label}
+                          </div>
+                        )}
+                        {sector.discountCode && (
+                          <span style={{ fontSize: '0.85em', color: '#666', marginLeft: 4 }}>
+                            ({sector.discountCode})
+                          </span>
+                        )}
                       </td>
                       <td style={{ padding: theme.spacing.xs, textAlign: 'right' }}>{formatCurrency(sector.price)}</td>
                       <td style={{ padding: theme.spacing.xs, textAlign: 'right' }}>{sector.people || sector.quantity}</td>
