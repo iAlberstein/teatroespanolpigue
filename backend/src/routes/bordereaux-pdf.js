@@ -101,17 +101,30 @@ export function generateBordereauxPDF(doc, data) {
       
       // Subtítulos para precios especiales (solo si hay múltiples items)
       if (hasMultipleItems) {
-        doc.font('Helvetica').fontSize(7).fillColor('#0369a1');
         for (const item of sector.items) {
           const itemY = doc.y;
+          const isSpecial = item.specialPricing?.isSpecial;
           const label = item.specialPricing 
             ? item.specialPricing.label 
             : `Precio base`;
-          doc.text(label, startX + 16, itemY, { width: colWidths.location - 20 });
+          
+          // Draw color indicator if exists
+          if (item.color) {
+            try {
+              doc.rect(startX + 4, itemY + 2, 8, 8).fill(item.color);
+            } catch (e) {
+              // Ignore color errors
+            }
+          }
+          
+          // Set text color based on whether it's special pricing
+          doc.font('Helvetica').fontSize(7);
+          doc.fillColor(isSpecial ? '#0369a1' : '#666666');
+          doc.text(label, startX + (item.color ? 16 : 8), itemY, { width: colWidths.location - 24 });
+          
           doc.fillColor('#666666');
           doc.text((item.people || item.quantity).toString(), startX + colWidths.location, itemY, { width: colWidths.price + colWidths.quantity, align: 'right' });
           doc.text(formatCurrency(parseFloat(item.total)), importeX, itemY, { width: importeWidth, align: 'right' });
-          doc.fillColor('#0369a1');
           doc.moveDown(0.4);
         }
         doc.fillColor('#000000');

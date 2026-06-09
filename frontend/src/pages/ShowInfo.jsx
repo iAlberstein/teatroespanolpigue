@@ -262,7 +262,19 @@ export default function ShowInfo() {
                       {hasMultiplePlateaPrices ? (
                         <div style={{ marginTop: 8 }}>
                           {plateaPricing.map((p, idx) => (
-                            <div key={idx} style={{ marginBottom: 4 }}>
+                            <div key={idx} style={{ marginBottom: 4, display: 'flex', alignItems: 'center', gap: 6 }}>
+                              {p.color && (
+                                <div
+                                  style={{
+                                    width: 12,
+                                    height: 12,
+                                    borderRadius: 3,
+                                    backgroundColor: p.color,
+                                    border: '1px solid #e5e7eb',
+                                    flexShrink: 0
+                                  }}
+                                />
+                              )}
                               <span style={{ fontSize: 11, color: '#0369a1' }}>
                                 Filas {p.row_from} a {p.row_to}:{' '}
                               </span>
@@ -307,7 +319,19 @@ export default function ShowInfo() {
                       {hasMultiplePalcoBajoPrices ? (
                         <div style={{ marginTop: 8 }}>
                           {palcoBajoPricing.map((p, idx) => (
-                            <div key={idx} style={{ marginBottom: 4 }}>
+                            <div key={idx} style={{ marginBottom: 4, display: 'flex', alignItems: 'center', gap: 6 }}>
+                              {p.color && (
+                                <div
+                                  style={{
+                                    width: 12,
+                                    height: 12,
+                                    borderRadius: 3,
+                                    backgroundColor: p.color,
+                                    border: '1px solid #e5e7eb',
+                                    flexShrink: 0
+                                  }}
+                                />
+                              )}
                               <span style={{ fontSize: 11, color: '#0369a1' }}>
                                 PB {p.palco_from} a {p.palco_to}:{' '}
                               </span>
@@ -351,7 +375,19 @@ export default function ShowInfo() {
                       {hasMultiplePalcoAltoPrices ? (
                         <div style={{ marginTop: 8 }}>
                           {palcoAltoPricing.map((p, idx) => (
-                            <div key={idx} style={{ marginBottom: 4 }}>
+                            <div key={idx} style={{ marginBottom: 4, display: 'flex', alignItems: 'center', gap: 6 }}>
+                              {p.color && (
+                                <div
+                                  style={{
+                                    width: 12,
+                                    height: 12,
+                                    borderRadius: 3,
+                                    backgroundColor: p.color,
+                                    border: '1px solid #e5e7eb',
+                                    flexShrink: 0
+                                  }}
+                                />
+                              )}
                               <span style={{ fontSize: 11, color: '#0369a1' }}>
                                 PA {p.palco_from} a {p.palco_to}:{' '}
                               </span>
