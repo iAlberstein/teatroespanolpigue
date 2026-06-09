@@ -29,7 +29,7 @@
 
 > **Nota:** Nginx sirve archivos desde la raíz, NO desde `dist/`. Por eso copiamos `index.html` y `assets/` a la raíz.
 
-> **Nota para trabajo con Cascade:** Cuando estés trabajando con el asistente (Cascade), los comandos de despliegue de este archivo se ejecutan habitualmente **desde la propia IA** usando la terminal integrada, siempre con tu confirmación previa. Si preferís hacerlo manualmente, podés copiar y ejecutar exactamente los mismos comandos desde tu terminal local.
+> **Nota para trabajo con Cascade:** Cascade (el asistente) ejecuta los comandos de despliegue **automáticamente** usando la terminal integrada. No es necesario que copies y pegues los comandos manualmente. Si preferís ejecutarlos vos mismo, indicale a Cascade "desplegá" y te pedirá los códigos/passwords necesarios.
 
 ---
 
