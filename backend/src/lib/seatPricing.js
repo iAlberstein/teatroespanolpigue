@@ -1,4 +1,4 @@
-import sequelize from '../config/database.js';
+import { sequelize } from '../lib/sequelize.js';
 
 /**
  * Calculate the price for a specific seat based on pricing rules

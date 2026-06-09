@@ -1,5 +1,5 @@
 import express from 'express';
-import sequelize from '../config/database.js';
+import { sequelize } from '../lib/sequelize.js';
 import { authenticateToken, requireRole } from '../middleware/auth.js';
 import { getSeatPrice, getPricingRules, groupPricingRulesForDisplay, getPriceTiers } from '../lib/seatPricing.js';
 
