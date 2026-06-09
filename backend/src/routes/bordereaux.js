@@ -311,6 +311,42 @@ router.get('/show/:show_id', authenticateToken, async (req, res) => {
     // -------------------------------------------------------
     // CONSOLIDADO POR SECTOR: totales de cada sector (todas las sesiones, todos los canales)
     // -------------------------------------------------------
+    // Helper: Get all rows covered by special pricing rules for a section
+    function getCoveredRanges(section, pricingRules) {
+      const covered = [];
+      for (const rule of pricingRules) {
+        if (section === 'platea' && rule.row_from && rule.row_to) {
+          covered.push({ from: rule.row_from.charCodeAt(0), to: rule.row_to.charCodeAt(0) });
+        } else if (section === 'palcos_bajos' && rule.palco_from !== null && rule.palco_to !== null && !rule.is_palco_alto) {
+          covered.push({ from: rule.palco_from, to: rule.palco_to });
+        } else if (section === 'palcos_altos' && rule.palco_from !== null && rule.palco_to !== null && rule.is_palco_alto) {
+          covered.push({ from: rule.palco_from, to: rule.palco_to });
+        }
+      }
+      return covered.sort((a, b) => a.from - b.from);
+    }
+    
+    // Helper: Calculate remaining ranges not covered by special pricing
+    function calculateRemainingRanges(allRanges, coveredRanges) {
+      if (coveredRanges.length === 0) return allRanges;
+      
+      const remaining = [];
+      let current = allRanges[0].from;
+      
+      for (const covered of coveredRanges) {
+        if (current < covered.from) {
+          remaining.push({ from: current, to: covered.from - 1 });
+        }
+        current = Math.max(current, covered.to + 1);
+      }
+      
+      if (current <= allRanges[0].to) {
+        remaining.push({ from: current, to: allRanges[0].to });
+      }
+      
+      return remaining;
+    }
+    
     // Helper: Find matching seat pricing rule for a location and price
     function findSpecialPricingRule(location, price) {
       const priceNum = parseFloat(price);
@@ -320,6 +356,80 @@ router.get('/show/:show_id', authenticateToken, async (req, res) => {
       const isPalcoBajo = location === 'palcos_bajos';
       const isPalcoAlto = location === 'palcos_altos';
       
+      // Get base prices from show pricing_json
+      const basePlatea = parseFloat(show.pricing_json?.platea_general || 0);
+      const basePalcosBajos = parseFloat(show.pricing_json?.palcos_bajos || 0);
+      const basePalcosAltos = parseFloat(show.pricing_json?.palcos_altos || 0);
+      
+      // Check if this is a special pricing (different from base price)
+      let isBasePrice = false;
+      if (isPlatea && Math.abs(priceNum - basePlatea) <= 0.01) isBasePrice = true;
+      if (isPalcoBajo && Math.abs(priceNum - basePalcosBajos) <= 0.01) isBasePrice = true;
+      if (isPalcoAlto && Math.abs(priceNum - basePalcosAltos) <= 0.01) isBasePrice = true;
+      
+      // If it's base price, calculate the remaining ranges not covered by special pricing
+      if (isBasePrice) {
+        let allRanges, coveredRanges, remainingRanges;
+        
+        if (isPlatea) {
+          allRanges = [{ from: 'A'.charCodeAt(0), to: 'M'.charCodeAt(0) }];
+          coveredRanges = getCoveredRanges('platea', seatPricingRules);
+          remainingRanges = calculateRemainingRanges(allRanges, coveredRanges);
+          
+          if (remainingRanges.length > 0) {
+            // Format as letters for display
+            const fromRow = String.fromCharCode(remainingRanges[0].from);
+            const toRow = String.fromCharCode(remainingRanges[remainingRanges.length - 1].to);
+            return {
+              isSpecial: false,
+              label: remainingRanges.length === 1 && remainingRanges[0].from === remainingRanges[0].to
+                ? `Fila ${fromRow}`
+                : `Filas ${fromRow} a ${toRow}`,
+              type: 'platea_base'
+            };
+          }
+        }
+        
+        if (isPalcoBajo) {
+          allRanges = [{ from: 1, to: 20 }];
+          coveredRanges = getCoveredRanges('palcos_bajos', seatPricingRules);
+          remainingRanges = calculateRemainingRanges(allRanges, coveredRanges);
+          
+          if (remainingRanges.length > 0) {
+            const fromPB = remainingRanges[0].from;
+            const toPB = remainingRanges[remainingRanges.length - 1].to;
+            return {
+              isSpecial: false,
+              label: remainingRanges.length === 1 && fromPB === toPB
+                ? `PB ${fromPB}`
+                : `PB ${fromPB} a ${toPB}`,
+              type: 'palco_bajo_base'
+            };
+          }
+        }
+        
+        if (isPalcoAlto) {
+          allRanges = [{ from: 1, to: 18 }];
+          coveredRanges = getCoveredRanges('palcos_altos', seatPricingRules);
+          remainingRanges = calculateRemainingRanges(allRanges, coveredRanges);
+          
+          if (remainingRanges.length > 0) {
+            const fromPA = remainingRanges[0].from;
+            const toPA = remainingRanges[remainingRanges.length - 1].to;
+            return {
+              isSpecial: false,
+              label: remainingRanges.length === 1 && fromPA === toPA
+                ? `PA ${fromPA}`
+                : `PA ${fromPA} a ${toPA}`,
+              type: 'palco_alto_base'
+            };
+          }
+        }
+        
+        return null;
+      }
+      
+      // It's a special price - find the matching rule
       for (const rule of seatPricingRules) {
         const rulePrice = parseFloat(rule.price);
         
@@ -362,16 +472,42 @@ router.get('/show/:show_id', authenticateToken, async (req, res) => {
     }
     
     // Consolidado: agrupa por sector (ubicación) con subtítulos para precios especiales
+    // Helper: Find color for a specific price and location
+    function findRuleColor(location, price) {
+      const priceNum = parseFloat(price);
+      const isPlatea = location === 'butaca' || location === 'platea_general';
+      const isPalcoBajo = location === 'palcos_bajos';
+      const isPalcoAlto = location === 'palcos_altos';
+      
+      for (const rule of seatPricingRules) {
+        const rulePrice = parseFloat(rule.price);
+        if (Math.abs(rulePrice - priceNum) > 0.01) continue;
+        
+        if (isPlatea && rule.row_from && rule.row_to && rule.color) {
+          return rule.color;
+        }
+        if (isPalcoBajo && rule.palco_from !== null && !rule.is_palco_alto && rule.color) {
+          return rule.color;
+        }
+        if (isPalcoAlto && rule.palco_from !== null && rule.is_palco_alto && rule.color) {
+          return rule.color;
+        }
+      }
+      return null;
+    }
+    
     // Primero agrupamos por ubicación+precio para detectar precios especiales
     const locationPriceGroups = {};
     Object.values(salesByLocationPriceChannel).forEach(item => {
       const key = `${item.location}|${item.price.toFixed(2)}`;
       if (!locationPriceGroups[key]) {
         const specialPricing = findSpecialPricingRule(item.location, item.price);
+        const color = findRuleColor(item.location, item.price);
         locationPriceGroups[key] = {
           location: item.location,
           price: item.price,
           specialPricing: specialPricing,
+          color: color,
           quantity: 0,
           people: 0,
           total: 0
@@ -402,7 +538,8 @@ router.get('/show/:show_id', authenticateToken, async (req, res) => {
         quantity: group.quantity,
         people: group.people,
         total: group.total,
-        specialPricing: group.specialPricing
+        specialPricing: group.specialPricing,
+        color: group.color
       });
     });
     

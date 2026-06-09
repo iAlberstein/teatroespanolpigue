@@ -490,12 +490,29 @@ export default function BordereauxModal({ showId, onClose }) {
                           }}
                         >
                           <td style={{ padding: `${theme.spacing.xs}px ${theme.spacing.xs}px ${theme.spacing.xs}px 24px` }}>
-                            <span style={{ fontSize: '0.9em', color: '#0369a1' }}>
-                              {item.specialPricing 
-                                ? item.specialPricing.label 
-                                : `Precio base (${formatCurrency(item.price)})`
-                              }
-                            </span>
+                            <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                              {item.color && (
+                                <div
+                                  style={{
+                                    width: '12px',
+                                    height: '12px',
+                                    borderRadius: '3px',
+                                    backgroundColor: item.color,
+                                    border: '1px solid #e5e7eb'
+                                  }}
+                                />
+                              )}
+                              <span style={{ 
+                                fontSize: '0.9em', 
+                                color: item.specialPricing?.isSpecial ? '#0369a1' : '#64748b',
+                                fontWeight: item.specialPricing?.isSpecial ? 500 : 400
+                              }}>
+                                {item.specialPricing 
+                                  ? item.specialPricing.label 
+                                  : `Precio base (${formatCurrency(item.price)})`
+                                }
+                              </span>
+                            </div>
                           </td>
                           <td style={{ padding: theme.spacing.xs, textAlign: 'right', fontSize: '0.9em' }}>
                             {item.people || item.quantity}

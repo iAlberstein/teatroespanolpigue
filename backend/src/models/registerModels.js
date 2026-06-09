@@ -402,7 +402,8 @@ export default function registerModels(sequelize) {
     is_palco_alto: { type: DataTypes.BOOLEAN, defaultValue: false },
     price: { type: DataTypes.DECIMAL(10,2), allowNull: false },
     priority: { type: DataTypes.INTEGER, defaultValue: 0 },
-    label: { type: DataTypes.STRING(100), allowNull: true }
+    label: { type: DataTypes.STRING(100), allowNull: true },
+    color: { type: DataTypes.STRING(7), allowNull: true }
   }, {
     timestamps: true,
     createdAt: 'created_at',

@@ -290,7 +290,7 @@ export default function SalaPrincipalGrid({
             const section = isPA ? 'palcos_altos' : 'palcos_bajos';
             const tierInfo = getSeatPriceTier(label, priceTiers);
             const priceColor = tierInfo.section && !isSold && !isAdminBlocked && !isHeldByOther && !isSelectedPalco
-              ? getSeatColor(section, tierInfo.tierIndex, tierInfo.totalTiers)
+              ? getSeatColor(section, tierInfo.tierIndex, tierInfo.totalTiers, tierInfo.color)
               : null;
             
             // Determine background color based on state (price color takes precedence for available seats)
@@ -303,7 +303,7 @@ export default function SalaPrincipalGrid({
             
             // Determine border color
             let borderColor = isSelectedPalco ? '#e0b200' : 
-              (priceColor ? getSeatBorderColor(section, tierInfo.tierIndex, tierInfo.totalTiers) : 'rgba(0,0,0,0.2)');
+              (priceColor ? getSeatBorderColor(section, tierInfo.tierIndex, tierInfo.totalTiers, tierInfo.color) : 'rgba(0,0,0,0.2)');
             
             // In blocking mode, admin can click on blocked palcos to unblock them
             const isClickable = isBlockingMode 
@@ -357,7 +357,7 @@ export default function SalaPrincipalGrid({
             // Get price tier info for this seat to determine color
             const tierInfo = getSeatPriceTier(seatId, priceTiers);
             const priceColor = tierInfo.section && !isSold && !isAdminBlocked && !isHeldByOther && !isSelected
-              ? getSeatColor('platea', tierInfo.tierIndex, tierInfo.totalTiers)
+              ? getSeatColor('platea', tierInfo.tierIndex, tierInfo.totalTiers, tierInfo.color)
               : null;
             
             // Determine background color based on state (price color takes precedence for available seats)
@@ -370,7 +370,7 @@ export default function SalaPrincipalGrid({
             
             // Determine border color
             let borderColor = isSelected ? '#e0b200' : 
-              (priceColor ? getSeatBorderColor('platea', tierInfo.tierIndex, tierInfo.totalTiers) : '#7fbf7f');
+              (priceColor ? getSeatBorderColor('platea', tierInfo.tierIndex, tierInfo.totalTiers, tierInfo.color) : '#7fbf7f');
             
             // In blocking mode, admin can click on blocked seats to unblock them
             const isClickable = isBlockingMode 

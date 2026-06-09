@@ -44,6 +44,19 @@ export default function SeatPricingManager({ showId, sessionId = null }) {
   const [palcoTo, setPalcoTo] = useState(5);
   const [price, setPrice] = useState('');
   const [isPalcoAlto, setIsPalcoAlto] = useState(false);
+  const [selectedColor, setSelectedColor] = useState('#10b981');
+
+  // Predefined colors for selection
+  const COLOR_OPTIONS = [
+    '#10b981', // green
+    '#3b82f6', // blue
+    '#f59e0b', // amber
+    '#ef4444', // red
+    '#8b5cf6', // violet
+    '#06b6d4', // cyan
+    '#ec4899', // pink
+    '#84cc16', // lime
+  ];
 
   const loadRules = async () => {
     if (!showId) return;
@@ -83,7 +96,8 @@ export default function SeatPricingManager({ showId, sessionId = null }) {
     const payload = {
       show_id: sessionId ? null : showId,
       session_id: sessionId,
-      price: parseFloat(price)
+      price: parseFloat(price),
+      color: selectedColor
     };
 
     if (selectedType === 'platea_rows') {
@@ -115,6 +129,7 @@ export default function SeatPricingManager({ showId, sessionId = null }) {
       if (data.success) {
         setSuccess('Regla de precio creada exitosamente');
         setPrice('');
+        setSelectedColor('#10b981');
         loadRules();
       } else {
         setError(data.message || 'Error al crear regla');
@@ -222,10 +237,20 @@ export default function SeatPricingManager({ showId, sessionId = null }) {
                     background: 'white',
                     borderRadius: '6px',
                     border: '1px solid #e5e7eb',
-                    marginBottom: '6px'
+                    marginBottom: '6px',
+                    borderLeft: `4px solid ${rule.color || '#10b981'}`
                   }}
                 >
-                  <div>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                    <div
+                      style={{
+                        width: '16px',
+                        height: '16px',
+                        borderRadius: '4px',
+                        backgroundColor: rule.color || '#10b981',
+                        border: '1px solid #e5e7eb'
+                      }}
+                    />
                     <span style={{ fontSize: '13px', color: '#4b5563' }}>
                       {getRuleLabel(rule)}
                     </span>
@@ -233,7 +258,7 @@ export default function SeatPricingManager({ showId, sessionId = null }) {
                       fontSize: '14px', 
                       fontWeight: 600, 
                       color: '#059669',
-                      marginLeft: '12px'
+                      marginLeft: '8px'
                     }}>
                       {formatPrice(rule.price)}
                     </span>
@@ -428,6 +453,31 @@ export default function SeatPricingManager({ showId, sessionId = null }) {
                 fontSize: '14px'
               }}
             />
+          </div>
+        </div>
+
+        <div style={{ marginBottom: '16px' }}>
+          <label style={{ display: 'block', fontSize: '13px', color: '#4b5563', marginBottom: '6px' }}>
+            Color de la regla:
+          </label>
+          <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
+            {COLOR_OPTIONS.map(color => (
+              <button
+                key={color}
+                type="button"
+                onClick={() => setSelectedColor(color)}
+                style={{
+                  width: '32px',
+                  height: '32px',
+                  borderRadius: '6px',
+                  backgroundColor: color,
+                  border: selectedColor === color ? '3px solid #1f2937' : '2px solid transparent',
+                  cursor: 'pointer',
+                  boxShadow: selectedColor === color ? '0 0 0 2px #fff, 0 0 0 4px ' + color : 'none'
+                }}
+                title={color}
+              />
+            ))}
           </div>
         </div>
 

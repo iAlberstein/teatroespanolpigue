@@ -148,7 +148,8 @@ export function groupPricingRulesForDisplay(rules) {
         id: rule.id,
         row: rule.row_letter,
         price: rule.price,
-        label: rule.label || `Fila ${rule.row_letter}`
+        label: rule.label || `Fila ${rule.row_letter}`,
+        color: rule.color
       });
     } else if (rule.row_from && rule.row_to) {
       grouped.platea_ranges.push({
@@ -156,7 +157,8 @@ export function groupPricingRulesForDisplay(rules) {
         from: rule.row_from,
         to: rule.row_to,
         price: rule.price,
-        label: rule.label || `Filas ${rule.row_from} a ${rule.row_to}`
+        label: rule.label || `Filas ${rule.row_from} a ${rule.row_to}`,
+        color: rule.color
       });
     } else if (rule.palco_from !== null && rule.palco_to !== null) {
       const entry = {
@@ -164,7 +166,8 @@ export function groupPricingRulesForDisplay(rules) {
         from: rule.palco_from,
         to: rule.palco_to,
         price: rule.price,
-        label: rule.label || `${rule.is_palco_alto ? 'PA' : 'PB'} ${rule.palco_from} a ${rule.palco_to}`
+        label: rule.label || `${rule.is_palco_alto ? 'PA' : 'PB'} ${rule.palco_from} a ${rule.palco_to}`,
+        color: rule.color
       };
       if (rule.is_palco_alto) {
         grouped.palcos_altos.push(entry);
@@ -195,7 +198,8 @@ export async function getPriceTiers(sessionId, showId, basePricing) {
         type: 'range',
         label: range.label,
         price: range.price,
-        rows: { from: range.from, to: range.to }
+        rows: { from: range.from, to: range.to },
+        color: range.color
       });
     }
   } else if (grouped.platea_rows.length > 0) {

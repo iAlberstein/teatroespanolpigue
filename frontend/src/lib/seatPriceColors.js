@@ -16,9 +16,15 @@ const baseColors = {
  * @param {string} section - 'platea', 'palcos_bajos', 'palcos_altos', 'pullman'
  * @param {number} tierIndex - Index of this price within the section (0 = base/highest)
  * @param {number} totalTiers - Total number of price tiers in this section
- * @returns {string} RGB color string
+ * @param {string} customColor - Optional custom hex color from pricing rule
+ * @returns {string} RGB or hex color string
  */
-export function getSeatColor(section, tierIndex = 0, totalTiers = 1) {
+export function getSeatColor(section, tierIndex = 0, totalTiers = 1, customColor = null) {
+  // Use custom color if provided
+  if (customColor) {
+    return customColor;
+  }
+  
   const base = baseColors[section] || baseColors.platea;
   
   // If only one tier, return base color
@@ -39,8 +45,23 @@ export function getSeatColor(section, tierIndex = 0, totalTiers = 1) {
 
 /**
  * Get border color for a seat (slightly darker than fill)
+ * @param {string} section - 'platea', 'palcos_bajos', 'palcos_altos', 'pullman'
+ * @param {number} tierIndex - Index of this price within the section
+ * @param {number} totalTiers - Total number of price tiers in this section
+ * @param {string} customColor - Optional custom hex color from pricing rule
+ * @returns {string} RGB or darker hex color string
  */
-export function getSeatBorderColor(section, tierIndex = 0, totalTiers = 1) {
+export function getSeatBorderColor(section, tierIndex = 0, totalTiers = 1, customColor = null) {
+  // If custom color, return a darker version
+  if (customColor) {
+    // Simple darken: convert to RGB, reduce each channel by 20%
+    const hex = customColor.replace('#', '');
+    const r = Math.max(0, parseInt(hex.substring(0, 2), 16) * 0.8);
+    const g = Math.max(0, parseInt(hex.substring(2, 4), 16) * 0.8);
+    const b = Math.max(0, parseInt(hex.substring(4, 6), 16) * 0.8);
+    return `rgb(${Math.round(r)}, ${Math.round(g)}, ${Math.round(b)})`;
+  }
+  
   const base = baseColors[section] || baseColors.platea;
   
   const factor = totalTiers > 1 ? tierIndex / (totalTiers - 1) : 0;
@@ -108,7 +129,8 @@ export function getSeatPriceTier(seatCode, priceTiers) {
           totalTiers: sortedTiers.length, 
           price: tier.price, 
           section,
-          label: tier.label
+          label: tier.label,
+          color: tier.color
         };
       }
     }
@@ -121,7 +143,8 @@ export function getSeatPriceTier(seatCode, priceTiers) {
           totalTiers: sortedTiers.length, 
           price: tier.price, 
           section,
-          label: tier.label
+          label: tier.label,
+          color: tier.color
         };
       }
     }
@@ -134,7 +157,8 @@ export function getSeatPriceTier(seatCode, priceTiers) {
     totalTiers: sortedTiers.length, 
     price: lastTier.price, 
     section,
-    label: lastTier.label
+    label: lastTier.label,
+    color: lastTier.color
   };
 }
 

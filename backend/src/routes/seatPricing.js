@@ -34,6 +34,7 @@ router.get('/rules/:showId', authenticateToken, requireRole('admin'), async (req
         price: r.price,
         priority: r.priority,
         label: r.label,
+        color: r.color,
         created_at: r.created_at
       })),
       grouped
@@ -60,7 +61,8 @@ router.post('/rules', authenticateToken, requireRole('admin'), async (req, res) 
       palco_to,
       is_palco_alto,
       price,
-      label
+      label,
+      color
     } = req.body;
     
     // Validation
@@ -151,7 +153,8 @@ router.post('/rules', authenticateToken, requireRole('admin'), async (req, res) 
       is_palco_alto: is_palco_alto || false,
       price,
       priority: hasRowRange ? 3 : 4,
-      label: label || null
+      label: label || null,
+      color: color || null
     });
     
     res.json({
@@ -166,7 +169,8 @@ router.post('/rules', authenticateToken, requireRole('admin'), async (req, res) 
         palco_to: rule.palco_to,
         is_palco_alto: rule.is_palco_alto,
         price: rule.price,
-        label: rule.label
+        label: rule.label,
+        color: rule.color
       }
     });
   } catch (error) {
@@ -334,6 +338,44 @@ router.get('/tiers/:sessionId', async (req, res) => {
   } catch (error) {
     console.error('[SEAT_PRICING] Error getting tiers:', error);
     res.status(500).json({ success: false, error: 'internal_error' });
+  }
+});
+
+/**
+ * GET /api/seat-pricing/show/:showId
+ * Get pricing rules for a show (public) - used by ShowInfo page
+ */
+router.get('/show/:showId', async (req, res) => {
+  try {
+    const { showId } = req.params;
+    const { seat_pricing: SeatPricing } = sequelize.models;
+    
+    const rules = await SeatPricing.findAll({
+      where: { 
+        show_id: showId,
+        session_id: null  // Only show-level rules, not session-specific
+      },
+      order: [
+        ['row_from', 'ASC'],
+        ['palco_from', 'ASC'],
+        ['price', 'ASC']
+      ]
+    });
+    
+    res.json(rules.map(r => ({
+      id: r.id,
+      row_from: r.row_from,
+      row_to: r.row_to,
+      palco_from: r.palco_from,
+      palco_to: r.palco_to,
+      is_palco_alto: r.is_palco_alto,
+      price: r.price,
+      label: r.label,
+      color: r.color
+    })));
+  } catch (error) {
+    console.error('[SEAT_PRICING] Error getting show pricing:', error);
+    res.status(500).json({ error: 'internal_error' });
   }
 });
 
