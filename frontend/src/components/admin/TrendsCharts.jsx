@@ -15,6 +15,7 @@ import {
   Filler
 } from 'chart.js';
 import { Line, Bar, Doughnut } from 'react-chartjs-2';
+import { formatDateShort, formatMonthYear } from '../../lib/dateFormatter.js';
 
 // Register Chart.js components
 ChartJS.register(
@@ -124,18 +125,9 @@ export default function TrendsCharts() {
     return null;
   }
 
-  // Helper: parse YYYY-MM-DD as local date (avoid UTC shift)
-  const parseLocalDate = (dateStr) => {
-    const [y, m, d] = dateStr.split('-').map(Number);
-    return new Date(y, m - 1, d);
-  };
-
   // Prepare chart data
   const revenueChartData = {
-    labels: trendsData.trends.dates.map(date => {
-      const d = parseLocalDate(date);
-      return d.toLocaleDateString('es-AR', { day: '2-digit', month: 'short' });
-    }),
+    labels: trendsData.trends.dates.map(date => formatDateShort(date)),
     datasets: [
       {
         label: 'Ingresos Totales',
@@ -500,7 +492,7 @@ export default function TrendsCharts() {
                   labels: scReport.months.map(m => {
                     const [y, mo] = m.month.split('-');
                     const d = new Date(y, parseInt(mo) - 1);
-                    return d.toLocaleDateString('es-AR', { month: 'short', year: '2-digit' });
+                    return formatMonthYear(d);
                   }),
                   datasets: [
                     {
@@ -566,7 +558,7 @@ export default function TrendsCharts() {
                   {scReport.months.map((m) => {
                     const [y, mo] = m.month.split('-');
                     const d = new Date(y, parseInt(mo) - 1);
-                    const label = d.toLocaleDateString('es-AR', { month: 'long', year: 'numeric' });
+                    const label = formatMonthYear(d);
                     return (
                       <tr key={m.month} style={{ borderBottom: '1px solid #e5e7eb' }}>
                         <td style={{ padding: '10px 12px', textTransform: 'capitalize' }}>{label}</td>

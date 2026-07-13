@@ -3,6 +3,7 @@ import { useNavigate } from 'react-router-dom';
 import { useAuth } from '../contexts/AuthContext';
 import { apiAuthFetch, apiFetch, API_URL } from '../lib/api';
 import { io } from 'socket.io-client';
+import { formatDateLong, formatTime } from '../lib/dateFormatter.js';
 
 const DEFAULT_INSTRUCTIONS = [
   'Presentá tu QR en la entrada del teatro',
@@ -168,16 +169,8 @@ export default function Perfil(){
       .sort((a,b)=> new Date(b.session?.starts_at) - new Date(a.session?.starts_at));
   }, [groupedSales]);
 
-  const fmtDate = (iso) => {
-    if (!iso) return '';
-    const d = new Date(iso);
-    return d.toLocaleDateString('es-AR', { weekday:'long', day:'numeric', month:'long', year:'numeric' });
-  };
-  const fmtTime = (iso) => {
-    if (!iso) return '';
-    const d = new Date(iso);
-    return d.toLocaleTimeString('es-AR', { hour:'2-digit', minute:'2-digit', hour12: false });
-  };
+  const fmtDate = (iso) => formatDateLong(iso);
+  const fmtTime = (iso) => formatTime(iso);
 
   // Compartir por Email - Abrir modal (QR CONTENEDOR desde listado general)
   const handleShareEmail = (saleId) => {
@@ -462,52 +455,74 @@ export default function Perfil(){
 
       {/* Banner especial para productor */}
       {user?.role === 'productor' && (
-        <div style={{
-          background: 'linear-gradient(135deg, #8b5cf6 0%, #7c3aed 100%)',
-          color: 'white',
-          padding: '24px',
-          borderRadius: '12px',
-          marginBottom: '24px',
-          boxShadow: '0 8px 16px rgba(139, 92, 246, 0.3)',
-          cursor: 'pointer',
-          transition: 'transform 0.2s, box-shadow 0.2s',
-          ':hover': {
-            transform: 'translateY(-2px)',
-            boxShadow: '0 12px 24px rgba(139, 92, 246, 0.4)'
-          }
-        }}
-        onClick={() => navigate('/admin')}
-        onMouseEnter={(e) => {
-          e.currentTarget.style.transform = 'translateY(-2px)';
-          e.currentTarget.style.boxShadow = '0 12px 24px rgba(139, 92, 246, 0.4)';
-        }}
-        onMouseLeave={(e) => {
-          e.currentTarget.style.transform = 'translateY(0)';
-          e.currentTarget.style.boxShadow = '0 8px 16px rgba(139, 92, 246, 0.3)';
-        }}
+        <div
+          style={{
+            background: 'linear-gradient(135deg, #8b5cf6 0%, #7c3aed 100%)',
+            color: 'white',
+            padding: isMobile ? '16px' : '24px',
+            borderRadius: '12px',
+            marginBottom: '24px',
+            boxShadow: '0 8px 16px rgba(139, 92, 246, 0.3)',
+            cursor: 'pointer',
+            transition: 'transform 0.2s, box-shadow 0.2s'
+          }}
+          onClick={() => navigate('/admin')}
+          onMouseEnter={(e) => {
+            if (!isMobile) {
+              e.currentTarget.style.transform = 'translateY(-2px)';
+              e.currentTarget.style.boxShadow = '0 12px 24px rgba(139, 92, 246, 0.4)';
+            }
+          }}
+          onMouseLeave={(e) => {
+            e.currentTarget.style.transform = 'translateY(0)';
+            e.currentTarget.style.boxShadow = '0 8px 16px rgba(139, 92, 246, 0.3)';
+          }}
         >
-          <div style={{ display: 'flex', alignItems: 'center', gap: '16px' }}>
-            <div style={{ fontSize: '56px', fontWeight: '700' }}>REPORTES</div>
-            <div style={{ flex: 1 }}>
-              <h2 style={{ 
-                margin: 0, 
-                fontSize: '24px', 
-                fontWeight: 700,
-                marginBottom: '8px'
-              }}>
-                Ver Reportes de Mis Shows
-              </h2>
-              <p style={{ 
-                margin: 0, 
-                opacity: 0.95, 
-                fontSize: '16px',
-                lineHeight: 1.5
-              }}>
+          {isMobile ? (
+            /* Mobile Layout - Compacto */
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+              {/* Título principal */}
+              <div style={{ fontSize: '20px', fontWeight: 700 }}>
+                Reportes
+              </div>
+              {/* Subtítulo */}
+              <div style={{ fontSize: '14px', opacity: 0.9, fontWeight: 500 }}>
+                ver reportes de mis shows
+              </div>
+              {/* Body descriptivo */}
+              <div style={{ fontSize: '13px', opacity: 0.85, lineHeight: 1.4, marginTop: '4px' }}>
                 Accedé al panel de productor para ver las estadísticas de ventas, asistencia y más información de tus shows.
-              </p>
+              </div>
+              {/* Flecha indicadora */}
+              <div style={{ display: 'flex', justifyContent: 'flex-end', marginTop: '4px' }}>
+                <span style={{ fontSize: '20px' }}>→</span>
+              </div>
             </div>
-            <div style={{ fontSize: '32px' }}>→</div>
-          </div>
+          ) : (
+            /* Desktop Layout - Original */
+            <div style={{ display: 'flex', alignItems: 'center', gap: '16px' }}>
+              <div style={{ fontSize: '56px', fontWeight: '700' }}>REPORTES</div>
+              <div style={{ flex: 1 }}>
+                <h2 style={{
+                  margin: 0,
+                  fontSize: '24px',
+                  fontWeight: 700,
+                  marginBottom: '8px'
+                }}>
+                  Ver Reportes de Mis Shows
+                </h2>
+                <p style={{
+                  margin: 0,
+                  opacity: 0.95,
+                  fontSize: '16px',
+                  lineHeight: 1.5
+                }}>
+                  Accedé al panel de productor para ver las estadísticas de ventas, asistencia y más información de tus shows.
+                </p>
+              </div>
+              <div style={{ fontSize: '32px' }}>→</div>
+            </div>
+          )}
         </div>
       )}
 

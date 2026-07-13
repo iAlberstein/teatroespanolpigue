@@ -3,6 +3,7 @@ import { useNavigate } from 'react-router-dom';
 import { theme } from '../styles/theme.js';
 import { API_URL } from '../lib/api.js';
 import { useAuth } from '../contexts/AuthContext';
+import { formatDateLong, formatTime } from '../lib/dateFormatter.js';
 
 const venueLabelMap = {
   sala_principal: 'Sala Principal',
@@ -119,24 +120,6 @@ export default function Agenda() {
   
   // Alias for backward compatibility
   const getNextSession = getDisplaySession;
-
-  const formatDate = (dateStr) => {
-    const date = new Date(dateStr);
-    return date.toLocaleDateString('es-AR', {
-      weekday: 'long',
-      day: 'numeric',
-      month: 'long'
-    });
-  };
-
-  const formatTime = (dateStr) => {
-    const date = new Date(dateStr);
-    return date.toLocaleTimeString('es-AR', {
-      hour: '2-digit',
-      minute: '2-digit',
-      hour12: false
-    });
-  };
 
   const getShowImageUrl = (show) => {
     if (show.image_principal_mobile) {
@@ -414,7 +397,7 @@ export default function Agenda() {
                         color: theme.colors.textSecondary,
                         textTransform: 'capitalize'
                       }}>
-                        {formatDate(nextSession.starts_at)}
+                        {formatDateLong(nextSession.starts_at)}
                       </span>
                       <span style={{
                         fontSize: theme.typography.tiny,

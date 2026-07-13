@@ -1,6 +1,6 @@
 import express from 'express';
 import { sequelize } from '../lib/sequelize.js';
-import { authenticateToken } from '../middleware/auth.js';
+import { authenticateToken, requireRole } from '../middleware/auth.js';
 
 const router = express.Router();
 
@@ -267,6 +267,48 @@ router.delete('/:id', authenticateToken, async (req, res) => {
       res.status(500).json({ message: 'Error al eliminar descuento' });
     }
   });
+
+// ADMIN/BOLETERIA: Get upcoming sessions with CUPO-DISCAPACIDAD usage count
+router.get('/disability-quota', authenticateToken, requireRole('admin', 'boleteria'), async (req, res) => {
+  try {
+    const { discounts: Discount, sales: Sale, sessions: Session, shows: Show } = sequelize.models;
+    const { Op } = await import('sequelize');
+
+    const discount = await Discount.findOne({
+      where: { code: 'CUPO-DISCAPACIDAD' }
+    });
+
+    const now = new Date();
+
+    const upcomingSessions = await Session.findAll({
+      where: { starts_at: { [Op.gt]: now } },
+      include: [{ model: Show, as: 'show', attributes: ['id', 'title'] }],
+      order: [['starts_at', 'ASC']]
+    });
+
+    const results = await Promise.all(upcomingSessions.map(async (session) => {
+      let ticketCount = 0;
+      if (discount) {
+        const salesWithDiscount = await Sale.findAll({
+          where: { session_id: session.id, discount_id: discount.id },
+          attributes: ['id', 'total_capacity']
+        });
+        ticketCount = salesWithDiscount.reduce((sum, s) => sum + (Number(s.total_capacity) || 0), 0);
+      }
+      return {
+        session_id: session.id,
+        starts_at: session.starts_at,
+        show_title: session.show?.title || 'Show',
+        ticket_count: ticketCount
+      };
+    }));
+
+    res.json({ results, discount_exists: !!discount });
+  } catch (error) {
+    console.error('Error fetching disability quota:', error);
+    res.status(500).json({ message: 'Error al cargar cupo discapacidad' });
+  }
+});
 
 // PUBLIC: Validate discount code
 router.post('/validate', async (req, res) => {

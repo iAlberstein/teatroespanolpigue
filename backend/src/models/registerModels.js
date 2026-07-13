@@ -712,6 +712,113 @@ export default function registerModels(sequelize) {
   AteneoEstadoLog.belongsTo(User, { foreignKey: 'cambiado_por', as: 'responsable' });
 
   // =====================================================
+  // SISTEMA DE APORTES SOLIDARIOS
+  // =====================================================
+
+  const Aporte = sequelize.define('aportes', {
+    id: { type: DataTypes.INTEGER, autoIncrement: true, primaryKey: true },
+    numero_aporte: { type: DataTypes.INTEGER, allowNull: false, unique: true },
+    dni: { type: DataTypes.STRING(15), allowNull: false },
+    email: { type: DataTypes.STRING(255), allowNull: false },
+    nombre: { type: DataTypes.STRING(255), allowNull: false },
+    apellido: { type: DataTypes.STRING(255), allowNull: false },
+    telefono: { type: DataTypes.STRING(30), allowNull: false },
+    provincia: { type: DataTypes.STRING(100), allowNull: false },
+    localidad: { type: DataTypes.STRING(100), allowNull: false },
+    monto: { type: DataTypes.DECIMAL(10, 2), allowNull: false, defaultValue: 5000.00 },
+    payment_method: { 
+      type: DataTypes.ENUM('mercadopago', 'transferencia', 'efectivo'), 
+      allowNull: false, 
+      defaultValue: 'mercadopago' 
+    },
+    payment_status: { 
+      type: DataTypes.ENUM('pending', 'approved', 'rejected', 'refunded'), 
+      allowNull: false, 
+      defaultValue: 'pending' 
+    },
+    mp_order_id: { type: DataTypes.STRING(255), allowNull: true },
+    mp_payment_id: { type: DataTypes.STRING(255), allowNull: true },
+    transfer_receipt_url: { type: DataTypes.STRING(500), allowNull: true },
+    transfer_receipt_verified: { type: DataTypes.BOOLEAN, defaultValue: false },
+    transfer_receipt_verified_at: { type: DataTypes.DATE, allowNull: true },
+    transfer_receipt_verified_by: { type: DataTypes.STRING(255), allowNull: true },
+    referido_dni: { type: DataTypes.STRING(15), allowNull: true },
+    referido_bonus_applied: { type: DataTypes.BOOLEAN, defaultValue: false }
+  }, {
+    timestamps: true,
+    createdAt: 'created_at',
+    updatedAt: 'updated_at',
+    indexes: [
+      { fields: ['dni'] },
+      { fields: ['email'] },
+      { fields: ['numero_aporte'] },
+      { fields: ['referido_dni'] },
+      { fields: ['payment_status'] }
+    ]
+  });
+
+  const AporteReferido = sequelize.define('aportes_referidos', {
+    id: { type: DataTypes.INTEGER, autoIncrement: true, primaryKey: true },
+    aportante_dni: { type: DataTypes.STRING(15), allowNull: false },
+    referido_dni: { type: DataTypes.STRING(15), allowNull: false },
+    aporte_id: { type: DataTypes.INTEGER, allowNull: false },
+    bonus_extra_aportes: { type: DataTypes.INTEGER, allowNull: false, defaultValue: 1 },
+    notificacion_enviada: { type: DataTypes.BOOLEAN, defaultValue: false },
+    notificacion_enviada_at: { type: DataTypes.DATE, allowNull: true }
+  }, {
+    timestamps: true,
+    createdAt: 'created_at',
+    updatedAt: false,
+    indexes: [
+      { fields: ['aportante_dni'] },
+      { fields: ['referido_dni'] },
+      { unique: true, fields: ['aporte_id', 'referido_dni'] }
+    ]
+  });
+
+  const AporteBonus = sequelize.define('aportes_bonus', {
+    id: { type: DataTypes.INTEGER, autoIncrement: true, primaryKey: true },
+    dni: { type: DataTypes.STRING(15), allowNull: false },
+    tipo: { 
+      type: DataTypes.ENUM('referido_otorga', 'referido_recibe'), 
+      allowNull: false 
+    },
+    aporte_id: { type: DataTypes.INTEGER, allowNull: false },
+    referido_id: { type: DataTypes.INTEGER, allowNull: true },
+    cantidad: { type: DataTypes.INTEGER, allowNull: false, defaultValue: 1 },
+    utilizados: { type: DataTypes.INTEGER, allowNull: false, defaultValue: 0 }
+  }, {
+    timestamps: true,
+    createdAt: 'created_at',
+    updatedAt: false,
+    indexes: [
+      { fields: ['dni'] },
+      { fields: ['tipo'] }
+    ]
+  });
+
+  const AporteConfig = sequelize.define('aportes_config', {
+    id: { type: DataTypes.INTEGER, autoIncrement: true, primaryKey: true },
+    clave: { type: DataTypes.STRING(100), allowNull: false, unique: true },
+    valor: { type: DataTypes.TEXT, allowNull: false },
+    descripcion: { type: DataTypes.TEXT, allowNull: true }
+  }, {
+    timestamps: true,
+    createdAt: false,
+    updatedAt: 'updated_at'
+  });
+
+  // Asociaciones Aportes
+  Aporte.hasMany(AporteReferido, { foreignKey: 'aporte_id', as: 'referidos' });
+  AporteReferido.belongsTo(Aporte, { foreignKey: 'aporte_id', as: 'aporte' });
+  
+  Aporte.hasMany(AporteBonus, { foreignKey: 'aporte_id', as: 'bonus' });
+  AporteBonus.belongsTo(Aporte, { foreignKey: 'aporte_id', as: 'aporte' });
+  
+  AporteReferido.hasMany(AporteBonus, { foreignKey: 'referido_id', as: 'bonus_referido' });
+  AporteBonus.belongsTo(AporteReferido, { foreignKey: 'referido_id', as: 'referido' });
+
+  // =====================================================
   // SERVICIOS ASOCIADOS A SHOWS
   // =====================================================
 
@@ -732,6 +839,24 @@ export default function registerModels(sequelize) {
   Show.hasMany(ShowService, { foreignKey: 'show_id', as: 'services' });
   ShowService.belongsTo(Show, { foreignKey: 'show_id', as: 'show' });
 
+  // =====================================================
+  // MUESTRAS FIN DE AÑO 2026
+  // =====================================================
+
+  const Muestras2026Inscripcion = sequelize.define('muestras2026_inscripciones', {
+    id: { type: DataTypes.INTEGER, autoIncrement: true, primaryKey: true },
+    nombre_apellido: { type: DataTypes.STRING(255), allowNull: false },
+    institucion: { type: DataTypes.STRING(255), allowNull: false },
+    localidad: { type: DataTypes.STRING(255), allowNull: false },
+    email: { type: DataTypes.STRING(255), allowNull: false },
+    telefono: { type: DataTypes.STRING(50), allowNull: false },
+    email_enviado: { type: DataTypes.BOOLEAN, allowNull: false, defaultValue: false }
+  }, {
+    timestamps: true,
+    createdAt: 'created_at',
+    updatedAt: 'updated_at'
+  });
+
   return { 
     User, Show, Session, Reservation, Ticket, Discount, Sale, CashRegisterShift, Validation, 
     Bordereaux, ActivityLog, Producer, ShowProducer, NewsletterSubscriber, SystemSettings, SeatBlock,
@@ -741,7 +866,11 @@ export default function registerModels(sequelize) {
     Role, UserRole,
     // Ateneo models
     AteneoConfig, AteneoClase, AteneoClaseHorario, AteneoClaseDocente, AteneoAlumno, AteneoInscripcion, AteneoPago, AteneoBeca, AteneoAsistencia, AteneoEstadoLog,
+    // Aportes solidarios
+    Aporte, AporteReferido, AporteBonus, AporteConfig,
     // Show services
-    ShowService
+    ShowService,
+    // Muestras 2026
+    Muestras2026Inscripcion
   };
 }

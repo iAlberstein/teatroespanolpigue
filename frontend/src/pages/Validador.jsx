@@ -2,6 +2,7 @@ import { useState, useEffect, useRef } from 'react';
 import { Html5Qrcode, Html5QrcodeSupportedFormats } from 'html5-qrcode';
 import { apiAuthFetch } from '../lib/api';
 import { useAuth } from '../contexts/AuthContext';
+import { formatDate, formatTime, formatDateLong, toLocalDate } from '../lib/dateFormatter.js';
 import '../styles/qr-scanner.css';
 
 export default function Validador() {
@@ -356,30 +357,15 @@ export default function Validador() {
     setReportData(null);
   };
 
-  const formatDate = (iso) => {
-    if (!iso) return '';
-    const d = new Date(iso);
-    return d.toLocaleDateString('es-AR', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' });
-  };
+  const fmtDate = (iso) => formatDateLong(iso);
+  const fmtTime = (iso) => formatTime(iso);
+  const fmtShortDate = (iso) => formatDate(iso);
 
-  const formatTime = (iso) => {
-    if (!iso) return '';
-    const d = new Date(iso);
-    return d.toLocaleTimeString('es-AR', { hour: '2-digit', minute: '2-digit', hour12: false });
-  };
-
-  const formatShortDate = (iso) => {
-    if (!iso) return '';
-    const d = new Date(iso);
-    return d.toLocaleDateString('es-AR', { day: '2-digit', month: '2-digit', year: 'numeric' });
-  };
-
-  // Check if a session is today
   const isToday = (iso) => {
     if (!iso) return false;
-    const d = new Date(iso);
-    const now = new Date();
-    return d.getDate() === now.getDate() && d.getMonth() === now.getMonth() && d.getFullYear() === now.getFullYear();
+    const d = toLocalDate(iso);
+    const now = toLocalDate(new Date());
+    return d && now && d.getDate() === now.getDate() && d.getMonth() === now.getMonth() && d.getFullYear() === now.getFullYear();
   };
 
   if (user && !['admin', 'boleteria'].includes(user.role)) {
@@ -486,7 +472,7 @@ export default function Validador() {
                 {scannedData.sale_info.show_name}
               </h2>
               <div style={{ fontSize: 13, color: '#6b7280' }}>
-                {formatDate(scannedData.sale_info.session_date)} - {formatTime(scannedData.sale_info.session_date)}
+                {fmtDate(scannedData.sale_info.session_date)} - {fmtTime(scannedData.sale_info.session_date)}
               </div>
               {(scannedData.qr_type === 'container' || scannedData.qr_type === 'manual_lookup') && scannedData.sale_info.customer_name && (
                 <div style={{ fontSize: 13, color: '#9ca3af', marginTop: 4 }}>
@@ -827,7 +813,7 @@ export default function Validador() {
                                 {sale.show_name}
                               </div>
                               <div style={{ fontSize: 13, color: '#6b7280' }}>
-                                {formatShortDate(sale.session_date)} - {formatTime(sale.session_date)}
+                                {fmtShortDate(sale.session_date)} - {fmtTime(sale.session_date)}
                               </div>
                               <div style={{ fontSize: 13, color: '#374151', marginTop: 4 }}>
                                 {sale.customer_name}
@@ -904,7 +890,7 @@ export default function Validador() {
                 Reporte de ingresos
               </h2>
               <div style={{ fontSize: 13, color: '#6b7280', textAlign: 'center', marginBottom: 20 }}>
-                Funciones de hoy — {new Date().toLocaleDateString('es-AR', { day: '2-digit', month: '2-digit', year: 'numeric' })}
+                Funciones de hoy — {formatDate(new Date())}
               </div>
 
               {reportData.sessions.length === 0 ? (
@@ -932,7 +918,7 @@ export default function Validador() {
                           {s.show_title}
                         </div>
                         <div style={{ fontSize: 13, color: '#6b7280', marginBottom: 16 }}>
-                          {new Date(s.starts_at).toLocaleTimeString('es-AR', { hour: '2-digit', minute: '2-digit', hour12: false })} hs
+                          {formatTime(s.starts_at)} hs
                         </div>
 
                         {/* Progress bar */}

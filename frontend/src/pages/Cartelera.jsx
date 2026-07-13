@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { apiFetch, getAPIUrl } from '../lib/api';
+import { formatDate } from '../lib/dateFormatter.js';
 
 export default function Cartelera(){
   const [shows, setShows] = useState([]);
@@ -28,12 +29,7 @@ export default function Cartelera(){
           {shows.map(s => {
             // Usar fecha de primera sesión o fecha legacy
             const dateSource = s.first_session?.starts_at || s.date;
-            const date = dateSource ? new Date(dateSource) : null;
-            const dateStr = date ? date.toLocaleDateString('es-AR', { 
-              day: 'numeric', 
-              month: 'long', 
-              year: 'numeric' 
-            }) : 'Fecha a confirmar';
+            const dateStr = dateSource ? formatDate(dateSource) : 'Fecha a confirmar';
             
             // URL de imagen - construir URL completa si es ruta relativa
             let imageUrl = '/placeholder-show.jpg';

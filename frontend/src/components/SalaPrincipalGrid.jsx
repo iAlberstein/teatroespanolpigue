@@ -289,7 +289,9 @@ export default function SalaPrincipalGrid({
             // Get price tier info for this palco to determine color
             const section = isPA ? 'palcos_altos' : 'palcos_bajos';
             const tierInfo = getSeatPriceTier(label, priceTiers);
-            const priceColor = tierInfo.section && !isSold && !isAdminBlocked && !isHeldByOther && !isSelectedPalco
+            // Only apply custom price color if there's an actual matching tier with custom color
+            const hasCustomTier = tierInfo.price && tierInfo.color && tierInfo.section;
+            const priceColor = hasCustomTier && !isSold && !isAdminBlocked && !isHeldByOther && !isSelectedPalco
               ? getSeatColor(section, tierInfo.tierIndex, tierInfo.totalTiers, tierInfo.color)
               : null;
             
@@ -356,7 +358,9 @@ export default function SalaPrincipalGrid({
             
             // Get price tier info for this seat to determine color
             const tierInfo = getSeatPriceTier(seatId, priceTiers);
-            const priceColor = tierInfo.section && !isSold && !isAdminBlocked && !isHeldByOther && !isSelected
+            // Only apply custom price color if there's an actual matching tier with custom color
+            const hasCustomTier = tierInfo.price && tierInfo.color && tierInfo.section;
+            const priceColor = hasCustomTier && !isSold && !isAdminBlocked && !isHeldByOther && !isSelected
               ? getSeatColor('platea', tierInfo.tierIndex, tierInfo.totalTiers, tierInfo.color)
               : null;
             

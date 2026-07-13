@@ -2,6 +2,7 @@ import { Router } from 'express';
 import multer from 'multer';
 import path from 'path';
 import { fileURLToPath } from 'url';
+import { Op } from 'sequelize';
 import { sequelize } from '../lib/sequelize.js';
 import { authenticateToken, requireRole } from '../middleware/auth.js';
 
@@ -249,7 +250,7 @@ router.get('/:id', async (req, res) => {
 // Get sessions for a specific show
 router.get('/:id/sessions', async (req, res) => {
   try {
-    const { sessions: Session } = sequelize.models;
+    const { sessions: Session, shows: Show, tickets: Ticket } = sequelize.models;
     const { Op } = await import('sequelize');
     
     // Return sessions from today onwards (including sessions that already started today)
@@ -264,7 +265,31 @@ router.get('/:id/sessions', async (req, res) => {
       },
       order: [['starts_at', 'ASC']]
     });
-    res.json(sessions);
+
+    // Enrich each session with is_sold_out
+    const show = await Show.findByPk(req.params.id);
+    const enriched = await Promise.all(sessions.map(async (session) => {
+      let capacity;
+      if (session.capacity_override) {
+        capacity = session.capacity_override;
+      } else if (show && (show.venue_type === 'el_tablado' || show.venue_type === 'las_gemelas')) {
+        capacity = show.general_capacity || null;
+      } else {
+        capacity = 446;
+      }
+      const isGeneralAdmission = show && (show.venue_type === 'el_tablado' || show.venue_type === 'las_gemelas');
+      const soldCount = await Ticket.count({
+        where: {
+          session_id: session.id,
+          ...(isGeneralAdmission ? { type: 'general' } : {}),
+          status: { [Op.in]: ['sold', 'validated'] }
+        }
+      });
+      const is_sold_out = capacity !== null && soldCount >= capacity;
+      return { ...session.toJSON(), is_sold_out };
+    }));
+
+    res.json(enriched);
   } catch (error) {
     console.error('[SHOWS] Error getting sessions:', error);
     res.status(500).json({ error: 'internal_error' });
@@ -432,6 +457,8 @@ router.put('/:id', authenticateToken, requireRole('admin'), async (req, res) => 
         show.image_principal_web
     };
     
+    const oldCapacity = show.general_capacity;
+    
     await show.update({
       title: title.trim(),
       description: description?.trim() || null,
@@ -445,6 +472,28 @@ router.put('/:id', authenticateToken, requireRole('admin'), async (req, res) => 
       palcos_individual_seats: palcos_individual_seats !== undefined ? palcos_individual_seats : show.palcos_individual_seats,
       ...sanitizedImages
     });
+    
+    // If general_capacity changed, update in-memory pullmanState for all sessions of this show
+    const newCapacity = show.general_capacity;
+    if (newCapacity && newCapacity !== oldCapacity) {
+      const io = req.app.get('io');
+      if (io && io.pullmanState) {
+        const Session = sequelize.models.sessions;
+        const sessions = await Session.findAll({ where: { show_id: show.id } });
+        for (const session of sessions) {
+          const st = io.pullmanState.get(session.id);
+          if (st) {
+            st.capacity = newCapacity;
+            const soldCount = io.pullmanSold?.get(session.id) || 0;
+            const blockedCount = io.blockedGeneral?.get(session.id) || 0;
+            const totalHeld = Array.from(st.heldBySocket.values()).reduce((a, b) => a + b, 0);
+            const available = Math.max(0, newCapacity - totalHeld - soldCount - blockedCount);
+            io.to(`session:${session.id}`).emit('pullman_updated', { available, capacity: newCapacity });
+            console.log(`[SHOWS] Updated pullmanState capacity for session ${session.id}: ${oldCapacity} -> ${newCapacity}, available=${available}`);
+          }
+        }
+      }
+    }
     
     // Actualizar productores si se proporcionaron
     if (producer_ids !== undefined && Array.isArray(producer_ids)) {

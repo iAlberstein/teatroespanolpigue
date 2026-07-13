@@ -5,14 +5,7 @@ import { useAuth } from '../../contexts/AuthContext';
 import { theme } from '../../styles/theme';
 import DateInput from '../../components/DateInput';
 import RendicionPDF from '../../components/RendicionPDF';
-
-// Helper: formato DD/MM/AAAA argentino
-const formatFecha = (fecha) => {
-  if (!fecha) return '-';
-  const d = new Date(typeof fecha === 'string' && fecha.length === 10 ? fecha + 'T12:00:00' : fecha);
-  if (isNaN(d)) return '-';
-  return `${String(d.getDate()).padStart(2, '0')}/${String(d.getMonth() + 1).padStart(2, '0')}/${d.getFullYear()}`;
-};
+import { formatDate, formatDateLong, formatMonthYear } from '../../lib/dateFormatter.js';
 
 // Helper: nombre del alumno (si es menor, muestra nombre del menor + responsable entre paréntesis)
 const getNombreAlumno = (alumno) => {
@@ -280,7 +273,7 @@ function ClasesTab({ token }) {
     if (clase.horarios && clase.horarios.length > 0) {
       return clase.horarios.map(h => {
         const label = clase.taller_corto && h.fecha
-          ? formatFecha(h.fecha)
+          ? formatDate(h.fecha)
           : h.dia_semana;
         return `${label} ${(h.hora_inicio || '').substring(0, 5)}-${(h.hora_fin || '').substring(0, 5)}`;
       }).join(' | ');
@@ -618,7 +611,7 @@ function ClasesTab({ token }) {
               <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4, marginBottom: 6 }}>
                 {c.horarios && c.horarios.length > 0 ? c.horarios.map((h, i) => (
                   <span key={i} style={{ padding: '1px 6px', background: '#ede9fe', color: '#7c3aed', borderRadius: 8, fontSize: 11, fontWeight: 500 }}>
-                    {c.taller_corto && h.fecha ? formatFecha(h.fecha) : h.dia_semana} {(h.hora_inicio||'').substring(0,5)}-{(h.hora_fin||'').substring(0,5)}
+                    {c.taller_corto && h.fecha ? formatDate(h.fecha) : h.dia_semana} {(h.hora_inicio||'').substring(0,5)}-{(h.hora_fin||'').substring(0,5)}
                   </span>
                 )) : <span style={{ color: '#9ca3af', fontSize: 12 }}>{c.horario || '-'}</span>}
               </div>
@@ -671,7 +664,7 @@ function ClasesTab({ token }) {
                             padding: '1px 6px', background: '#ede9fe', color: '#7c3aed',
                             borderRadius: 8, fontSize: 11, fontWeight: 500, display: 'inline-block', width: 'fit-content'
                           }}>
-                            {c.taller_corto && h.fecha ? formatFecha(h.fecha) : h.dia_semana} {(h.hora_inicio||'').substring(0,5)}-{(h.hora_fin||'').substring(0,5)}
+                            {c.taller_corto && h.fecha ? formatDate(h.fecha) : h.dia_semana} {(h.hora_inicio||'').substring(0,5)}-{(h.hora_fin||'').substring(0,5)}
                           </span>
                         ))}
                       </div>
@@ -906,7 +899,7 @@ function AlumnosTab({ token }) {
     for (let i = -2; i < 12; i++) {
       const d = new Date(now.getFullYear(), now.getMonth() + i, 1);
       const val = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
-      const label = d.toLocaleDateString('es-AR', { month: 'long', year: 'numeric' });
+      const label = formatMonthYear(d);
       meses.push({ val, label });
     }
     return meses;
@@ -1013,7 +1006,7 @@ function AlumnosTab({ token }) {
           <span style={{ fontSize: 12, fontWeight: 600 }}>{formatConcepto(p)}</span>
           <span style={getEstadoBadge(p.estado === 'pagado' ? 'activo' : p.estado === 'vencido' ? 'deuda' : 'pendiente')}>{p.estado}</span>
           <span style={{ fontSize: 11, color: '#6b7280' }}>${Number(p.monto_final || 0).toLocaleString('es-AR')}</span>
-          <span style={{ fontSize: 11, color: '#9ca3af' }}>Vto: {formatFecha(p.fecha_vencimiento)}</span>
+          <span style={{ fontSize: 11, color: '#9ca3af' }}>Vto: {formatDate(p.fecha_vencimiento)}</span>
         </div>
         {p.estado !== 'pagado' && (
           <div style={{ display: 'flex', gap: 4 }}>
@@ -1065,11 +1058,11 @@ function AlumnosTab({ token }) {
           <div style={{ display: 'grid', gridTemplateColumns: isMobile ? '1fr 1fr' : '1fr 1fr 1fr', gap: isMobile ? 10 : 16, marginBottom: 24 }}>
             <div><span style={{ fontSize: 11, color: '#9ca3af' }}>DNI</span><div style={{ fontSize: 14 }}>{detailAlumno.dni || '-'}</div></div>
             <div><span style={{ fontSize: 11, color: '#9ca3af' }}>Telefono</span><div style={{ fontSize: 14 }}>{detailAlumno.telefono || '-'}</div></div>
-            <div><span style={{ fontSize: 11, color: '#9ca3af' }}>Fecha nacimiento</span><div style={{ fontSize: 14 }}>{formatFecha(detailAlumno.fecha_nacimiento)}</div></div>
+            <div><span style={{ fontSize: 11, color: '#9ca3af' }}>Fecha nacimiento</span><div style={{ fontSize: 14 }}>{formatDate(detailAlumno.fecha_nacimiento)}</div></div>
             <div style={{ gridColumn: '1 / -1' }}><span style={{ fontSize: 11, color: '#9ca3af' }}>Direccion</span><div style={{ fontSize: 14 }}>{detailAlumno.direccion || '-'}</div></div>
             <div><span style={{ fontSize: 11, color: '#9ca3af' }}>Contacto emergencia</span><div style={{ fontSize: 14 }}>{detailAlumno.contacto_emergencia || '-'}</div></div>
             <div><span style={{ fontSize: 11, color: '#9ca3af' }}>Tel. emergencia</span><div style={{ fontSize: 14 }}>{detailAlumno.telefono_emergencia || '-'}</div></div>
-            <div><span style={{ fontSize: 11, color: '#9ca3af' }}>Ingreso</span><div style={{ fontSize: 14 }}>{formatFecha(detailAlumno.fecha_ingreso)}</div></div>
+            <div><span style={{ fontSize: 11, color: '#9ca3af' }}>Ingreso</span><div style={{ fontSize: 14 }}>{formatDate(detailAlumno.fecha_ingreso)}</div></div>
           </div>
 
           {/* Inscripciones + Cuotas */}
@@ -1182,7 +1175,7 @@ function AlumnosTab({ token }) {
               <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
                 {detailAlumno.historial_estados.map(h => (
                   <div key={h.id} style={{ fontSize: 12, color: '#6b7280', display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
-                    <span style={{ color: '#9ca3af' }}>{formatFecha(h.created_at)}</span>
+                    <span style={{ color: '#9ca3af' }}>{formatDate(h.created_at)}</span>
                     <span style={getEstadoBadge(h.estado_anterior)}>{h.estado_anterior}</span>
                     <span>→</span>
                     <span style={getEstadoBadge(h.estado_nuevo)}>{h.estado_nuevo}</span>
@@ -1303,7 +1296,7 @@ function AlumnosTab({ token }) {
               {error && <div style={errorBox}>{error}</div>}
               <div style={{ marginBottom: 12, padding: 10, background: '#f9fafb', borderRadius: 6, fontSize: 13 }}>
                 <strong>{formatConcepto(extenderPagoModal)}</strong>
-                <div style={{ fontSize: 12, color: '#9ca3af', marginTop: 4 }}>Vencimiento actual: {formatFecha(extenderPagoModal.fecha_vencimiento)}</div>
+                <div style={{ fontSize: 12, color: '#9ca3af', marginTop: 4 }}>Vencimiento actual: {formatDate(extenderPagoModal.fecha_vencimiento)}</div>
               </div>
               <div style={{ marginBottom: 12 }}>
                 <label style={labelStyle}>Nueva fecha de vencimiento *</label>
@@ -1804,7 +1797,7 @@ function InscripcionesTab({ token }) {
                 <span style={getEstadoBadge(i.estado || 'pendiente')}>{i.estado || 'pendiente'}</span>
               </div>
               <div style={{ fontSize: 12, color: '#6b7280', marginBottom: 2 }}>{i.clase?.nombre || `#${i.clase_id}`}</div>
-              <div style={{ fontSize: 11, color: '#9ca3af', marginBottom: 8 }}>{formatFecha(i.fecha_inscripcion || i.created_at)}</div>
+              <div style={{ fontSize: 11, color: '#9ca3af', marginBottom: 8 }}>{formatDate(i.fecha_inscripcion || i.created_at)}</div>
               <div style={{ display: 'flex', gap: 6 }}>
                 <button onClick={() => { setSeguimientoModal(i); setSeguimientoText(i.seguimiento || ''); }} style={{ padding: '4px 10px', background: i.seguimiento ? '#ede9fe' : '#f3f4f6', color: i.seguimiento ? '#7c3aed' : '#9ca3af', border: 'none', borderRadius: 4, cursor: 'pointer', fontSize: 11, fontWeight: 600, flex: 1 }}>
                   {i.seguimiento ? 'Seguimiento' : '+ Seguimiento'}
@@ -1842,7 +1835,7 @@ function InscripcionesTab({ token }) {
                       {i.estado || 'pendiente'}
                     </span>
                   </td>
-                  <td style={tdCell}>{formatFecha(i.fecha_inscripcion || i.created_at)}</td>
+                  <td style={tdCell}>{formatDate(i.fecha_inscripcion || i.created_at)}</td>
                   <td style={tdCell}>
                     <button onClick={() => { setSeguimientoModal(i); setSeguimientoText(i.seguimiento || ''); }} style={{ padding: '3px 10px', background: i.seguimiento ? '#ede9fe' : '#f3f4f6', color: i.seguimiento ? '#7c3aed' : '#9ca3af', border: 'none', borderRadius: 4, cursor: 'pointer', fontSize: 11, fontWeight: 600 }}>
                       {i.seguimiento ? 'Ver/Editar' : 'Agregar'}
@@ -2045,7 +2038,7 @@ function PagosTab({ token }) {
     for (let i = 0; i < 12; i++) {
       const d = new Date(now.getFullYear(), now.getMonth() + i, 1);
       const val = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
-      const label = d.toLocaleDateString('es-AR', { month: 'long', year: 'numeric' });
+      const label = formatMonthYear(d);
       meses.push({ val, label });
     }
     return meses;
@@ -2312,7 +2305,7 @@ function PagosTab({ token }) {
                   ) : `$${Number(p.monto_final || 0).toLocaleString('es-AR')}`}
                 </span>
                 <div style={{ textAlign: 'right' }}>
-                  <div style={{ fontSize: 11, color: '#6b7280' }}>Vence: {formatFecha(p.fecha_vencimiento)}</div>
+                  <div style={{ fontSize: 11, color: '#6b7280' }}>Vence: {formatDate(p.fecha_vencimiento)}</div>
                   {esCuotaVencida(p) && <div style={{ fontSize: 10, color: '#dc2626', fontWeight: 600 }}>+15% recargo</div>}
                   {(p.estado === 'pendiente' || p.estado === 'vencido') && extendingPagoId !== p.id && (
                     <button onClick={() => { setExtendingPagoId(p.id); setExtendFecha(p.fecha_vencimiento ? p.fecha_vencimiento.substring(0, 10) : ''); }} style={{ background: 'none', border: 'none', color: '#7c3aed', fontSize: 11, cursor: 'pointer', padding: 0, textDecoration: 'underline', fontWeight: 500 }}>Extender</button>
@@ -2337,7 +2330,7 @@ function PagosTab({ token }) {
                 </div>
               )}
               {p.estado === 'pagado' && p.fecha_pago && (
-                <div style={{ fontSize: 11, color: '#6b7280', textAlign: 'center' }}>Pagado {formatFecha(p.fecha_pago)}{p.origen && ` (${p.origen})`}</div>
+                <div style={{ fontSize: 11, color: '#6b7280', textAlign: 'center' }}>Pagado {formatDate(p.fecha_pago)}{p.origen && ` (${p.origen})`}</div>
               )}
             </div>
           ))}
@@ -2381,7 +2374,7 @@ function PagosTab({ token }) {
                     <span style={getEstadoBadge(p.estado || 'pendiente')}>{p.estado || 'pendiente'}</span>
                   </td>
                   <td style={tdCell}>
-                    {formatFecha(p.fecha_vencimiento)}
+                    {formatDate(p.fecha_vencimiento)}
                     {esCuotaVencida(p) && <div style={{ fontSize: 10, color: '#dc2626', fontWeight: 600 }}>Pago vencido, 15% de recargo</div>}
                     {(p.estado === 'pendiente' || p.estado === 'vencido') && (
                       extendingPagoId === p.id ? (
@@ -2412,7 +2405,7 @@ function PagosTab({ token }) {
                     )}
                     {p.estado === 'pagado' && p.fecha_pago && (
                       <span style={{ fontSize: 10, color: '#6b7280' }}>
-                        {formatFecha(p.fecha_pago)}
+                        {formatDate(p.fecha_pago)}
                         {p.origen && ` (${p.origen})`}
                       </span>
                     )}
@@ -2580,7 +2573,7 @@ function BecasTab({ token }) {
               <div style={{ fontSize: 12, color: '#6b7280', marginBottom: 2 }}>{b.clase?.nombre || 'Todas las clases'}</div>
               <div style={{ fontSize: 12, marginBottom: 2 }}>{tipoLabel(b.tipo)}: <strong>{valorLabel(b)}</strong></div>
               <div style={{ fontSize: 11, color: '#9ca3af', marginBottom: 6 }}>
-                {formatFecha(b.fecha_inicio)}{b.fecha_fin ? ` → ${formatFecha(b.fecha_fin)}` : ' → ∞'}
+                {formatDate(b.fecha_inicio)}{b.fecha_fin ? ` → ${formatDate(b.fecha_fin)}` : ' → ∞'}
                 {b.motivo && ` · ${b.motivo}`}
               </div>
               <button onClick={() => handleToggle(b)} style={{...btnSmall, background: b.activa ? '#dc2626' : '#059669', width: '100%', padding: '6px 12px'}}>
@@ -2612,8 +2605,8 @@ function BecasTab({ token }) {
                   <td style={tdCell}>{valorLabel(b)}</td>
                   <td style={tdCell}>
                     <div style={{ fontSize: 11 }}>
-                      {formatFecha(b.fecha_inicio)}
-                      {b.fecha_fin ? ` → ${formatFecha(b.fecha_fin)}` : ' → ∞'}
+                      {formatDate(b.fecha_inicio)}
+                      {b.fecha_fin ? ` → ${formatDate(b.fecha_fin)}` : ' → ∞'}
                     </div>
                     {b.motivo && <div style={{ fontSize: 10, color: '#9ca3af' }}>{b.motivo}</div>}
                   </td>
@@ -2870,7 +2863,7 @@ function AsistenciaTab({ token }) {
               return (
                 <div key={i} style={{ background: '#fff', border: '1px solid #e5e7eb', borderRadius: 8, padding: 12, display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
                   <div>
-                    <div style={{ fontSize: 13, fontWeight: 600 }}>{formatFecha(h.fecha)}</div>
+                    <div style={{ fontSize: 13, fontWeight: 600 }}>{formatDate(h.fecha)}</div>
                     <div style={{ fontSize: 12, color: '#6b7280' }}>{presentes}/{total} presentes · <span style={{ fontWeight: 600, color: pct >= 80 ? '#059669' : pct >= 50 ? '#d97706' : '#dc2626' }}>{pct}%</span></div>
                   </div>
                   <button onClick={() => loadDetalle(h.fecha)} style={{...btnSmall, background: '#7c3aed'}}>Detalle</button>
@@ -2897,7 +2890,7 @@ function AsistenciaTab({ token }) {
                   const pct = total > 0 ? Math.round((presentes / total) * 100) : 0;
                   return (
                     <tr key={i} style={trStyle}>
-                      <td style={tdCell}>{formatFecha(h.fecha)}</td>
+                      <td style={tdCell}>{formatDate(h.fecha)}</td>
                       <td style={tdCell}>{total}</td>
                       <td style={tdCell}>{presentes}</td>
                       <td style={tdCell}>
@@ -2919,7 +2912,7 @@ function AsistenciaTab({ token }) {
       {detalleModal && (
         <div style={modalOverlay}>
           <div style={{...modalContent, maxWidth: 600, maxHeight: '90vh', overflowY: 'auto'}}>
-            <h3 style={{ marginTop: 0, fontSize: 16 }}>Asistencia — {formatFecha(detalleModal)}</h3>
+            <h3 style={{ marginTop: 0, fontSize: 16 }}>Asistencia — {formatDate(detalleModal)}</h3>
             <p style={{ fontSize: 13, color: '#6b7280', margin: '0 0 12px' }}>{clases.find(c => String(c.id) === String(claseId))?.nombre || ''}</p>
             {loadingDetalle ? <div style={{ textAlign: 'center', padding: 16, color: '#9ca3af' }}>Cargando...</div> : (
               detalleAlumnos.length === 0 ? <div style={{ textAlign: 'center', padding: 16, color: '#9ca3af', fontSize: 13 }}>Sin registros</div> : (
@@ -3034,18 +3027,15 @@ function FeriadosTab({ token }) {
         <div style={emptyState}>No hay feriados cargados para este año. Los dias de clase se calculan automaticamente segun los horarios definidos en cada clase.</div>
       ) : isMobile ? (
         <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-          {feriados.map(f => {
-            const fecha = new Date(f.fecha + 'T12:00:00');
-            return (
-              <div key={f.id} style={{ background: '#fff', border: '1px solid #e5e7eb', borderRadius: 8, padding: 12, display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                <div>
-                  <div style={{ fontSize: 13, fontWeight: 600 }}>{formatFecha(f.fecha)} · {fecha.toLocaleDateString('es-AR', { weekday: 'long' })}</div>
-                  <div style={{ fontSize: 12, color: '#6b7280' }}>{f.descripcion}</div>
-                </div>
-                <button onClick={() => handleEliminar(f.id)} style={{...btnSmall, background: '#dc2626', flexShrink: 0}}>Eliminar</button>
+          {feriados.map(f => (
+            <div key={f.id} style={{ background: '#fff', border: '1px solid #e5e7eb', borderRadius: 8, padding: 12, display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+              <div>
+                <div style={{ fontSize: 13, fontWeight: 600 }}>{formatDateLong(f.fecha)}</div>
+                <div style={{ fontSize: 12, color: '#6b7280' }}>{f.descripcion}</div>
               </div>
-            );
-          })}
+              <button onClick={() => handleEliminar(f.id)} style={{...btnSmall, background: '#dc2626', flexShrink: 0}}>Eliminar</button>
+            </div>
+          ))}
         </div>
       ) : (
         <div style={tableContainer}>
@@ -3053,25 +3043,20 @@ function FeriadosTab({ token }) {
             <thead>
               <tr style={thRow}>
                 <th style={thCell}>Fecha</th>
-                <th style={thCell}>Dia</th>
                 <th style={thCell}>Descripcion</th>
                 <th style={{...thCell, textAlign: 'center'}}>Acciones</th>
               </tr>
             </thead>
             <tbody>
-              {feriados.map(f => {
-                const fecha = new Date(f.fecha + 'T12:00:00');
-                return (
-                  <tr key={f.id} style={trStyle}>
-                    <td style={tdCell}>{formatFecha(f.fecha)}</td>
-                    <td style={tdCell}>{fecha.toLocaleDateString('es-AR', { weekday: 'long' })}</td>
-                    <td style={tdCell}>{f.descripcion}</td>
-                    <td style={{...tdCell, textAlign: 'center'}}>
-                      <button onClick={() => handleEliminar(f.id)} style={{...btnSmall, background: '#dc2626'}}>Eliminar</button>
-                    </td>
-                  </tr>
-                );
-              })}
+              {feriados.map(f => (
+                <tr key={f.id} style={trStyle}>
+                  <td style={tdCell}>{formatDateLong(f.fecha)}</td>
+                  <td style={tdCell}>{f.descripcion}</td>
+                  <td style={{...tdCell, textAlign: 'center'}}>
+                    <button onClick={() => handleEliminar(f.id)} style={{...btnSmall, background: '#dc2626'}}>Eliminar</button>
+                  </td>
+                </tr>
+              ))}
             </tbody>
           </table>
         </div>
@@ -3355,7 +3340,7 @@ function CumpleanosTab({ token, onNavigateToAlumnos }) {
             }}>
               <div style={{ fontSize: 14, color: '#be185d' }}>Cumpleaños</div>
               <div style={{ fontSize: 20, fontWeight: 700, color: '#be185d' }}>
-                {selectedAlumno.fecha_nacimiento ? formatFecha(selectedAlumno.fecha_nacimiento) : '-'}
+                {selectedAlumno.fecha_nacimiento ? formatDate(selectedAlumno.fecha_nacimiento) : '-'}
               </div>
               {(() => {
                 const hoy = new Date();
@@ -3750,7 +3735,7 @@ function ReportesTab({ token }) {
                     <div key={i} style={{ background: '#fff', border: '1px solid #e5e7eb', borderRadius: 8, padding: 12 }}>
                       <div style={{ fontSize: 12, color: '#7c3aed', fontWeight: 600, marginBottom: 4 }}>{item.clase}</div>
                       <div style={{ fontSize: 14, fontWeight: 600, marginBottom: 2 }}>{item.nombre}</div>
-                      <div style={{ fontSize: 12, color: '#6b7280' }}>Nac.: {formatFecha(item.fecha_nacimiento)} · DNI: {item.dni}</div>
+                      <div style={{ fontSize: 12, color: '#6b7280' }}>Nac.: {formatDate(item.fecha_nacimiento)} · DNI: {item.dni}</div>
                     </div>
                   ))}
                 </div>
@@ -3770,7 +3755,7 @@ function ReportesTab({ token }) {
                         <tr key={i} style={trStyle}>
                           <td style={{ ...tdCell, color: '#7c3aed', fontWeight: 500 }}>{item.clase}</td>
                           <td style={tdCell}>{item.nombre}</td>
-                          <td style={tdCell}>{formatFecha(item.fecha_nacimiento)}</td>
+                          <td style={tdCell}>{formatDate(item.fecha_nacimiento)}</td>
                           <td style={{ ...tdCell, fontFamily: 'monospace' }}>{item.dni}</td>
                         </tr>
                       ))}

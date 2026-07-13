@@ -3,6 +3,7 @@ import dayjs from 'dayjs';
 import { sequelize } from '../lib/sequelize.js';
 import { Op } from 'sequelize';
 import { optionalAuth } from '../middleware/auth.js';
+import { getSeatPrice } from '../lib/seatPricing.js';
 
 const router = Router();
 
@@ -67,19 +68,37 @@ async function enrichItemsWithPrices(items, session_id) {
       console.log('[RESERVATION] No pricing found!');
     }
     
-    const mapSectionToPrice = (it) => {
+    // Enrich items with prices considering seat pricing rules
+    const enrichedItems = [];
+    for (const it of items) {
       const sec = (it.section || '').toLowerCase();
-      if (it.type === 'butaca') return { ...it, price: Number(pricing.platea_general || 0) };
-      if (it.type === 'palco') {
+      
+      if (it.type === 'butaca' && it.seat_code) {
+        // Use getSeatPrice to check for seat pricing rules
+        const seatPriceResult = await getSeatPrice(session_id, sess.show_id, it.seat_code, pricing);
+        const finalPrice = seatPriceResult?.price ?? Number(pricing.platea_general || 0);
+        console.log(`[RESERVATION] Butaca ${it.seat_code}: price=${finalPrice}, source=${seatPriceResult?.source || 'base'}`);
+        enrichedItems.push({ ...it, price: finalPrice });
+      } else if (it.type === 'palco' && it.seat_code) {
+        // Use getSeatPrice to check for palco pricing rules
+        const seatPriceResult = await getSeatPrice(session_id, sess.show_id, it.seat_code, pricing);
         const isBajo = sec.includes('bajo');
-        const price = isBajo ? Number(pricing.palcos_bajos || 0) : Number(pricing.palcos_altos || 0);
-        return { ...it, price };
+        const basePrice = isBajo ? Number(pricing.palcos_bajos || 0) : Number(pricing.palcos_altos || 0);
+        const finalPrice = seatPriceResult?.price ?? basePrice;
+        console.log(`[RESERVATION] Palco ${it.seat_code}: section=${sec}, isBajo=${isBajo}`);
+        console.log(`[RESERVATION] Palco ${it.seat_code}: basePrice from show=${basePrice}, rulePrice=${seatPriceResult?.price}, finalPrice=${finalPrice}`);
+        console.log(`[RESERVATION] Palco ${it.seat_code}: source=${seatPriceResult?.source || 'base'}, ruleLabel=${seatPriceResult?.label || 'none'}`);
+        enrichedItems.push({ ...it, price: finalPrice });
+      } else if (it.type === 'pullman') {
+        enrichedItems.push({ ...it, unit_price: Number(pricing.pullman || 0) });
+      } else if (it.type === 'general') {
+        enrichedItems.push({ ...it, unit_price: Number(pricing.general || 0) });
+      } else {
+        enrichedItems.push(it);
       }
-      if (it.type === 'pullman') return { ...it, unit_price: Number(pricing.pullman || 0) };
-      if (it.type === 'general') return { ...it, unit_price: Number(pricing.general || 0) };
-      return it;
-    };
-    return (Array.isArray(items) ? items : []).map(mapSectionToPrice);
+    }
+    
+    return enrichedItems;
   } catch (err) {
     console.error('[RESERVATION] Error enriching items with prices:', err);
     return items;
@@ -178,7 +197,36 @@ router.post('/', optionalAuth, async (req, res) => {
   try {
     const io = req.app.get('io');
     io.to(`session:${session_id}`).emit('reservation_created', { reservation_id: reservation.id, items: itemsWithPrices });
-  } catch {}
+    // Re-hold reservation items so they survive any socket reconnect/orphan cleanup while the reservation is active
+    const caller = req.header('x-socket-id') || null;
+    if (caller) {
+      const callerSocket = io.sockets?.sockets?.get(caller);
+      const guestId = callerSocket?.data?.guestId || null;
+      const userIdForHold = callerSocket?.data?.userId || uid || null;
+      const seatHolds = io.seatHolds || new Map();
+      const palcoHolds = io.palcoHolds || new Map();
+      if (!seatHolds.has(session_id)) seatHolds.set(session_id, new Map());
+      if (!palcoHolds.has(session_id)) palcoHolds.set(session_id, new Map());
+      const seatMap = seatHolds.get(session_id);
+      const palcoMap = palcoHolds.get(session_id);
+      let seatsHeld = 0, palcosHeld = 0;
+      for (const it of itemsWithPrices) {
+        if (it.type === 'butaca' && it.seat_code) {
+          seatMap.set(it.seat_code, { socketId: caller, guestId, userId: userIdForHold });
+          io.to(`session:${session_id}`).emit('seat_held', { seatId: it.seat_code, by: caller, guestId });
+          seatsHeld++;
+        }
+        if (it.type === 'palco' && it.seat_code) {
+          palcoMap.set(it.seat_code, { socketId: caller, guestId, userId: userIdForHold });
+          io.to(`session:${session_id}`).emit('palco_held', { palco: it.seat_code, by: caller, guestId });
+          palcosHeld++;
+        }
+      }
+      console.log(`[RESERVATION POST] Held ${seatsHeld} seats and ${palcosHeld} palcos for socket ${caller} (reservation ${reservation.id})`);
+    }
+  } catch (err) {
+    console.error('[RESERVATION POST] Error emitting/holding reservation:', err);
+  }
   res.status(201).json(reservation);
 });
 
@@ -257,6 +305,16 @@ router.put('/:id', async (req, res) => {
   try {
     const io = req.app.get('io');
     const caller = req.header('x-socket-id') || null;
+    const callerSocket = io.sockets?.sockets?.get(caller);
+    const myGuestId = callerSocket?.data?.guestId || null;
+    const myUserId = callerSocket?.data?.userId || req.user?.userId || reservation.user_id || null;
+    const isMyHold = (holder) => {
+      if (!holder) return false;
+      const holderSocketId = typeof holder === 'string' ? holder : holder?.socketId;
+      const holderGuestId = typeof holder === 'object' ? holder?.guestId : null;
+      const holderUserId = typeof holder === 'object' ? holder?.userId : null;
+      return holderSocketId === caller || (myGuestId && holderGuestId === myGuestId) || (myUserId && holderUserId === myUserId);
+    };
     const seatHolds = io.seatHolds || new Map();
     const palcoHolds = io.palcoHolds || new Map();
     const seatMap = seatHolds.get(reservation.session_id) || new Map();
@@ -265,13 +323,11 @@ router.put('/:id', async (req, res) => {
     for (const it of items) {
       if (it.type === 'butaca' && it.seat_code) {
         const holder = seatMap.get(it.seat_code);
-        const holderSocketId = typeof holder === 'string' ? holder : holder?.socketId;
-        if (holder && holderSocketId !== caller) conflicts.push({ type:'butaca', seat_code: it.seat_code });
+        if (holder && !isMyHold(holder)) conflicts.push({ type:'butaca', seat_code: it.seat_code });
       }
       if (it.type === 'palco' && it.seat_code) {
         const holder = palcoMap.get(it.seat_code);
-        const holderSocketId = typeof holder === 'string' ? holder : holder?.socketId;
-        if (holder && holderSocketId !== caller) conflicts.push({ type:'palco', seat_code: it.seat_code });
+        if (holder && !isMyHold(holder)) conflicts.push({ type:'palco', seat_code: it.seat_code });
       }
     }
     if (conflicts.length) return res.status(409).json({ error: 'items_conflict', conflicts });
@@ -321,8 +377,36 @@ router.put('/:id', async (req, res) => {
   
   try {
     const io = req.app.get('io');
+    const caller = req.header('x-socket-id') || null;
+    if (caller) {
+      const callerSocket = io.sockets?.sockets?.get(caller);
+      const guestId = callerSocket?.data?.guestId || null;
+      const userIdForHold = callerSocket?.data?.userId || req.user?.userId || reservation.user_id || null;
+      const seatHolds = io.seatHolds || new Map();
+      const palcoHolds = io.palcoHolds || new Map();
+      if (!seatHolds.has(reservation.session_id)) seatHolds.set(reservation.session_id, new Map());
+      if (!palcoHolds.has(reservation.session_id)) palcoHolds.set(reservation.session_id, new Map());
+      const seatMap = seatHolds.get(reservation.session_id);
+      const palcoMap = palcoHolds.get(reservation.session_id);
+      let seatsHeld = 0, palcosHeld = 0;
+      for (const it of itemsWithPrices2) {
+        if (it.type === 'butaca' && it.seat_code) {
+          seatMap.set(it.seat_code, { socketId: caller, guestId, userId: userIdForHold });
+          io.to(`session:${reservation.session_id}`).emit('seat_held', { seatId: it.seat_code, by: caller, guestId });
+          seatsHeld++;
+        }
+        if (it.type === 'palco' && it.seat_code) {
+          palcoMap.set(it.seat_code, { socketId: caller, guestId, userId: userIdForHold });
+          io.to(`session:${reservation.session_id}`).emit('palco_held', { palco: it.seat_code, by: caller, guestId });
+          palcosHeld++;
+        }
+      }
+      console.log(`[RESERVATION PUT] Held ${seatsHeld} seats and ${palcosHeld} palcos for socket ${caller} (reservation ${reservation.id})`);
+    }
     io.to(`session:${reservation.session_id}`).emit('reservation_updated', { reservation_id: reservation.id, items: itemsWithPrices2 });
-  } catch {}
+  } catch (err) {
+    console.error('[RESERVATION PUT] Error holding/emitting reservation:', err);
+  }
   res.json(updated);
 });
 

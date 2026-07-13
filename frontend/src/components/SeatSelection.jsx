@@ -3,7 +3,6 @@ import { useNavigate } from 'react-router-dom';
 import { io } from 'socket.io-client';
 import { apiFetch, API_URL } from '../lib/api';
 import SalaPrincipalGrid from './SalaPrincipalGrid';
-import PriceTiersDisplay from './PriceTiersDisplay';
 import matrix from './SalaPrincipalMatrix.js';
 import { TransformWrapper, TransformComponent } from 'react-zoom-pan-pinch';
 
@@ -19,6 +18,10 @@ import { TransformWrapper, TransformComponent } from 'react-zoom-pan-pinch';
  * - onSelectionChange: callback when selection changes
  * - sidebarContent: JSX element for sidebar
  */
+// Palcos with partial stage visibility (show alert when selected)
+const PARTIAL_VISIBILITY_PB = new Set([15, 16, 17, 18, 19, 20]);
+const PARTIAL_VISIBILITY_PA = new Set([13, 14, 15, 16, 17, 18]);
+
 // Generate or retrieve a guest identifier for tracking across refreshes
 const getGuestId = () => {
   let guestId = sessionStorage.getItem('guestSocketId');
@@ -46,6 +49,9 @@ export default function SeatSelection({
   
   // Socket connection state
   const [socketConnected, setSocketConnected] = useState(false);
+
+  // Partial visibility alert modal
+  const [partialVisibilityModal, setPartialVisibilityModal] = useState(null); // label pendiente de confirmar
 
   // Seat selection state
   const [selectedSeatIds, setSelectedSeatIds] = useState(new Set());
@@ -355,10 +361,11 @@ export default function SeatSelection({
         clearSelection,
         socketRef,
         pricing,
-        socketConnected
+        socketConnected,
+        priceTiers
       });
     }
-  }, [selectedSeatIds, selectedPalcosLabels, pullmanSelected, pricing, socketConnected]);
+  }, [selectedSeatIds, selectedPalcosLabels, pullmanSelected, pricing, socketConnected, priceTiers]);
 
   const handleToggleSeat = ({ r, c, val, row }) => {
     const seatId = `${row || ''}${val}`;
@@ -401,6 +408,46 @@ export default function SeatSelection({
     });
   };
 
+  const isPartialVisibilityPalco = (label) => {
+    const normalized = typeof label === 'string' ? label.replace(/^(PA|PB)\s+(\d+)$/i, '$1$2') : label;
+    let num = null;
+    let isPB = false;
+    let isPA = false;
+    if (/^PB(\d+)$/i.test(normalized)) { num = parseInt(normalized.substring(2)); isPB = true; }
+    else if (/^PA(\d+)$/i.test(normalized)) { num = parseInt(normalized.substring(2)); isPA = true; }
+    if (num === null) return false;
+
+    // Only show alert if the palco number is in the partial-visibility range
+    const inRange = isPB ? PARTIAL_VISIBILITY_PB.has(num) : PARTIAL_VISIBILITY_PA.has(num);
+    if (!inRange) return false;
+
+    // AND only if this session has a pricing rule that covers this palco
+    const section = isPB ? 'palcos_bajos' : 'palcos_altos';
+    return priceTiers.some(tier =>
+      tier.section === section &&
+      tier.palcos != null &&
+      num >= tier.palcos.from &&
+      num <= tier.palcos.to
+    );
+  };
+
+  const doTogglePalco = (label) => {
+    if (!socketRef.current || !sessionId) return;
+    if (!socketConnected) {
+      console.warn('[SeatSelection] Socket not connected, selection may not sync');
+    }
+    socketRef.current.emit('palco_toggle', { sessionId, palco: label });
+    setSelectedPalcosLabels(prev => {
+      const updated = new Set(prev);
+      if (updated.has(label)) {
+        updated.delete(label);
+      } else {
+        updated.add(label);
+      }
+      return updated;
+    });
+  };
+
   const handleTogglePalco = ({ label }) => {
     if (soldPalcosLabels.has(label)) return;
     // In blocking mode, allow selecting blocked palcos (for unblocking)
@@ -419,26 +466,13 @@ export default function SeatSelection({
       }
     }
 
-    // Warn if socket not connected
-    if (!socketConnected) {
-      console.warn('[SeatSelection] Socket not connected, selection may not sync');
+    // Show partial visibility warning only when selecting (not deselecting)
+    if (isAdding && isPartialVisibilityPalco(label)) {
+      setPartialVisibilityModal(label);
+      return;
     }
 
-    // Emit socket event for real-time sync
-    socketRef.current.emit('palco_toggle', {
-      sessionId,
-      palco: label
-    });
-
-    setSelectedPalcosLabels(prev => {
-      const updated = new Set(prev);
-      if (updated.has(label)) {
-        updated.delete(label);
-      } else {
-        updated.add(label);
-      }
-      return updated;
-    });
+    doTogglePalco(label);
   };
 
   const handlePullmanChange = (delta) => {
@@ -636,6 +670,58 @@ export default function SeatSelection({
           </div>
         )}
       </div>
+
+      {/* Partial visibility modal */}
+      {partialVisibilityModal && (
+        <div
+          style={{
+            position: 'fixed',
+            inset: 0,
+            background: 'rgba(0,0,0,0.55)',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            zIndex: 2000,
+            padding: '0 16px'
+          }}
+        >
+          <div
+            style={{
+              background: '#fff',
+              borderRadius: 12,
+              padding: '32px 28px',
+              maxWidth: 420,
+              width: '100%',
+              boxShadow: '0 8px 32px rgba(0,0,0,0.18)',
+              textAlign: 'center'
+            }}
+          >
+            <div style={{ fontSize: 48, marginBottom: 16 }}>⚠️</div>
+            <p style={{ fontSize: 15, color: '#374151', lineHeight: 1.6, margin: '0 0 28px 0' }}>
+              Esta ubicación tiene visibilidad parcial del escenario. La misma cuenta con un 20% de descuento ya aplicado.
+            </p>
+            <button
+              onClick={() => {
+                const label = partialVisibilityModal;
+                setPartialVisibilityModal(null);
+                doTogglePalco(label);
+              }}
+              style={{
+                background: '#A78BFA',
+                color: '#fff',
+                border: 'none',
+                borderRadius: 8,
+                padding: '12px 36px',
+                fontSize: 15,
+                fontWeight: 600,
+                cursor: 'pointer'
+              }}
+            >
+              Aceptar
+            </button>
+          </div>
+        </div>
+      )}
 
       {/* Limit message notification */}
       {limitMessage && (

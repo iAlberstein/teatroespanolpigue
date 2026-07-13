@@ -31,6 +31,7 @@ export function generateBordereauxPDF(doc, data) {
     userCash,
     userTransfer,
     sessionDate,
+    sessionDates,
     isClosed
   } = data;
   
@@ -66,47 +67,79 @@ export function generateBordereauxPDF(doc, data) {
   }
   doc.fontSize(10).font('Helvetica-Bold').text('OBRA: ', startX, doc.y, { continued: true }).font('Helvetica').text(show.title);
   doc.fontSize(10).font('Helvetica-Bold').text('AUTOR: ', startX, doc.y, { continued: true }).font('Helvetica').text(bordereaux.author_name || '-');
-  doc.fontSize(10).font('Helvetica-Bold').text('FECHA: ', startX, doc.y, { continued: true }).font('Helvetica')
-    .text(sessionDate ? new Date(sessionDate).toLocaleDateString('es-AR', { day: 'numeric', month: 'long', year: 'numeric' }) : 'Sin fecha');
+  // FECHA: list all sessions if consolidated, or single date if session view
+  const pad = (n) => String(n).padStart(2, '0');
+  const fmtDateTime = (raw) => {
+    const d = new Date(raw);
+    return `${pad(d.getUTCDate())}/${pad(d.getUTCMonth() + 1)}/${d.getUTCFullYear()} ${pad(d.getUTCHours())}:${pad(d.getUTCMinutes())}hs`;
+  };
+  const monthNames = ['enero','febrero','marzo','abril','mayo','junio','julio','agosto','septiembre','octubre','noviembre','diciembre'];
+  const fmtDateLong = (raw) => {
+    const d = new Date(raw);
+    return `${d.getUTCDate()} de ${monthNames[d.getUTCMonth()]} de ${d.getUTCFullYear()}`;
+  };
+
+  if (sessionDates && sessionDates.length > 1) {
+    doc.fontSize(10).font('Helvetica-Bold').text('FUNCIONES:', startX, doc.y);
+    for (const sd of sessionDates) {
+      doc.fontSize(9).font('Helvetica').text(`  ${fmtDateTime(sd)}`, startX, doc.y);
+    }
+  } else {
+    const singleDate = sessionDate || (sessionDates && sessionDates[0]);
+    doc.fontSize(10).font('Helvetica-Bold').text('FECHA: ', startX, doc.y, { continued: true }).font('Helvetica')
+      .text(singleDate ? fmtDateLong(singleDate) : 'Sin fecha');
+  }
   doc.moveDown(1);
   
-  // ========== CONSOLIDADO POR SECTOR ==========
+  // ========== DETALLE DE VENTAS ==========
   if (sectorTotals && sectorTotals.length > 0) {
-    doc.fontSize(11).font('Helvetica-Bold').text('CONSOLIDADO POR SECTOR', startX);
+    doc.fontSize(11).font('Helvetica-Bold').text('DETALLE DE VENTAS', startX);
     doc.moveDown(0.3);
     
     const sectorHeaderY = doc.y;
     doc.fontSize(8).font('Helvetica-Bold');
     doc.text('SECTOR', startX, sectorHeaderY, { width: colWidths.location });
     doc.text('CANTIDAD', startX + colWidths.location, sectorHeaderY, { width: colWidths.price + colWidths.quantity, align: 'right' });
+    doc.text('VALOR', importeX - 60, sectorHeaderY, { width: 60, align: 'right' });
     doc.text('TOTAL', importeX, sectorHeaderY, { width: importeWidth, align: 'right' });
     doc.moveDown(0.3);
     doc.moveTo(startX, doc.y).lineTo(startX + pageWidth, doc.y).stroke();
     doc.moveDown(0.3);
     
     let sectorGrandTotal = 0;
+    let sectorGrandPeople = 0;
     for (const sector of sectorTotals) {
       const y = doc.y;
-      const hasMultipleItems = sector.items && sector.items.length > 1;
+      const hasMultipleItems = sector.items && sector.items.length > 0;
       
       // Fila principal del sector (negrita, fondo gris claro simulado con rect)
       doc.font('Helvetica-Bold').fontSize(8);
       doc.rect(startX, y - 2, pageWidth, 14).fill('#f5f5f5');
       doc.fillColor('#000000');
       doc.text(sector.location, startX + 4, y, { width: colWidths.location - 8 });
-      doc.text(sector.quantity.toString(), startX + colWidths.location, y, { width: colWidths.price + colWidths.quantity, align: 'right' });
+      // Para palcos: calcular cantidad de palcos a partir de localidades
+      const isPalco = sector.location?.toLowerCase().includes('palco');
+      const localidades = sector.people || sector.quantity;
+      const isBajo = sector.location?.toLowerCase().includes('bajo');
+      const palcos = isPalco ? (isBajo ? Math.round(localidades / 4) : Math.round(localidades / 2)) : localidades;
+      const quantityText = isPalco ? `${palcos} (${localidades} localidades)` : localidades.toString();
+      doc.text(quantityText, startX + colWidths.location, y, { width: colWidths.price + colWidths.quantity, align: 'right' });
+      doc.text('', importeX - 60, y, { width: 60, align: 'right' }); // Empty value for total row
       doc.text(formatCurrency(parseFloat(sector.total)), importeX, y, { width: importeWidth, align: 'right' });
       doc.moveDown(0.6);
       sectorGrandTotal += parseFloat(sector.total);
+      sectorGrandPeople += parseInt(localidades) || 0;
       
-      // Subtítulos para precios especiales (solo si hay múltiples items)
+      // Subtítulos para precios (siempre mostrar el detalle)
       if (hasMultipleItems) {
         for (const item of sector.items) {
           const itemY = doc.y;
           const isSpecial = item.specialPricing?.isSpecial;
-          const label = item.specialPricing 
-            ? item.specialPricing.label 
-            : `Precio base`;
+          // Construir label: sector + regla especial + cupón
+          const labelParts = [];
+          if (isSpecial && item.specialPricing?.label) labelParts.push(item.specialPricing.label);
+          if (item.discountCode) labelParts.push(`(${item.discountCode})`);
+          const label = labelParts.join(' ') || sector.location;
           
           // Draw color indicator if exists
           if (item.color) {
@@ -120,10 +153,16 @@ export function generateBordereauxPDF(doc, data) {
           // Set text color based on whether it's special pricing
           doc.font('Helvetica').fontSize(7);
           doc.fillColor(isSpecial ? '#0369a1' : '#666666');
-          doc.text(label, startX + (item.color ? 16 : 8), itemY, { width: colWidths.location - 24 });
+          doc.text(label, startX + (item.color ? 16 : 8), itemY, { width: colWidths.location - 80 });
           
           doc.fillColor('#666666');
-          doc.text((item.people || item.quantity).toString(), startX + colWidths.location, itemY, { width: colWidths.price + colWidths.quantity, align: 'right' });
+          // Para palcos: calcular cantidad de palcos a partir de localidades
+          const itemLocalidades = item.people || item.quantity;
+          const itemPalcos = isPalco ? (isBajo ? Math.round(itemLocalidades / 4) : Math.round(itemLocalidades / 2)) : itemLocalidades;
+          const itemQuantityText = isPalco ? `${itemPalcos} (${itemLocalidades} localidades)` : itemLocalidades.toString();
+          doc.text(itemQuantityText, startX + colWidths.location, itemY, { width: colWidths.price + colWidths.quantity, align: 'right' });
+          // Precio en columna aparte
+          doc.text(formatCurrency(parseFloat(item.price)), importeX - 60, itemY, { width: 60, align: 'right' });
           doc.text(formatCurrency(parseFloat(item.total)), importeX, itemY, { width: importeWidth, align: 'right' });
           doc.moveDown(0.4);
         }
@@ -138,12 +177,16 @@ export function generateBordereauxPDF(doc, data) {
     doc.moveDown(0.3);
     doc.font('Helvetica-Bold').fontSize(8);
     const sectorTotY = doc.y;
-    doc.text('TOTAL GENERAL', startX, sectorTotY);
+    doc.text('TOTAL BRUTO', startX, sectorTotY);
+    doc.text(`${sectorGrandPeople} localidades`, startX + colWidths.location, sectorTotY, { width: colWidths.price + colWidths.quantity, align: 'right' });
+    doc.text('', importeX - 60, sectorTotY, { width: 60, align: 'right' });
     doc.text(formatCurrency(sectorGrandTotal), importeX, sectorTotY, { width: importeWidth, align: 'right' });
     doc.moveDown(1);
   }
 
+  /*
   // ========== ENTRADAS TABLE ==========
+  // OCULTADO: Detalle de ventas online vs boletería
   doc.fontSize(11).font('Helvetica-Bold').text('ENTRADAS', startX);
   doc.moveDown(0.3);
   
@@ -253,116 +296,111 @@ export function generateBordereauxPDF(doc, data) {
   doc.text((onlinePeople + boleteriaPeople).toString(), startX + colWidths.location + colWidths.price, totY, { width: colWidths.quantity + 30, align: 'right' });
   doc.text(formatCurrency(totalBruto), importeX, totY, { width: importeWidth, align: 'right' });
   doc.moveDown(1);
-  
-  // ========== RECAUDACIÓN ==========
-  doc.rect(startX, doc.y, pageWidth, 60).fill('#f5f5f5').stroke('#cccccc');
-  const recY = doc.y + 8;
-  doc.fillColor('#000000').font('Helvetica').fontSize(9);
-  doc.text('RECAUDADO EN EFECTIVO (BOLETERÍA):', startX + 10, recY);
-  doc.font('Helvetica-Bold').text(formatCurrency(totalBoleteria), importeX, recY, { width: importeWidth, align: 'right' });
-  
-  doc.font('Helvetica').text('RECAUDADO EN VENTA ONLINE:', startX + 10, recY + 16);
-  doc.font('Helvetica-Bold').text(formatCurrency(totalOnline), importeX, recY + 16, { width: importeWidth, align: 'right' });
-  
-  doc.moveTo(startX + 10, recY + 34).lineTo(startX + pageWidth - 10, recY + 34).lineWidth(1).stroke();
-  doc.font('Helvetica-Bold').fontSize(10).text('TOTAL BRUTO:', startX + 10, recY + 40);
-  doc.text(formatCurrency(totalBruto), importeX, recY + 40, { width: importeWidth, align: 'right' });
-  
-  doc.y = recY + 68;
-  doc.moveDown(0.5);
+  */
   
   // ========== DEDUCCIONES A ==========
-  doc.fontSize(11).font('Helvetica-Bold').text('DEDUCCIONES (A)', startX);
-  doc.moveDown(0.3);
-  
-  doc.fontSize(8).font('Helvetica-Bold');
-  const dedAHeaderY = doc.y;
-  doc.text('CONCEPTO', startX, dedAHeaderY, { width: 150 });
-  doc.text('PORCENTAJE', startX + 150, dedAHeaderY, { width: 80, align: 'center' });
-  doc.text('DESCRIPCIÓN', startX + 230, dedAHeaderY, { width: 120 });
-  doc.text('IMPORTE', importeX, dedAHeaderY, { width: importeWidth, align: 'right' });
-  doc.moveDown(0.3);
-  doc.moveTo(startX, doc.y).lineTo(startX + pageWidth, doc.y).stroke();
-  doc.moveDown(0.3);
-  
-  doc.font('Helvetica').fontSize(8);
-  for (const ded of deductionsACalculated) {
-    const y = doc.y;
-    doc.text(ded.name || '-', startX, y, { width: 150 });
-    doc.text(ded.type === 'fixed' ? 'Fijo' : `${Math.round(ded.percentage)}%`, startX + 150, y, { width: 80, align: 'center' });
-    doc.text(ded.description || '-', startX + 230, y, { width: 120 });
-    doc.text(formatCurrency(ded.amount), importeX, y, { width: importeWidth, align: 'right' });
+  // Only show if there are deductions A items
+  const hasDeductionsA = deductionsACalculated && deductionsACalculated.length > 0;
+  if (hasDeductionsA) {
+    doc.fontSize(11).font('Helvetica-Bold').text('DEDUCCIONES (A)', startX);
+    doc.moveDown(0.3);
+    
+    doc.fontSize(8).font('Helvetica-Bold');
+    const dedAHeaderY = doc.y;
+    doc.text('CONCEPTO', startX, dedAHeaderY, { width: 150 });
+    doc.text('PORCENTAJE', startX + 150, dedAHeaderY, { width: 80, align: 'center' });
+    doc.text('DESCRIPCIÓN', startX + 230, dedAHeaderY, { width: 120 });
+    doc.text('IMPORTE', importeX, dedAHeaderY, { width: importeWidth, align: 'right' });
+    doc.moveDown(0.3);
+    doc.moveTo(startX, doc.y).lineTo(startX + pageWidth, doc.y).stroke();
+    doc.moveDown(0.3);
+    
+    doc.font('Helvetica').fontSize(8);
+    for (const ded of deductionsACalculated) {
+      const y = doc.y;
+      doc.text(ded.name || '-', startX, y, { width: 150 });
+      doc.text(ded.type === 'fixed' ? 'Fijo' : `${Math.round(ded.percentage)}%`, startX + 150, y, { width: 80, align: 'center' });
+      doc.text(ded.description || '-', startX + 230, y, { width: 120 });
+      doc.text(formatCurrency(ded.amount), importeX, y, { width: importeWidth, align: 'right' });
+      doc.moveDown(0.5);
+    }
+    
+    doc.moveTo(startX, doc.y).lineTo(startX + pageWidth, doc.y).stroke();
+    doc.moveDown(0.3);
+    doc.font('Helvetica-Bold').fontSize(8);
+    const dedATotY = doc.y;
+    doc.text('TOTAL DEDUCCIONES (A)', startX, dedATotY);
+    doc.text(formatCurrency(totalDeductionsA), importeX, dedATotY, { width: importeWidth, align: 'right' });
     doc.moveDown(0.5);
+    
+    doc.moveTo(startX, doc.y).lineTo(startX + pageWidth, doc.y).lineWidth(1.5).stroke();
+    doc.moveDown(0.3);
   }
   
-  if (deductionsACalculated.length === 0) {
-    doc.fillColor('#666666').text('Sin deducciones', startX, doc.y);
-    doc.fillColor('#000000');
-    doc.moveDown(0.5);
+  // NETO 1 - only show if there are Deductions A (otherwise it's same as Total Bruto)
+  if (hasDeductionsA) {
+    doc.fontSize(10).font('Helvetica-Bold');
+    const neto1Y = doc.y;
+    doc.text('NETO 1', startX, neto1Y);
+    doc.text(formatCurrency(neto1), importeX, neto1Y, { width: importeWidth, align: 'right' });
+    doc.moveDown(0.8);
   }
-  
-  doc.moveTo(startX, doc.y).lineTo(startX + pageWidth, doc.y).stroke();
-  doc.moveDown(0.3);
-  doc.font('Helvetica-Bold').fontSize(8);
-  const dedATotY = doc.y;
-  doc.text('TOTAL DEDUCCIONES (A)', startX, dedATotY);
-  doc.text(formatCurrency(totalDeductionsA), importeX, dedATotY, { width: importeWidth, align: 'right' });
-  doc.moveDown(0.5);
-  
-  doc.moveTo(startX, doc.y).lineTo(startX + pageWidth, doc.y).lineWidth(1.5).stroke();
-  doc.moveDown(0.3);
-  doc.fontSize(10).font('Helvetica-Bold');
-  const neto1Y = doc.y;
-  doc.text('NETO 1', startX, neto1Y);
-  doc.text(formatCurrency(neto1), importeX, neto1Y, { width: importeWidth, align: 'right' });
-  doc.moveDown(0.8);
 
   // ========== SERVICIOS ASOCIADOS ==========
   const allServices = [...(onlineServices || []), ...(boleteriaServices || [])];
   if (allServices.length > 0) {
-    doc.rect(startX, doc.y - 2, pageWidth, 14).fill('#f0f0f0');
-    doc.fillColor('#000000').fontSize(9).font('Helvetica-Bold');
-    doc.text('SERVICIOS ASOCIADOS', startX + 4, doc.y);
-    doc.moveDown(0.5);
+    // Consolidate online + boleteria rows by service name
+    const consolidatedServices = Object.values(
+      allServices.reduce((acc, svc) => {
+        if (!acc[svc.name]) {
+          acc[svc.name] = { name: svc.name, price: svc.price, quantity: 0, total: 0 };
+        }
+        acc[svc.name].quantity += svc.quantity;
+        acc[svc.name].total += svc.total;
+        return acc;
+      }, {})
+    );
+    const totalSvcQty = consolidatedServices.reduce((sum, s) => sum + s.quantity, 0);
+    const totalSvcAmt = consolidatedServices.reduce((sum, s) => sum + s.total, 0);
 
-    // Online services
-    if (onlineServices && onlineServices.length > 0) {
-      doc.rect(startX, doc.y - 2, pageWidth, 12).fill('#f8f8f8');
-      doc.fillColor('#000000').font('Helvetica-Bold').fontSize(8);
-      doc.text('  Online', startX + 4, doc.y);
-      doc.moveDown(0.4);
-      doc.font('Helvetica').fontSize(8);
-      for (const svc of onlineServices) {
-        const y = doc.y;
-        doc.text(`  ${svc.name}`, startX, y, { width: colWidths.location });
-        doc.text(formatCurrency(svc.price), startX + colWidths.location, y, { width: colWidths.price, align: 'right' });
-        doc.text(svc.quantity.toString(), startX + colWidths.location + colWidths.price, y, { width: colWidths.quantity + 30, align: 'right' });
-        doc.text(formatCurrency(svc.total), importeX, y, { width: importeWidth, align: 'right' });
-        doc.moveDown(0.5);
-      }
-    }
-
-    // Boletería services
-    if (boleteriaServices && boleteriaServices.length > 0) {
-      doc.rect(startX, doc.y - 2, pageWidth, 12).fill('#f8f8f8');
-      doc.fillColor('#000000').font('Helvetica-Bold').fontSize(8);
-      doc.text('  Boletería', startX + 4, doc.y);
-      doc.moveDown(0.4);
-      doc.font('Helvetica').fontSize(8);
-      for (const svc of boleteriaServices) {
-        const y = doc.y;
-        doc.text(`  ${svc.name}`, startX, y, { width: colWidths.location });
-        doc.text(formatCurrency(svc.price), startX + colWidths.location, y, { width: colWidths.price, align: 'right' });
-        doc.text(svc.quantity.toString(), startX + colWidths.location + colWidths.price, y, { width: colWidths.quantity + 30, align: 'right' });
-        doc.text(formatCurrency(svc.total), importeX, y, { width: importeWidth, align: 'right' });
-        doc.moveDown(0.5);
-      }
-    }
+    doc.fontSize(11).font('Helvetica-Bold').text('SERVICIOS ASOCIADOS', startX);
     doc.moveDown(0.3);
+
+    // Table header
+    const svcHeaderY = doc.y;
+    doc.fontSize(8).font('Helvetica-Bold');
+    doc.text('SERVICIO', startX, svcHeaderY, { width: colWidths.location });
+    doc.text('VALOR', startX + colWidths.location, svcHeaderY, { width: colWidths.price, align: 'right' });
+    doc.text('CANTIDAD', startX + colWidths.location + colWidths.price, svcHeaderY, { width: colWidths.quantity + 30, align: 'right' });
+    doc.text('TOTAL', importeX, svcHeaderY, { width: importeWidth, align: 'right' });
+    doc.moveDown(0.3);
+    doc.moveTo(startX, doc.y).lineTo(startX + pageWidth, doc.y).stroke();
+    doc.moveDown(0.3);
+
+    doc.font('Helvetica').fontSize(8);
+    for (const svc of consolidatedServices) {
+      const y = doc.y;
+      doc.text(svc.name, startX, y, { width: colWidths.location });
+      doc.text(formatCurrency(svc.price), startX + colWidths.location, y, { width: colWidths.price, align: 'right' });
+      doc.text(svc.quantity.toString(), startX + colWidths.location + colWidths.price, y, { width: colWidths.quantity + 30, align: 'right' });
+      doc.text(formatCurrency(svc.total), importeX, y, { width: importeWidth, align: 'right' });
+      doc.moveDown(0.5);
+    }
+
+    doc.moveTo(startX, doc.y).lineTo(startX + pageWidth, doc.y).lineWidth(1.5).stroke();
+    doc.moveDown(0.3);
+    doc.font('Helvetica-Bold').fontSize(8);
+    const svcTotY = doc.y;
+    doc.text('TOTAL SERVICIOS ASOCIADOS', startX, svcTotY, { width: colWidths.location + colWidths.price });
+    doc.text(totalSvcQty.toString(), startX + colWidths.location + colWidths.price, svcTotY, { width: colWidths.quantity + 30, align: 'right' });
+    doc.text(formatCurrency(totalSvcAmt), importeX, svcTotY, { width: importeWidth, align: 'right' });
+    doc.moveDown(0.8);
   }
 
-  // NETO 2
-  if (neto2) {
+  // NETO 2 - Only show if there are Deductions A OR Services
+  const hasServices = allServices.length > 0;
+  const showNeto2 = hasDeductionsA || hasServices;
+  if (showNeto2 && neto2) {
     doc.rect(startX, doc.y - 2, pageWidth, 14).fill('#f3f4f6');
     doc.fillColor('#000000').fontSize(10).font('Helvetica-Bold');
     const neto2Y = doc.y;
@@ -372,6 +410,9 @@ export function generateBordereauxPDF(doc, data) {
   }
 
   // ========== CONTRATO ==========
+  // Determine base amount description for contract
+  const baseDescription = showNeto2 ? 'del NETO 2' : 'del TOTAL BRUTO';
+  
   doc.fontSize(11).font('Helvetica-Bold').text('CONTRATO', startX);
   doc.moveDown(0.3);
   
@@ -389,50 +430,48 @@ export function generateBordereauxPDF(doc, data) {
   const teatroY = doc.y;
   doc.text('TEATRO', startX, teatroY, { width: 100 });
   doc.text(`${Math.round(theaterPercentage)}%`, startX + 100, teatroY, { width: 80, align: 'center' });
-  doc.text('del NETO 2', startX + 180, teatroY, { width: 150 });
+  doc.text(baseDescription, startX + 180, teatroY, { width: 150 });
   doc.text(formatCurrency(theaterAmount), importeX, teatroY, { width: importeWidth, align: 'right' });
   doc.moveDown(0.5);
 
   const usuarioY = doc.y;
   doc.text('USUARIO', startX, usuarioY, { width: 100 });
   doc.text(`${Math.round(userPercentage)}%`, startX + 100, usuarioY, { width: 80, align: 'center' });
-  doc.text('del NETO 2', startX + 180, usuarioY, { width: 150 });
+  doc.text(baseDescription, startX + 180, usuarioY, { width: 150 });
   doc.text(formatCurrency(userAmount), importeX, usuarioY, { width: importeWidth, align: 'right' });
   doc.moveDown(1);
   
   // ========== DEDUCCIONES B ==========
-  doc.fontSize(11).font('Helvetica-Bold').text('DEDUCCIONES (B)', startX);
-  doc.moveDown(0.3);
-  
-  doc.fontSize(8).font('Helvetica-Bold');
-  const dedBHeaderY = doc.y;
-  doc.text('DESCRIPCIÓN', startX, dedBHeaderY, { width: 300 });
-  doc.text('IMPORTE', importeX, dedBHeaderY, { width: importeWidth, align: 'right' });
-  doc.moveDown(0.3);
-  doc.moveTo(startX, doc.y).lineTo(startX + pageWidth, doc.y).stroke();
-  doc.moveDown(0.3);
-  
-  doc.font('Helvetica').fontSize(8);
-  for (const ded of deductionsB) {
-    const y = doc.y;
-    doc.text(ded.description || '-', startX, y, { width: 300 });
-    doc.text(formatCurrency(parseFloat(ded.amount || 0)), importeX, y, { width: importeWidth, align: 'right' });
-    doc.moveDown(0.5);
+  // Only show if there are deductions B items
+  const hasDeductionsB = deductionsB && deductionsB.length > 0;
+  if (hasDeductionsB) {
+    doc.fontSize(11).font('Helvetica-Bold').text('DEDUCCIONES (B)', startX);
+    doc.moveDown(0.3);
+    
+    doc.fontSize(8).font('Helvetica-Bold');
+    const dedBHeaderY = doc.y;
+    doc.text('DESCRIPCIÓN', startX, dedBHeaderY, { width: 300 });
+    doc.text('IMPORTE', importeX, dedBHeaderY, { width: importeWidth, align: 'right' });
+    doc.moveDown(0.3);
+    doc.moveTo(startX, doc.y).lineTo(startX + pageWidth, doc.y).stroke();
+    doc.moveDown(0.3);
+    
+    doc.font('Helvetica').fontSize(8);
+    for (const ded of deductionsB) {
+      const y = doc.y;
+      doc.text(ded.description || '-', startX, y, { width: 300 });
+      doc.text(formatCurrency(parseFloat(ded.amount || 0)), importeX, y, { width: importeWidth, align: 'right' });
+      doc.moveDown(0.5);
+    }
+    
+    doc.moveTo(startX, doc.y).lineTo(startX + pageWidth, doc.y).lineWidth(1.5).stroke();
+    doc.moveDown(0.3);
+    doc.font('Helvetica-Bold').fontSize(8);
+    const dedBTotY = doc.y;
+    doc.text('TOTAL', startX, dedBTotY);
+    doc.text(formatCurrency(totalDeductionsB), importeX, dedBTotY, { width: importeWidth, align: 'right' });
+    doc.moveDown(1);
   }
-  
-  if (deductionsB.length === 0) {
-    doc.fillColor('#666666').text('Sin deducciones', startX, doc.y);
-    doc.fillColor('#000000');
-    doc.moveDown(0.5);
-  }
-  
-  doc.moveTo(startX, doc.y).lineTo(startX + pageWidth, doc.y).lineWidth(1.5).stroke();
-  doc.moveDown(0.3);
-  doc.font('Helvetica-Bold').fontSize(8);
-  const dedBTotY = doc.y;
-  doc.text('TOTAL', startX, dedBTotY);
-  doc.text(formatCurrency(totalDeductionsB), importeX, dedBTotY, { width: importeWidth, align: 'right' });
-  doc.moveDown(1);
   
   // ========== LIQUIDACIÓN FINAL ==========
   const userTotal = Math.max(0, userAmount - totalDeductionsB);
@@ -470,21 +509,39 @@ export function generateBordereauxPDF(doc, data) {
 }
 
 export function calculatePDFHeight(data) {
-  const { onlineSales, boleteriaSales, onlineServices, boleteriaServices, deductionsACalculated, deductionsB, isClosed, neto2 } = data;
+  const { onlineSales, boleteriaSales, onlineServices, boleteriaServices, deductionsACalculated, deductionsB, isClosed, neto2, sessionDates } = data;
 
   const baseHeight = 120;
-  const headerInfoHeight = 80;
+  const extraSessionLines = sessionDates && sessionDates.length > 1 ? (sessionDates.length - 1) * 14 : 0;
+  const headerInfoHeight = 80 + extraSessionLines;
   const entradasHeaderHeight = 40;
   const onlineSectionHeight = 20 + Math.max(1, onlineSales.length) * 14 + 20;
   const boleteriaSectionHeight = 20 + Math.max(1, boleteriaSales.length) * 14 + 20;
-  const servicesHeight = (onlineServices?.length || 0) + (boleteriaServices?.length || 0) > 0 ? 40 + Math.max(1, (onlineServices?.length || 0) + (boleteriaServices?.length || 0)) * 14 : 0;
+  
+  // Services height (conditional)
+  const hasServices = ((onlineServices?.length || 0) + (boleteriaServices?.length || 0)) > 0;
+  const servicesHeight = hasServices ? 40 + Math.max(1, (onlineServices?.length || 0) + (boleteriaServices?.length || 0)) * 14 : 0;
+  
   const totalsHeight = 30;
   const recaudacionHeight = 80;
-  const deduccionesAHeight = 60 + Math.max(1, deductionsACalculated.length) * 14 + 50;
-  const neto1Height = 30;
-  const neto2Height = neto2 ? 30 : 0;
+  
+  // Deducciones A height (conditional - only if there are items)
+  const hasDeductionsA = deductionsACalculated && deductionsACalculated.length > 0;
+  const deduccionesAHeight = hasDeductionsA ? 60 + deductionsACalculated.length * 14 + 50 : 0;
+  
+  // NETO 1 height (conditional - only if there are Deductions A)
+  const neto1Height = hasDeductionsA ? 30 : 0;
+  
+  // NETO 2 height (conditional - only if there are Deductions A OR Services)
+  const showNeto2 = hasDeductionsA || hasServices;
+  const neto2Height = (showNeto2 && neto2) ? 30 : 0;
+  
   const contratoHeight = 80;
-  const deduccionesBHeight = 60 + Math.max(1, deductionsB.length) * 14 + 40;
+  
+  // Deducciones B height (conditional - only if there are items)
+  const hasDeductionsB = deductionsB && deductionsB.length > 0;
+  const deduccionesBHeight = hasDeductionsB ? 60 + deductionsB.length * 14 + 40 : 0;
+  
   const liquidacionHeight = 90;
   const firmasHeight = isClosed ? 120 : 0;
   const footerHeight = 40;

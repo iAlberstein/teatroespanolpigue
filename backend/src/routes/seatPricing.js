@@ -10,10 +10,12 @@ const router = express.Router();
  * Get all pricing rules for a show (admin only)
  */
 router.get('/rules/:showId', authenticateToken, requireRole('admin'), async (req, res) => {
+  console.log('[SEAT_PRICING] GET /rules/:showId - showId:', req.params.showId, 'sessionId:', req.query.sessionId);
   try {
     const { showId } = req.params;
     const { sessionId } = req.query;
     
+    console.log('[SEAT_PRICING] Calling getPricingRules with showId:', showId, 'sessionId:', sessionId || null);
     const rules = await getPricingRules(showId, sessionId || null);
     const grouped = groupPricingRulesForDisplay(rules);
     
@@ -94,12 +96,10 @@ router.post('/rules', authenticateToken, requireRole('admin'), async (req, res) 
       });
     }
     
-    // Check for overlapping rules
+    // Check for overlapping rules - only within the same session
+    // Pricing rules are now managed only at session level
     const whereOverlap = {
-      [sequelize.Sequelize.Op.or]: [
-        { show_id: show_id || null },
-        { session_id: session_id || null }
-      ]
+      session_id: session_id || null
     };
     
     if (hasRowRange) {
@@ -120,16 +120,15 @@ router.post('/rules', authenticateToken, requireRole('admin'), async (req, res) 
     
     if (hasPalcoRange) {
       whereOverlap.is_palco_alto = is_palco_alto;
-      whereOverlap[sequelize.Sequelize.Op.and] = [
-        {
-          [sequelize.Sequelize.Op.or]: [
-            {
-              palco_from: { [sequelize.Sequelize.Op.lte]: palco_to },
-              palco_to: { [sequelize.Sequelize.Op.gte]: palco_from }
-            }
-          ]
-        }
-      ];
+      whereOverlap[sequelize.Sequelize.Op.and] = whereOverlap[sequelize.Sequelize.Op.and] || [];
+      whereOverlap[sequelize.Sequelize.Op.and].push({
+        [sequelize.Sequelize.Op.or]: [
+          {
+            palco_from: { [sequelize.Sequelize.Op.lte]: palco_to },
+            palco_to: { [sequelize.Sequelize.Op.gte]: palco_from }
+          }
+        ]
+      });
     }
     
     const existingOverlap = await SeatPricing.findOne({ where: whereOverlap });
@@ -143,7 +142,11 @@ router.post('/rules', authenticateToken, requireRole('admin'), async (req, res) 
     }
     
     // Create rule
-    const rule = await SeatPricing.create({
+    console.log('[SEAT_PRICING] Creating rule with data:', {
+      show_id, session_id, row_from, row_to, palco_from, palco_to, is_palco_alto, price, color
+    });
+    
+    const ruleData = {
       show_id,
       session_id,
       row_from,
@@ -155,7 +158,11 @@ router.post('/rules', authenticateToken, requireRole('admin'), async (req, res) 
       priority: hasRowRange ? 3 : 4,
       label: label || null,
       color: color || null
-    });
+    };
+    
+    console.log('[SEAT_PRICING] Rule data object:', ruleData);
+    
+    const rule = await SeatPricing.create(ruleData);
     
     res.json({
       success: true,

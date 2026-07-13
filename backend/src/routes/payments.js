@@ -107,6 +107,8 @@ router.post('/sipago-intent', optionalAuth, async (req, res) => {
     const reservation = await Reservation.findByPk(reservation_id);
     if (!reservation) return res.status(404).json({ error: 'reservation not found' });
     if (reservation.status !== 'active') return res.status(409).json({ error: 'reservation_not_active' });
+    // Extender la reserva mientras el usuario está activamente pagando en SiPago (+5 min)
+    await reservation.update({ expires_at: dayjs(reservation.expires_at).add(5, 'minute').toDate() });
     // Calcular total a partir de los items + descuento + cargo por servicio
     const items = Array.isArray(reservation.items) ? reservation.items : [];
     let subtotal = items.reduce((sum, it) => {
@@ -208,11 +210,10 @@ router.post('/sipago-webhook', async (req, res) => {
     const secret = req.query?.secret || req.body?.secret;
     console.log('[SIPAGO_WEBHOOK] Received secret:', secret);
     console.log('[SIPAGO_WEBHOOK] Expected secret:', process.env.SIPAGO_WEBHOOK_SECRET);
-    // Temporarily disable secret validation to debug
-    // if (process.env.SIPAGO_WEBHOOK_SECRET && secret !== process.env.SIPAGO_WEBHOOK_SECRET) {
-    //   console.warn('[SIPAGO_WEBHOOK] invalid secret');
-    //   return res.status(200).json({ ignored: true });
-    // }
+    if (process.env.SIPAGO_WEBHOOK_SECRET && secret !== process.env.SIPAGO_WEBHOOK_SECRET) {
+      console.warn('[SIPAGO_WEBHOOK] invalid secret');
+      return res.status(200).json({ ignored: true });
+    }
 
     const reservationId = req.query?.reservation_id || req.body?.reservation_id;
     console.log('[SIPAGO_WEBHOOK] req.query:', JSON.stringify(req.query));
@@ -222,7 +223,7 @@ router.post('/sipago-webhook', async (req, res) => {
       return res.status(200).json({ ignored: true });
     }
 
-    const { reservations: Reservation, tickets: Ticket, sales: Sale, discounts: Discount } = sequelize.models;
+    const { reservations: Reservation, tickets: Ticket, sales: Sale, discounts: Discount, users: User } = sequelize.models;
     const reservation = await Reservation.findByPk(reservationId);
     if (!reservation) {
       console.warn('[SIPAGO_WEBHOOK] reservation not found:', reservationId);
@@ -344,6 +345,19 @@ router.post('/sipago-webhook', async (req, res) => {
       } catch (e) { console.warn('[SIPAGO_WEBHOOK] Could not fetch user data:', e.message); }
     }
 
+    // Try to link to an existing user by DNI when the reservation has no user_id
+    let finalUserId = reservation.user_id || null;
+    if (!finalUserId && customerDni) {
+      try {
+        const existingUser = await User.findOne({ where: { dni: customerDni } });
+        if (existingUser) {
+          finalUserId = existingUser.id;
+          console.log('[SIPAGO_WEBHOOK] Found existing user by DNI:', customerDni, '-> user_id:', finalUserId);
+          await reservation.update({ user_id: finalUserId });
+        }
+      } catch (e) { console.warn('[SIPAGO_WEBHOOK] Could not find user by DNI:', e.message); }
+    }
+
     // Compute final amount from reservation items + discount + service fee
     const baseItems = Array.isArray(reservation.items) ? reservation.items : [];
     let webhookDiscountAmount = 0;
@@ -373,7 +387,7 @@ router.post('/sipago-webhook', async (req, res) => {
     const sale = await Sale.create({
       id: tempSaleId,
       session_id: reservation.session_id,
-      user_id: reservation.user_id || null,
+      user_id: finalUserId,
       cashier_id: null,
       payment_method: paymentMethod,
       discount_id: metaDiscountId || null,
@@ -407,7 +421,7 @@ router.post('/sipago-webhook', async (req, res) => {
         const t = await Ticket.create({
           session_id: reservation.session_id,
           sale_id: sale.id,
-          user_id: reservation.user_id || null,
+          user_id: finalUserId,
           seat_code: it.seat_code,
           section: 'platea_general',
           type: 'butaca',
@@ -428,7 +442,7 @@ router.post('/sipago-webhook', async (req, res) => {
         const t = await Ticket.create({
           session_id: reservation.session_id,
           sale_id: sale.id,
-          user_id: reservation.user_id || null,
+          user_id: finalUserId,
           seat_code: it.seat_code,
           section: palcoSection,
           type: 'palco',
@@ -448,7 +462,7 @@ router.post('/sipago-webhook', async (req, res) => {
           const t = await Ticket.create({
             session_id: reservation.session_id,
             sale_id: sale.id,
-            user_id: reservation.user_id || null,
+            user_id: finalUserId,
             seat_code: null,
             section: 'pullman',
             type: 'pullman',
@@ -467,7 +481,7 @@ router.post('/sipago-webhook', async (req, res) => {
           const t = await Ticket.create({
             session_id: reservation.session_id,
             sale_id: sale.id,
-            user_id: reservation.user_id || null,
+            user_id: finalUserId,
             seat_code: null,
             section: 'general',
             type: 'general',
@@ -489,7 +503,7 @@ router.post('/sipago-webhook', async (req, res) => {
       const svcT = await Ticket.create({
         session_id: reservation.session_id,
         sale_id: sale.id,
-        user_id: reservation.user_id || null,
+        user_id: finalUserId,
         seat_code: svc.name,
         section: 'service',
         type: 'service',
@@ -532,7 +546,7 @@ router.post('/sipago-webhook', async (req, res) => {
         const session = await Session.findByPk(reservation.session_id, { include: [{ model: Show, as: 'show' }] });
         if (session && session.show) {
           const capacity = session.capacity_override || session.show.general_capacity;
-          const soldCount = await Ticket.count({ where: { session_id: reservation.session_id, status: 'sold' } });
+          const soldCount = await Ticket.count({ where: { session_id: reservation.session_id, type: 'general', status: { [Op.in]: ['sold', 'validated'] } } });
           const available = Math.max(0, capacity - soldCount);
           io.to(`session:${reservation.session_id}`).emit('general-admission-update', { sessionId: reservation.session_id, sold: soldCount, available });
         }
@@ -542,7 +556,7 @@ router.post('/sipago-webhook', async (req, res) => {
 
     try {
       const { users: User, sessions: Session, shows: Show } = sequelize.models;
-      const user = reservation.user_id ? await User.findByPk(reservation.user_id) : null;
+      const user = finalUserId ? await User.findByPk(finalUserId) : null;
       const session = await Session.findByPk(reservation.session_id, { include: [{ model: Show, as: 'show' }] });
       const emailToSend = user?.email || customerEmail;
       const nameToSend = user?.name || customerName;
@@ -1239,6 +1253,12 @@ router.post('/sipago-confirm', optionalAuth, async (req, res) => {
       }
     }
 
+    // Reject if the reservation has expired or been canceled
+    if (reservation.status === 'expired' || reservation.status === 'canceled') {
+      console.warn('[SIPAGO_CONFIRM] ⚠️ Reservation expired/canceled, rejecting:', reservation.status);
+      return res.status(409).json({ error: 'reservation_expired', status: reservation.status });
+    }
+
     // Idempotency: check if tickets already exist for this exact reservation
     const resItems = Array.isArray(reservation.items) ? reservation.items : [];
     const seatCodes = resItems.filter(it=>it.type==='butaca' && it.seat_code).map(it=>it.seat_code);
@@ -1552,7 +1572,7 @@ router.post('/sipago-confirm', optionalAuth, async (req, res) => {
         if (session && session.show) {
           const capacity = session.capacity_override || session.show.general_capacity;
           const soldCount = await Ticket.count({
-            where: { session_id: reservation.session_id, status: 'sold' }
+            where: { session_id: reservation.session_id, type: 'general', status: { [Op.in]: ['sold', 'validated'] } }
           });
           const available = Math.max(0, capacity - soldCount);
           io.to(`session:${reservation.session_id}`).emit('general-admission-update', {
@@ -1846,7 +1866,7 @@ router.post('/free-emission', optionalAuth, async (req, res) => {
         const session = await Session.findByPk(reservation.session_id, { include: [{ model: Show, as: 'show' }] });
         if (session && session.show) {
           const capacity = session.capacity_override || session.show.general_capacity;
-          const soldCount = await Ticket.count({ where: { session_id: reservation.session_id, status: 'sold' } });
+          const soldCount = await Ticket.count({ where: { session_id: reservation.session_id, type: 'general', status: { [Op.in]: ['sold', 'validated'] } } });
           const available = Math.max(0, capacity - soldCount);
           io.to(`session:${reservation.session_id}`).emit('general-admission-update', { sessionId: reservation.session_id, sold: soldCount, available });
         }

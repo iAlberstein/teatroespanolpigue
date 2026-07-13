@@ -14,17 +14,26 @@ import { sequelize } from '../lib/sequelize.js';
 export async function getSeatPrice(sessionId, showId, seatCode, basePricing = {}) {
   const { seat_pricing: SeatPricing } = sequelize.models;
   
+  // Normalize seat code: remove spaces from palco codes (e.g., "PA 7" -> "PA7", "PB 12" -> "PB12")
+  const normalizedSeatCode = typeof seatCode === 'string' 
+    ? seatCode.replace(/^(PA|PB)\s+(\d+)$/i, '$1$2')
+    : seatCode;
+  
   // Extract row letter from seat code (e.g., "A7" -> "A", "PB19" -> null)
-  const rowLetter = /^[A-M]\d+$/.test(seatCode) ? seatCode[0] : null;
-  const isPalcoBajo = /^PB\d+$/i.test(seatCode);
-  const isPalcoAlto = /^PA\d+$/i.test(seatCode);
-  const palcoNumber = isPalcoBajo || isPalcoAlto ? parseInt(seatCode.substring(2)) : null;
+  const rowLetter = /^[A-M]\d+$/.test(normalizedSeatCode) ? normalizedSeatCode[0] : null;
+  const isPalcoBajo = /^PB\d+$/i.test(normalizedSeatCode);
+  const isPalcoAlto = /^PA\d+$/i.test(normalizedSeatCode);
+  const palcoNumber = isPalcoBajo || isPalcoAlto ? parseInt(normalizedSeatCode.substring(2)) : null;
+
+  console.log(`[SEAT_PRICE_DEBUG] seatCode=${seatCode}, sessionId=${sessionId}, showId=${showId}`);
+  console.log(`[SEAT_PRICE_DEBUG] isPalcoBajo=${isPalcoBajo}, isPalcoAlto=${isPalcoAlto}, palcoNumber=${palcoNumber}`);
+  console.log(`[SEAT_PRICE_DEBUG] basePricing=`, basePricing);
 
   // Build query conditions
   const conditions = [];
   
-  // 1. Exact seat code match
-  conditions.push({ seat_code: seatCode });
+  // 1. Exact seat code match (use normalized code)
+  conditions.push({ seat_code: normalizedSeatCode });
   
   // 2. Row letter match (for butacas only)
   if (rowLetter) {
@@ -54,41 +63,76 @@ export async function getSeatPrice(sessionId, showId, seatCode, basePricing = {}
     });
   }
 
-  // Search for pricing rules - session first, then show
-  const whereClause = {
-    [sequelize.Sequelize.Op.or]: conditions,
-    [sequelize.Sequelize.Op.and]: [
-      {
-        [sequelize.Sequelize.Op.or]: [
-          { session_id: sessionId },
-          { show_id: showId }
-        ]
-      }
-    ]
-  };
-
-  const pricingRules = await SeatPricing.findAll({
-    where: whereClause,
-    order: [
-      ['session_id', 'DESC'], // Session-specific first (not null = higher priority)
-      ['priority', 'DESC'],   // Higher priority first
-      ['created_at', 'ASC']  // Older rules first for same priority
-    ]
-  });
+  // Search for pricing rules - session-specific rules have highest priority
+  // First, try to find session-specific rules only
+  let pricingRules = [];
+  
+  if (sessionId) {
+    const sessionWhereClause = {
+      [sequelize.Sequelize.Op.or]: conditions,
+      session_id: sessionId
+    };
+    
+    pricingRules = await SeatPricing.findAll({
+      where: sessionWhereClause,
+      order: [
+        ['priority', 'DESC'],
+        ['created_at', 'ASC']
+      ]
+    });
+    
+    console.log(`[SEAT_PRICE] Session ${sessionId}: Found ${pricingRules.length} session-specific rules`);
+  }
+  
+  // If no session-specific rules found, fall back to show-level rules
+  if (pricingRules.length === 0 && showId) {
+    const showWhereClause = {
+      [sequelize.Sequelize.Op.or]: conditions,
+      show_id: showId,
+      session_id: null  // Only show-level rules (not session-specific)
+    };
+    
+    pricingRules = await SeatPricing.findAll({
+      where: showWhereClause,
+      order: [
+        ['priority', 'DESC'],
+        ['created_at', 'ASC']
+      ]
+    });
+    
+    console.log(`[SEAT_PRICE] Show ${showId}: Found ${pricingRules.length} show-level rules`);
+  }
 
   // Find the best matching rule
+  console.log(`[SEAT_PRICE] Checking ${pricingRules.length} rules for seat ${seatCode} (rowLetter: ${rowLetter}, palcoNumber: ${palcoNumber})`);
+  
   for (const rule of pricingRules) {
-    // Check if this rule applies
-    if (rule.seat_code && rule.seat_code === seatCode) {
+    console.log(`[SEAT_PRICE] Checking rule:`, {
+      id: rule.id,
+      seat_code: rule.seat_code,
+      row_letter: rule.row_letter,
+      row_from: rule.row_from,
+      row_to: rule.row_to,
+      palco_from: rule.palco_from,
+      palco_to: rule.palco_to,
+      is_palco_alto: rule.is_palco_alto,
+      price: rule.price
+    });
+    
+    // Check if this rule applies (compare with normalized seat code)
+    if (rule.seat_code && rule.seat_code === normalizedSeatCode) {
+      console.log(`[SEAT_PRICE] MATCH: seat_code rule matched! Price: ${rule.price}`);
       return { price: parseFloat(rule.price), source: 'seat', rule };
     }
     
     if (rule.row_letter && rule.row_letter === rowLetter && !rule.seat_code) {
+      console.log(`[SEAT_PRICE] MATCH: row_letter rule matched! Price: ${rule.price}`);
       return { price: parseFloat(rule.price), source: 'row', rule };
     }
     
     if (rule.row_from && rule.row_to && rowLetter) {
       if (rowLetter >= rule.row_from && rowLetter <= rule.row_to) {
+        console.log(`[SEAT_PRICE] MATCH: row_range rule matched! Price: ${rule.price}`);
         return { price: parseFloat(rule.price), source: 'row_range', rule };
       }
     }
@@ -97,6 +141,7 @@ export async function getSeatPrice(sessionId, showId, seatCode, basePricing = {}
       if (rule.is_palco_alto === isPalcoAlto && 
           palcoNumber >= rule.palco_from && 
           palcoNumber <= rule.palco_to) {
+        console.log(`[SEAT_PRICE] MATCH: palco_range rule matched! Price: ${rule.price}`);
         return { price: parseFloat(rule.price), source: 'palco_range', rule };
       }
     }
@@ -108,25 +153,42 @@ export async function getSeatPrice(sessionId, showId, seatCode, basePricing = {}
   else if (isPalcoAlto) basePrice = basePricing.palcos_altos || 0;
   else basePrice = basePricing.platea_general || 0;
   
+  console.log(`[SEAT_PRICE] FALLBACK: Using base price ${basePrice} for seat ${seatCode} (basePricing: ${JSON.stringify(basePricing)})`);
+  
   return { price: basePrice, source: 'base', rule: null };
 }
 
 /**
  * Get all pricing rules for a show or session
+ * Returns session-specific rules (higher priority) AND show-level rules (fallback)
+ * This matches the logic in getSeatPrice for consistency
  */
 export async function getPricingRules(showId, sessionId = null) {
   const { seat_pricing: SeatPricing } = sequelize.models;
   
-  const where = {};
+  // Build OR condition to get both session and show rules
+  const conditions = [];
+  
   if (sessionId) {
-    where.session_id = sessionId;
-  } else if (showId) {
-    where.show_id = showId;
-    where.session_id = null; // Only show-level rules
+    conditions.push({ session_id: sessionId });
+  }
+  
+  if (showId) {
+    conditions.push({ 
+      show_id: showId, 
+      session_id: null  // Show-level rules only
+    });
+  }
+  
+  // If no conditions, return empty
+  if (conditions.length === 0) {
+    return [];
   }
   
   return await SeatPricing.findAll({
-    where,
+    where: {
+      [sequelize.Sequelize.Op.or]: conditions
+    },
     order: [['priority', 'DESC'], ['created_at', 'ASC']]
   });
 }
@@ -185,7 +247,7 @@ export function groupPricingRulesForDisplay(rules) {
  * Returns structured data for showing different price zones
  */
 export async function getPriceTiers(sessionId, showId, basePricing) {
-  const rules = await getPricingRules(showId, sessionId);
+  const rules = await getPricingRules(showId, sessionId);  // getPricingRules(showId, sessionId)
   const grouped = groupPricingRulesForDisplay(rules);
   
   const tiers = [];
@@ -222,9 +284,16 @@ export async function getPriceTiers(sessionId, showId, basePricing) {
     let rangeStart = null;
     const rows = 'ABCDEFGHIJKLM'.split('');
     
+    // Track colors for each row
+    const rowColors = {};
+    for (const r of grouped.platea_rows) {
+      rowColors[r.row] = r.color;
+    }
+    
     for (let i = 0; i < rows.length; i++) {
       const row = rows[i];
       const price = rowPrices[row];
+      const color = rowColors[row];
       
       if (price !== currentPrice) {
         if (currentPrice !== null) {
@@ -233,7 +302,8 @@ export async function getPriceTiers(sessionId, showId, basePricing) {
             type: 'range',
             label: `Filas ${rangeStart} a ${rows[i-1]}`,
             price: currentPrice,
-            rows: { from: rangeStart, to: rows[i-1] }
+            rows: { from: rangeStart, to: rows[i-1] },
+            color: rowColors[rangeStart]
           });
         }
         currentPrice = price;
@@ -248,7 +318,8 @@ export async function getPriceTiers(sessionId, showId, basePricing) {
         type: 'range',
         label: `Filas ${rangeStart} a ${rows[rows.length - 1]}`,
         price: currentPrice,
-        rows: { from: rangeStart, to: rows[rows.length - 1] }
+        rows: { from: rangeStart, to: rows[rows.length - 1] },
+        color: rowColors[rangeStart]
       });
     }
   }
@@ -261,7 +332,8 @@ export async function getPriceTiers(sessionId, showId, basePricing) {
         type: 'range',
         label: range.label,
         price: range.price,
-        palcos: { from: range.from, to: range.to }
+        palcos: { from: range.from, to: range.to },
+        color: range.color
       });
     }
   }
@@ -274,7 +346,8 @@ export async function getPriceTiers(sessionId, showId, basePricing) {
         type: 'range',
         label: range.label,
         price: range.price,
-        palcos: { from: range.from, to: range.to }
+        palcos: { from: range.from, to: range.to },
+        color: range.color
       });
     }
   }

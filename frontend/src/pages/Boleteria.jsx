@@ -7,6 +7,8 @@ import BoxOfficeSessionPicker from '../components/BoxOfficeSessionPicker';
 import BoxOfficeReferences from '../components/BoxOfficeReferences';
 import TicketViewModal from '../components/admin/TicketViewModal.jsx';
 import { formatSeatLocation } from '../lib/seatFormatter';
+import { getSeatPriceTier } from '../lib/seatPriceColors.js';
+import { formatDate, formatTime, formatDateTimeCompact } from '../lib/dateFormatter.js';
 import { 
   getAllRows, 
   getRowSeats, 
@@ -27,7 +29,7 @@ import billete1000 from '../../media/images/billetes/billete1000.png';
 import billete500 from '../../media/images/billetes/billete500.png';
 
 export default function BoxOffice() {
-  const { token, user } = useAuth();
+  const { token, user, hasRole } = useAuth();
   const DENOMINATIONS = [
     { key: 'bill20000', label: '$20.000', value: 20000, img: billete20000 },
     { key: 'bill10000', label: '$10.000', value: 10000, img: billete10000 },
@@ -138,6 +140,11 @@ export default function BoxOffice() {
   
   // Estado para selección masiva de filas en bloqueo
   const [selectedRows, setSelectedRows] = useState(new Set());
+
+  // Disability quota section
+  const [disabilityQuota, setDisabilityQuota] = useState(null);
+  const [disabilityQuotaLoading, setDisabilityQuotaLoading] = useState(false);
+  const [disabilityQuotaError, setDisabilityQuotaError] = useState('');
 
   // Associated services
   const [showServices, setShowServices] = useState([]);
@@ -259,17 +266,8 @@ export default function BoxOffice() {
       let sessionDateStr = '';
       let sessionTimeStr = '';
       if (operation.session_date) {
-        const d = new Date(operation.session_date);
-        sessionDateStr = d.toLocaleDateString('es-AR', {
-          day: '2-digit',
-          month: '2-digit',
-          year: 'numeric'
-        });
-        sessionTimeStr = d.toLocaleTimeString('es-AR', {
-          hour: '2-digit',
-          minute: '2-digit',
-          hour12: false
-        });
+        sessionDateStr = formatDate(operation.session_date);
+        sessionTimeStr = formatTime(operation.session_date);
       }
 
       let ticketsData = { tickets: [] };
@@ -524,7 +522,8 @@ export default function BoxOffice() {
       selectedPalcosLabels: payload?.selectedPalcosLabels || prev?.selectedPalcosLabels || new Set(),
       pullmanSelected: payload?.pullmanSelected ?? prev?.pullmanSelected ?? 0,
       clearSelection: payload?.clearSelection || prev?.clearSelection || null,
-      pricing: payload?.pricing || prev?.pricing || defaultPricing
+      pricing: payload?.pricing || prev?.pricing || defaultPricing,
+      priceTiers: payload?.priceTiers || prev?.priceTiers || []
     }));
     
     // Check if applied discount still meets seat constraints
@@ -1149,15 +1148,23 @@ export default function BoxOffice() {
 
   const calculateTotal = () => {
     const pricing = currentSelection.pricing || defaultPricing;
+    const priceTiers = currentSelection.priceTiers || [];
     
-    const seatsTotal = currentSelection.selectedSeatIds.size * Number(pricing.platea_general || 0);
+    // Calculate seats total using priceTiers rules if available
+    let seatsTotal = 0;
+    for (const seatId of currentSelection.selectedSeatIds) {
+      const tierInfo = priceTiers.length > 0 ? getSeatPriceTier(seatId, priceTiers) : null;
+      const seatPrice = tierInfo?.price ? Number(tierInfo.price) : Number(pricing.platea_general || 0);
+      seatsTotal += seatPrice;
+    }
     
-    // Calculate palcos price based on label (PB vs PA)
+    // Calculate palcos price based on label (PB vs PA) and priceTiers
     let palcosTotal = 0;
     for (const palco of currentSelection.selectedPalcosLabels) {
       const isPB = /^PB/i.test(palco);
-      const price = isPB ? Number(pricing.palcos_bajos || 0) : Number(pricing.palcos_altos || 0);
-      palcosTotal += price;
+      const tierInfo = priceTiers.length > 0 ? getSeatPriceTier(palco, priceTiers) : null;
+      const palcoPrice = tierInfo?.price ? Number(tierInfo.price) : (isPB ? Number(pricing.palcos_bajos || 0) : Number(pricing.palcos_altos || 0));
+      palcosTotal += palcoPrice;
     }
     
     // Calculate pullman or general admission total
@@ -1741,16 +1748,34 @@ Teatro Español Pigüé`;
                   Seleccioná butacas o palcos para ver el detalle de la venta.
                 </div>
               ) : (
-                <ul style={{ margin: 0, paddingLeft: 20, fontSize: 14, display: 'grid', gap: 6 }}>
-                  {Array.from(currentSelection.selectedSeatIds).map((sid) => (
-                    <li key={sid}>{formatSeatLocation(sid, 'butaca')}</li>
-                  ))}
-                  {Array.from(currentSelection.selectedPalcosLabels).map((label) => (
-                    <li key={label}>{formatSeatLocation(label, 'palco')}</li>
-                  ))}
+                <ul style={{ margin: 0, paddingLeft: 20, fontSize: 14, display: 'grid', gap: 6, listStyle: 'none', padding: 0 }}>
+                  {Array.from(currentSelection.selectedSeatIds).map((sid) => {
+                    const tierInfo = currentSelection.priceTiers?.length > 0 ? getSeatPriceTier(sid, currentSelection.priceTiers) : null;
+                    const seatPrice = tierInfo?.price ? Number(tierInfo.price) : Number(currentSelection.pricing?.platea_general || 0);
+                    return (
+                      <li key={sid} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                        <span>{formatSeatLocation(sid, 'butaca')}</span>
+                        <span style={{ fontWeight: 600 }}>${seatPrice.toLocaleString('es-AR')}</span>
+                      </li>
+                    );
+                  })}
+                  {Array.from(currentSelection.selectedPalcosLabels).map((label) => {
+                    const isPB = /^PB/i.test(label);
+                    const tierInfo = currentSelection.priceTiers?.length > 0 ? getSeatPriceTier(label, currentSelection.priceTiers) : null;
+                    const palcoPrice = tierInfo?.price ? Number(tierInfo.price) : (isPB ? Number(currentSelection.pricing?.palcos_bajos || 0) : Number(currentSelection.pricing?.palcos_altos || 0));
+                    return (
+                      <li key={label} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                        <span>{formatSeatLocation(label, 'palco')}</span>
+                        <span style={{ fontWeight: 600 }}>${palcoPrice.toLocaleString('es-AR')}</span>
+                      </li>
+                    );
+                  })}
                   {currentSelection.pullmanSelected > 0 && (
-                    <li>
-                      {currentSelection.pricing?.general > 0 ? 'Entrada General' : 'Pullman'} x {currentSelection.pullmanSelected}
+                    <li style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                      <span>{currentSelection.pricing?.general > 0 ? 'Entrada General' : 'Pullman'} x {currentSelection.pullmanSelected}</span>
+                      <span style={{ fontWeight: 600 }}>
+                        ${((currentSelection.pricing?.general > 0 ? Number(currentSelection.pricing.general) : Number(currentSelection.pricing?.pullman || 0)) * currentSelection.pullmanSelected).toLocaleString('es-AR')}
+                      </span>
                     </li>
                   )}
                 </ul>
@@ -1933,18 +1958,7 @@ Teatro Español Pigüé`;
                 <div style={{ fontSize: isWideLayout ? 16 : 14, fontWeight: 600, color: '#1f2937' }}>
                   {(() => {
                     if (!cashShift.opened_at) return '';
-                    const d = new Date(cashShift.opened_at);
-                    const dateStr = d.toLocaleDateString('es-AR', {
-                      day: '2-digit',
-                      month: '2-digit',
-                      year: 'numeric'
-                    });
-                    const timeStr = d.toLocaleTimeString('es-AR', {
-                      hour: '2-digit',
-                      minute: '2-digit',
-                      hour12: false
-                    });
-                    return `${dateStr} - ${timeStr}`;
+                    return formatDateTimeCompact(cashShift.opened_at);
                   })()}
                 </div>
               </div>
@@ -2041,21 +2055,8 @@ Teatro Español Pigüé`;
                   </thead>
                   <tbody>
                     {cashOperations.slice(0, 50).map((op) => {
-                      const sessionDate = op.session_date ? new Date(op.session_date) : null;
-                      const sessionDateStr = sessionDate
-                        ? sessionDate.toLocaleDateString('es-AR', {
-                            day: '2-digit',
-                            month: '2-digit',
-                            year: '2-digit'
-                          })
-                        : '-';
-                      const sessionTimeStr = sessionDate
-                        ? sessionDate.toLocaleTimeString('es-AR', {
-                            hour: '2-digit',
-                            minute: '2-digit',
-                            hour12: false
-                          })
-                        : '';
+                      const sessionDateStr = op.session_date ? formatDate(op.session_date) : '-';
+                      const sessionTimeStr = op.session_date ? formatTime(op.session_date) : '';
 
                       const isRefunded = op.refunded || false;
                       const isRefundOperation = op.is_refund_operation || false;
@@ -2164,13 +2165,8 @@ Teatro Español Pigüé`;
             ) : (
               <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
                 {cashOperations.slice(0, 50).map((op) => {
-                  const sessionDate = op.session_date ? new Date(op.session_date) : null;
-                  const sessionDateStr = sessionDate
-                    ? sessionDate.toLocaleDateString('es-AR', { day: '2-digit', month: '2-digit', year: '2-digit' })
-                    : '-';
-                  const sessionTimeStr = sessionDate
-                    ? sessionDate.toLocaleTimeString('es-AR', { hour: '2-digit', minute: '2-digit', hour12: false })
-                    : '';
+                  const sessionDateStr = op.session_date ? formatDate(op.session_date) : '-';
+                  const sessionTimeStr = op.session_date ? formatTime(op.session_date) : '';
                   const isRefundOperation = op.is_refund_operation || false;
                   const isRefundedOriginal = (op.refunded || false) && !isRefundOperation;
 
@@ -2409,14 +2405,14 @@ Teatro Español Pigüé`;
                         <div>
                           <strong>{shift.cashier?.name || 'Boletería'}</strong>
                           <div style={{ fontSize: 13, color: '#6b7280' }}>
-                            Apertura: {new Date(shift.opened_at).toLocaleString('es-AR')}
+                            Apertura: {formatDateTimeCompact(shift.opened_at)}
                           </div>
                         </div>
                       </div>
                       <div style={{ textAlign: 'right' }}>
                         <div style={{ fontSize: 13, color: '#6b7280' }}>Estado: {shift.status === 'closed' ? 'Cerrada' : 'Abierta'}</div>
                         {shift.closed_at ? (
-                          <div style={{ fontSize: 13, color: '#6b7280' }}>Cierre: {new Date(shift.closed_at).toLocaleString('es-AR')}</div>
+                          <div style={{ fontSize: 13, color: '#6b7280' }}>Cierre: {formatDateTimeCompact(shift.closed_at)}</div>
                         ) : null}
                       </div>
                     </div>
@@ -2473,13 +2469,8 @@ Teatro Español Pigüé`;
                             </thead>
                             <tbody>
                               {operations.map((op) => {
-                                const sessionDate = op.session_date ? new Date(op.session_date) : null;
-                                const sessionDateStr = sessionDate
-                                  ? sessionDate.toLocaleDateString('es-AR', { day: '2-digit', month: '2-digit', year: '2-digit' })
-                                  : '-';
-                                const sessionTimeStr = sessionDate
-                                  ? sessionDate.toLocaleTimeString('es-AR', { hour: '2-digit', minute: '2-digit', hour12: false })
-                                  : '';
+                                const sessionDateStr = op.session_date ? formatDate(op.session_date) : '-';
+                                const sessionTimeStr = op.session_date ? formatTime(op.session_date) : '';
                                 const isRefundOperation = op.is_refund_operation || false;
 
                                 return (
@@ -2549,13 +2540,8 @@ Teatro Español Pigüé`;
                       ) : (
                         <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
                           {operations.map((op) => {
-                            const sessionDate = op.session_date ? new Date(op.session_date) : null;
-                            const sessionDateStr = sessionDate
-                              ? sessionDate.toLocaleDateString('es-AR', { day: '2-digit', month: '2-digit', year: '2-digit' })
-                              : '-';
-                            const sessionTimeStr = sessionDate
-                              ? sessionDate.toLocaleTimeString('es-AR', { hour: '2-digit', minute: '2-digit', hour12: false })
-                              : '';
+                            const sessionDateStr = op.session_date ? formatDate(op.session_date) : '-';
+                            const sessionTimeStr = op.session_date ? formatTime(op.session_date) : '';
                             const isRefundOperation = op.is_refund_operation || false;
 
                             return (
@@ -3329,6 +3315,120 @@ Teatro Español Pigüé`;
     );
   };
 
+  const renderDisabilityQuotaSection = () => {
+    const loadData = async () => {
+      setDisabilityQuotaLoading(true);
+      setDisabilityQuotaError('');
+      try {
+        const res = await apiAuthFetch('/api/discounts/disability-quota', {}, token);
+        if (!res.ok) throw new Error('Error al cargar datos');
+        const data = await res.json();
+        setDisabilityQuota(data);
+      } catch (err) {
+        setDisabilityQuotaError('No se pudo cargar el cupo discapacidad.');
+      } finally {
+        setDisabilityQuotaLoading(false);
+      }
+    };
+
+    if (!disabilityQuota && !disabilityQuotaLoading && !disabilityQuotaError) {
+      loadData();
+    }
+
+    return (
+      <div style={{ padding: isWideLayout ? 0 : '0 8px' }}>
+        <div style={{ marginBottom: 16, display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: 8 }}>
+          <div>
+            <h2 style={{ margin: '0 0 4px', fontSize: 20, fontWeight: 600 }}>♿ Cupo Discapacidad</h2>
+            <p style={{ margin: 0, color: '#6b7280', fontSize: 14 }}>
+              Localidades adquiridas con el cupón <strong>CUPO-DISCAPACIDAD</strong> por función.
+            </p>
+          </div>
+          <button
+            type="button"
+            onClick={() => { setDisabilityQuota(null); setDisabilityQuotaError(''); }}
+            style={{
+              padding: '8px 16px',
+              borderRadius: 8,
+              border: '1px solid #d1d5db',
+              background: '#ffffff',
+              cursor: 'pointer',
+              fontWeight: 600,
+              fontSize: 13
+            }}
+          >
+            ↺ Actualizar
+          </button>
+        </div>
+
+        {disabilityQuotaLoading && (
+          <div style={{ color: '#6b7280', padding: '24px 0', textAlign: 'center' }}>Cargando...</div>
+        )}
+
+        {disabilityQuotaError && (
+          <div style={{ padding: 12, background: '#fee2e2', border: '1px solid #fecaca', borderRadius: 8, color: '#b91c1c' }}>
+            {disabilityQuotaError}
+          </div>
+        )}
+
+        {disabilityQuota && !disabilityQuotaLoading && (
+          <>
+            {!disabilityQuota.discount_exists && (
+              <div style={{ padding: 12, background: '#fef9c3', border: '1px solid #fde047', borderRadius: 8, color: '#854d0e', marginBottom: 12 }}>
+                El cupón <strong>CUPO-DISCAPACIDAD</strong> no existe en el sistema. Crealo desde el panel de administración.
+              </div>
+            )}
+
+            {disabilityQuota.results.length === 0 ? (
+              <p style={{ color: '#9ca3af' }}>No hay funciones próximas programadas.</p>
+            ) : (
+              <div style={{ overflowX: 'auto' }}>
+                <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 14 }}>
+                  <thead>
+                    <tr style={{ borderBottom: '2px solid #e5e7eb', background: '#f9fafb' }}>
+                      <th style={{ padding: '10px 12px', textAlign: 'left', fontWeight: 600, color: '#374151' }}>Espectáculo</th>
+                      <th style={{ padding: '10px 12px', textAlign: 'left', fontWeight: 600, color: '#374151' }}>Fecha y hora</th>
+                      <th style={{ padding: '10px 12px', textAlign: 'center', fontWeight: 600, color: '#374151' }}>Localidades c/ cupo</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {disabilityQuota.results.map((row) => (
+                      <tr
+                        key={row.session_id}
+                        style={{ borderBottom: '1px solid #f3f4f6' }}
+                      >
+                        <td style={{ padding: '10px 12px', fontWeight: 500 }}>{row.show_title}</td>
+                        <td style={{ padding: '10px 12px', color: '#374151' }}>
+                          {formatDate(row.starts_at)}
+                          <span style={{ color: '#9ca3af', marginLeft: 6 }}>{formatTime(row.starts_at)}</span>
+                        </td>
+                        <td style={{ padding: '10px 12px', textAlign: 'center' }}>
+                          <span style={{
+                            display: 'inline-block',
+                            minWidth: 36,
+                            padding: '2px 12px',
+                            borderRadius: 999,
+                            fontWeight: 700,
+                            fontSize: 15,
+                            background: row.ticket_count > 0 ? '#ede9fe' : '#f3f4f6',
+                            color: row.ticket_count > 0 ? '#7c3aed' : '#9ca3af',
+                            border: `1px solid ${row.ticket_count > 0 ? '#c4b5fd' : '#e5e7eb'}`
+                          }}>
+                            {row.ticket_count}
+                          </span>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </>
+        )}
+      </div>
+    );
+  };
+
   const actionButtons = [
     { key: 'open', label: 'Estado de caja', icon: '' },
     { key: 'history', label: 'Ver cierres', icon: '' }
@@ -3339,8 +3439,13 @@ Teatro Español Pigüé`;
   }
 
   // Add "Bloqueos" button only for admin users
-  if (user?.role === 'admin') {
+  if (hasRole('admin')) {
     actionButtons.push({ key: 'blocking', label: 'Bloqueos', icon: '🔒' });
+  }
+
+  // Add "Cupo discapacidad" for admin and boleteria
+  if (hasRole('admin', 'boleteria')) {
+    actionButtons.push({ key: 'disability', label: 'Cupo discapacidad', icon: '♿' });
   }
 
   const renderActionButtons = () => (
@@ -3447,6 +3552,7 @@ Teatro Español Pigüé`;
         {activeSection === 'history' && renderHistorySection()}
         {activeSection === 'sales' && renderSalesSection()}
         {activeSection === 'blocking' && renderBlockingSection()}
+        {activeSection === 'disability' && renderDisabilityQuotaSection()}
       </section>
 
       {showSaleModal && (

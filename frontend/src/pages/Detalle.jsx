@@ -1,4 +1,4 @@
-import { useParams, useNavigate } from 'react-router-dom';
+import { useParams, useNavigate, useSearchParams } from 'react-router-dom';
 import { useEffect, useRef, useState, useCallback } from 'react';
 import { useAuth } from '../contexts/AuthContext.jsx';
 import SeatSelection from '../components/SeatSelection.jsx';
@@ -9,14 +9,18 @@ import GuestCheckoutForm from '../components/GuestCheckoutForm.jsx';
 import { apiFetch, apiAuthFetch } from '../lib/api';
 import { formatSeatLocation } from '../lib/seatFormatter';
 import { getShowImageUrl } from '../lib/media';
+import { getSeatPriceTier } from '../lib/seatPriceColors.js';
+import { formatDateLong, formatTime, formatDateShort } from '../lib/dateFormatter.js';
 
 export default function Detalle(){
   const { id } = useParams();
+  const [searchParams] = useSearchParams();
+  const sessionParam = searchParams.get('sesion');
   const { user, token, isAuthenticated, loading: authLoading } = useAuth();
   const navigate = useNavigate();
   const [show, setShow] = useState(null);
   const [sessions, setSessions] = useState([]);
-  const [selectedSession, setSelectedSession] = useState(null);
+  const [selectedSession, setSelectedSession] = useState(sessionParam);
   const [reservation, setReservation] = useState(null);
   const [timeLeft, setTimeLeft] = useState(0);
   const [syncing, setSyncing] = useState(false);
@@ -52,6 +56,9 @@ export default function Detalle(){
   const [showGuestForm, setShowGuestForm] = useState(false);
   const [guestData, setGuestData] = useState(null);
   const [emittingFreeTickets, setEmittingFreeTickets] = useState(false);
+
+  // Mobile cart drawer state
+  const [isMobileCartOpen, setIsMobileCartOpen] = useState(false);
 
   // Responsive check
   const isWideLayout = typeof window !== 'undefined' && window.innerWidth >= 1200;
@@ -207,10 +214,13 @@ export default function Detalle(){
       .then(r=>r.json())
       .then(sessions => {
         setSessions(sessions);
-        // Auto-select if only one session
-        if (sessions.length === 1) {
+        // Pre-select session: URL param > single session > null (user chooses)
+        if (sessionParam && sessions.find(s => s.id === sessionParam)) {
+          // Use session from URL parameter if valid
+          setSelectedSession(sessionParam);
+        } else if (sessions.length === 1) {
           setSelectedSession(sessions[0].id);
-        } else if (sessions.length > 0) {
+        } else if (sessions.length > 0 && !sessionParam) {
           // Don't auto-select, let user choose
           setSelectedSession(null);
         }
@@ -954,6 +964,9 @@ export default function Detalle(){
     pullmanSelected: 0,
     socketRef: null
   });
+  
+  // Track price tiers for seat pricing rules
+  const [priceTiers, setPriceTiers] = useState([]);
 
   // Store full selection object in a ref for stable access
   const clearSelectionRef = useRef(null);
@@ -964,6 +977,10 @@ export default function Detalle(){
     clearSelectionRef.current = selection;
     // Update selection state - no restoration, clean slate on page refresh
     setCurrentSelection(selection);
+    // Update price tiers if available
+    if (selection.priceTiers) {
+      setPriceTiers(selection.priceTiers);
+    }
     
     // Check if applied discount still meets seat constraints
     if (appliedDiscount && (appliedDiscount.min_seats || appliedDiscount.max_seats || appliedDiscount.require_even)) {
@@ -1042,20 +1059,12 @@ export default function Detalle(){
   
   // Calculate session date label
   const selectedSessionObj = sessions.find(s => s.id === selectedSession) || sessions[0];
-  const sessionDateLabel = (() => {
-    if (!selectedSessionObj?.starts_at) return 'Fecha a confirmar';
-    const date = new Date(selectedSessionObj.starts_at);
-    return date.toLocaleDateString('es-AR', { 
-      day: 'numeric', 
-      month: 'long', 
-      year: 'numeric' 
-    });
-  })();
-  const sessionTimeLabel = (() => {
-    if (!selectedSessionObj?.starts_at) return '';
-    const date = new Date(selectedSessionObj.starts_at);
-    return date.toLocaleTimeString('es-AR', { hour: '2-digit', minute: '2-digit', hour12: false });
-  })();
+  const sessionDateLabel = selectedSessionObj?.starts_at
+    ? formatDateLong(selectedSessionObj.starts_at)
+    : 'Fecha a confirmar';
+  const sessionTimeLabel = selectedSessionObj?.starts_at
+    ? formatTime(selectedSessionObj.starts_at)
+    : '';
 
   // Calculate prices and total
   const calculatePrices = () => {
@@ -1065,9 +1074,11 @@ export default function Detalle(){
     const items = [];
     let subtotal = 0;
 
-    // Seats
+    // Seats - use priceTiers rules if available, otherwise fall back to base pricing
     Array.from(currentSelection.selectedSeatIds).forEach(sid => {
-      const price = Number(pricing.platea_general || 0);
+      // Check if there's a specific price tier for this seat
+      const tierInfo = priceTiers && priceTiers.length > 0 ? getSeatPriceTier(sid, priceTiers) : null;
+      const price = tierInfo?.price ? Number(tierInfo.price) : Number(pricing.platea_general || 0);
       items.push({
         type: 'butaca',
         label: formatSeatLocation(sid, 'butaca'),
@@ -1077,10 +1088,12 @@ export default function Detalle(){
       subtotal += price;
     });
 
-    // Palcos
+    // Palcos - use priceTiers rules if available, otherwise fall back to base pricing
     Array.from(currentSelection.selectedPalcosLabels).forEach(label => {
       const isPB = /^PB/i.test(label);
-      const price = isPB ? Number(pricing.palcos_bajos || 0) : Number(pricing.palcos_altos || 0);
+      // Check if there's a specific price tier for this palco
+      const tierInfo = priceTiers && priceTiers.length > 0 ? getSeatPriceTier(label, priceTiers) : null;
+      const price = tierInfo?.price ? Number(tierInfo.price) : (isPB ? Number(pricing.palcos_bajos || 0) : Number(pricing.palcos_altos || 0));
       const seats = isPB ? 4 : 2;
       items.push({
         type: 'palco',
@@ -1588,17 +1601,8 @@ export default function Detalle(){
             justifyContent: 'center' 
           }}>
             {sessions.map(session => {
-              const date = new Date(session.starts_at);
-              const dateStr = date.toLocaleDateString('es-AR', { 
-                weekday: 'short',
-                day: 'numeric', 
-                month: 'short'
-              });
-              const timeStr = date.toLocaleTimeString('es-AR', { 
-                hour: '2-digit', 
-                minute: '2-digit',
-                hour12: false
-              });
+              const dateStr = formatDateShort(session.starts_at);
+              const timeStr = formatTime(session.starts_at);
               const isSelected = selectedSession === session.id;
               
               return (
@@ -1712,6 +1716,7 @@ export default function Detalle(){
               isWideLayout={isWideLayout}
               pricing={currentSelection.pricing || defaultPricing}
               formatCurrency={formatCurrency}
+              priceTiers={priceTiers}
             />
           </div>
         )}
@@ -1778,16 +1783,17 @@ export default function Detalle(){
           </div>
 
           {/* Only show sidebar for sala_principal (GeneralAdmissionSelection includes its own) */}
-          {show && show.venue_type === 'sala_principal' && (
+          {/* Desktop: show sidebar inline. Mobile: handled by CartPeek + CartDrawer */}
+          {show && show.venue_type === 'sala_principal' && isWideLayout && (
             <div
               style={{
-                flex: isWideLayout ? '0 0 260px' : '1 1 auto',
-                maxWidth: isWideLayout ? 280 : '100%',
-                width: isWideLayout ? 260 : '100%',
+                flex: '0 0 260px',
+                maxWidth: 280,
+                width: 260,
                 alignSelf: 'stretch',
                 display: 'flex',
                 flexDirection: 'column',
-                padding: isWideLayout ? 0 : '0 16px'
+                padding: 0
               }}
             >
               {spectatorSidebar}
@@ -1814,6 +1820,443 @@ export default function Detalle(){
           loading={false}
           submitLabel={calculatePrices().total === 0 && appliedDiscount ? 'Emitir entradas' : 'Continuar al pago'}
         />
+      )}
+
+      {/* Mobile Cart Peek - Fixed bottom bar (for all venue types on mobile) */}
+      {!isWideLayout && show && cartItems.length > 0 && (
+        <>
+          {/* Backdrop with blur when drawer is open */}
+          {isMobileCartOpen && (
+            <div
+              onClick={() => setIsMobileCartOpen(false)}
+              style={{
+                position: 'fixed',
+                top: 0,
+                left: 0,
+                right: 0,
+                bottom: 0,
+                background: 'rgba(0,0,0,0.4)',
+                backdropFilter: 'blur(4px)',
+                zIndex: 998,
+                transition: 'opacity 0.3s ease'
+              }}
+            />
+          )}
+
+          {/* Cart Drawer - Slides up from bottom */}
+          <div
+            style={{
+              position: 'fixed',
+              left: 0,
+              right: 0,
+              bottom: 0,
+              background: '#fff',
+              borderRadius: '16px 16px 0 0',
+              boxShadow: '0 -4px 20px rgba(0,0,0,0.15)',
+              zIndex: 999,
+              transform: isMobileCartOpen ? 'translateY(0)' : 'translateY(calc(100% - 95px))',
+              transition: 'transform 0.3s cubic-bezier(0.4, 0, 0.2, 1)',
+              height: isMobileCartOpen ? '85vh' : '95px',
+              maxHeight: isMobileCartOpen ? '85vh' : '95px',
+              overflow: 'hidden',
+              display: 'flex',
+              flexDirection: 'column'
+            }}
+          >
+            {/* Peek handle - visible when closed */}
+            <div
+              onClick={() => setIsMobileCartOpen(!isMobileCartOpen)}
+              style={{
+                padding: '12px 16px 8px',
+                cursor: 'pointer',
+                display: 'flex',
+                flexDirection: 'column',
+                alignItems: 'center',
+                borderBottom: isMobileCartOpen ? '1px solid #e5e7eb' : 'none'
+              }}
+            >
+              {/* Drag handle bar */}
+              <div style={{
+                width: 40,
+                height: 4,
+                background: '#d1d5db',
+                borderRadius: 2,
+                marginBottom: 8
+              }} />
+              
+              {/* Button when closed - Ir a pagar */}
+              {!isMobileCartOpen && (
+                <div style={{
+                  display: 'flex',
+                  justifyContent: 'space-between',
+                  alignItems: 'center',
+                  width: '100%',
+                  padding: '4px 0'
+                }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                    <span style={{ fontSize: 20 }}>🛒</span>
+                    <span style={{ fontSize: 15, fontWeight: 700 }}>
+                      ${cartTotal.toLocaleString('es-AR')}
+                    </span>
+                    <span style={{ fontSize: 13, color: '#6b7280' }}>
+                      ({cartItems.length} {cartItems.length === 1 ? 'item' : 'items'})
+                    </span>
+                  </div>
+                  <button
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      setIsMobileCartOpen(true);
+                    }}
+                    style={{
+                      background: '#1e40af',
+                      color: '#fff',
+                      border: 'none',
+                      padding: '10px 20px',
+                      borderRadius: 8,
+                      fontSize: 14,
+                      fontWeight: 600,
+                      cursor: 'pointer'
+                    }}
+                  >
+                    Ir a pagar →
+                  </button>
+                </div>
+              )}
+              
+              {/* Header when open - Modificar selección button */}
+              {isMobileCartOpen && (
+                <div style={{
+                  display: 'flex',
+                  justifyContent: 'space-between',
+                  alignItems: 'center',
+                  width: '100%'
+                }}>
+                  <span style={{ fontSize: 18, fontWeight: 700 }}>🛒 Tu selección</span>
+                  <button
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      setIsMobileCartOpen(false);
+                    }}
+                    style={{
+                      background: '#f3f4f6',
+                      color: '#374151',
+                      border: '1px solid #d1d5db',
+                      padding: '8px 16px',
+                      borderRadius: 6,
+                      fontSize: 13,
+                      fontWeight: 600,
+                      cursor: 'pointer'
+                    }}
+                  >
+                    Modificar selección
+                  </button>
+                </div>
+              )}
+            </div>
+
+            {/* Cart content - scrollable when open */}
+            {isMobileCartOpen && (
+              <div style={{
+                flex: 1,
+                overflow: 'auto',
+                padding: '0 16px 16px'
+              }}>
+                {/* Show info */}
+                {show && selectedSession && (
+                  <div style={{ marginBottom: 12, padding: '10px 12px', background: '#f0f9ff', borderRadius: 8, borderLeft: '3px solid #3b82f6' }}>
+                    <div style={{ fontWeight: 600, fontSize: 14, color: '#1e293b' }}>{show.title}</div>
+                    <div style={{ fontSize: 12, color: '#64748b', marginTop: 2 }}>
+                      {sessionDateLabel} - {sessionTimeLabel} hs
+                    </div>
+                  </div>
+                )}
+
+                {/* Reservation timer */}
+                {reservation && (
+                  <div style={{ marginBottom: 12, fontSize: 13, padding: 10, background: '#fff3cd', borderRadius: 6 }}>
+                    Tiempo restante: <strong>{fmt(timeLeft)}</strong>
+                  </div>
+                )}
+
+                {/* Cart items */}
+                <ul style={{ listStyle: 'none', padding: 0, margin: '0 0 12px' }}>
+                  {cartItems.map((item, idx) => (
+                    <li key={idx} style={{ 
+                      padding: '10px 0', 
+                      borderBottom: '1px solid #eee',
+                      display: 'flex',
+                      justifyContent: 'space-between',
+                      fontSize: 14
+                    }}>
+                      <span>
+                        {item.label} {item.type === 'pullman' ? `x${item.quantity}` : (item.quantity > 1 && `x${item.quantity}`)}
+                      </span>
+                      <span style={{ fontWeight: 600 }}>
+                        ${(item.price * item.quantity).toLocaleString('es-AR')}
+                      </span>
+                    </li>
+                  ))}
+                </ul>
+
+                {/* Subtotal tickets */}
+                <div style={{ 
+                  paddingTop: 8,
+                  borderTop: '1px solid #ddd',
+                  display: 'flex',
+                  justifyContent: 'space-between',
+                  fontSize: 14
+                }}>
+                  <span>Subtotal entradas:</span>
+                  <span>${cartSubtotal.toLocaleString('es-AR')}</span>
+                </div>
+
+                {/* Services selection */}
+                {showServices.length > 0 && (
+                  <div style={{ marginTop: 14, paddingTop: 12, borderTop: '1px dashed #ddd' }}>
+                    <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 8, color: '#374151' }}>
+                      Sumá servicios adicionales
+                    </div>
+                    {(() => {
+                      let totalLocalidades = currentSelection.selectedSeatIds?.size || 0;
+                      Array.from(currentSelection.selectedPalcosLabels || []).forEach(label => {
+                        totalLocalidades += /^PB/i.test(label) ? 4 : 2;
+                      });
+                      const generalQty = currentSelection.generalAdmissionCount > 0
+                        ? currentSelection.generalAdmissionCount
+                        : (currentSelection.pullmanSelected || 0);
+                      totalLocalidades += generalQty;
+                      return showServices.map(svc => {
+                        const qty = Math.min(Number(selectedServices[svc.id] || 0), totalLocalidades);
+                        return (
+                          <div key={svc.id} style={{ marginBottom: 10 }}>
+                            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 6 }}>
+                              <div>
+                                <span style={{ fontSize: 13, fontWeight: 500 }}>{svc.name}</span>
+                                {svc.description && <span style={{ fontSize: 11, color: '#6b7280', display: 'block' }}>{svc.description}</span>}
+                              </div>
+                              <span style={{ fontSize: 13, fontWeight: 600, whiteSpace: 'nowrap', marginLeft: 8 }}>${Number(svc.price).toLocaleString('es-AR')}/u</span>
+                            </div>
+                            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8 }}>
+                              <select
+                                value={qty}
+                                onChange={e => setSelectedServices(prev => ({ ...prev, [svc.id]: Number(e.target.value) }))}
+                                style={{ padding: '4px 8px', borderRadius: 4, border: '1px solid #d1d5db', fontSize: 13, background: '#fff', cursor: 'pointer' }}
+                                disabled={totalLocalidades === 0}
+                              >
+                                {Array.from({ length: totalLocalidades + 1 }, (_, i) => (
+                                  <option key={i} value={i}>{i === 0 ? 'Sin agregar' : `${i} persona${i > 1 ? 's' : ''}`}</option>
+                                ))}
+                              </select>
+                              {qty > 0 && (
+                                <span style={{ fontSize: 13, fontWeight: 600, color: '#1e40af' }}>
+                                  ${(Number(svc.price) * qty).toLocaleString('es-AR')}
+                                </span>
+                              )}
+                            </div>
+                          </div>
+                        );
+                      });
+                    })()}
+                    {cartServicesSubtotal > 0 && (
+                      <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 13, fontWeight: 600, marginTop: 6, paddingTop: 6, borderTop: '1px solid #e5e7eb', color: '#374151' }}>
+                        <span>Subtotal servicios:</span>
+                        <span>${cartServicesSubtotal.toLocaleString('es-AR')}</span>
+                      </div>
+                    )}
+                  </div>
+                )}
+
+                {/* Discount section */}
+                {!appliedDiscount ? (
+                  <div style={{ marginTop: 12, paddingTop: 12, borderTop: '1px solid #eee' }}>
+                    <label style={{ display: 'block', fontSize: 12, marginBottom: 4, color: '#666' }}>
+                      ¿Tenés un cupón de descuento?
+                    </label>
+                    <div style={{ display: 'flex', gap: 4 }}>
+                      <input
+                        type="text"
+                        value={discountCode}
+                        onChange={(e) => setDiscountCode(e.target.value.toUpperCase())}
+                        placeholder="CÓDIGO"
+                        style={{
+                          flex: 1,
+                          padding: '6px 8px',
+                          border: '1px solid #ccc',
+                          borderRadius: 4,
+                          fontSize: 13,
+                          textTransform: 'uppercase'
+                        }}
+                      />
+                      <button
+                        onClick={handleApplyDiscount}
+                        disabled={!discountCode.trim() || validatingDiscount}
+                        style={{
+                          padding: '6px 12px',
+                          background: discountCode.trim() ? '#28a745' : '#ccc',
+                          color: '#fff',
+                          border: 'none',
+                          borderRadius: 4,
+                          fontSize: 13,
+                          cursor: discountCode.trim() ? 'pointer' : 'not-allowed',
+                          fontWeight: 600
+                        }}
+                      >
+                        {validatingDiscount ? '...' : 'Aplicar'}
+                      </button>
+                    </div>
+                    {discountError && (
+                      <div style={{ marginTop: 4, fontSize: 11, color: '#dc3545' }}>
+                        {discountError}
+                      </div>
+                    )}
+                  </div>
+                ) : (
+                  <div style={{ marginTop: 12, paddingTop: 12, borderTop: '1px solid #eee' }}>
+                    <div style={{ padding: 8, background: '#d1fae5', border: '1px solid #a7f3d0', borderRadius: 4 }}>
+                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                        <div>
+                          <div style={{ fontSize: 12, color: '#065f46', fontWeight: 600 }}>
+                            {appliedDiscount?.alias || discountCode}
+                          </div>
+                          <div style={{ fontSize: 11, color: '#059669' }}>Cupón aplicado</div>
+                        </div>
+                        <button
+                          onClick={handleRemoveDiscount}
+                          style={{ background: 'none', border: 'none', color: '#059669', cursor: 'pointer', fontSize: 18, padding: 4 }}
+                          title="Quitar cupón"
+                        >
+                          ×
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+                )}
+
+                {/* Discount amount */}
+                {cartDiscountAmount > 0 && (
+                  <div style={{ 
+                    marginTop: 6,
+                    display: 'flex',
+                    justifyContent: 'space-between',
+                    fontSize: 14,
+                    color: '#059669',
+                    fontWeight: 600
+                  }}>
+                    <span>Descuento:</span>
+                    <span>-${cartDiscountAmount.toLocaleString('es-AR')}</span>
+                  </div>
+                )}
+
+                {/* Service charge */}
+                <div style={{ 
+                  marginTop: 6,
+                  display: 'flex',
+                  justifyContent: 'space-between',
+                  fontSize: 14,
+                  color: '#666'
+                }}>
+                  <span>Cargo por servicio:</span>
+                  <span>${cartServiceCharge.toLocaleString('es-AR')}</span>
+                </div>
+
+                {/* Total */}
+                <div style={{ 
+                  marginTop: 12,
+                  paddingTop: 12,
+                  borderTop: '2px solid #333',
+                  display: 'flex',
+                  justifyContent: 'space-between',
+                  fontSize: 18,
+                  fontWeight: 700
+                }}>
+                  <span>TOTAL:</span>
+                  <span>${cartTotal.toLocaleString('es-AR')}</span>
+                </div>
+
+                {/* Action buttons */}
+                {reservation && (
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: 10, marginTop: 16 }}>
+                    {cartTotal > 0 ? (
+                      <button 
+                        onClick={() => {
+                          setIsMobileCartOpen(false);
+                          handlePaymentClick();
+                        }} 
+                        style={{ 
+                          background: '#1e40af',
+                          color: '#fff',
+                          border: 'none',
+                          padding: '14px 16px',
+                          borderRadius: 8,
+                          fontWeight: 600,
+                          fontSize: 16,
+                          cursor: 'pointer'
+                        }}
+                      >
+                        Ir a pagar ${cartTotal.toLocaleString('es-AR')}
+                      </button>
+                    ) : (
+                      <>
+                        <button 
+                          disabled
+                          style={{ 
+                            background: '#9ca3af',
+                            color: '#fff',
+                            border: 'none',
+                            padding: '14px 16px',
+                            borderRadius: 8,
+                            fontWeight: 600,
+                            fontSize: 16,
+                            cursor: 'not-allowed',
+                            opacity: 0.6
+                          }}
+                        >
+                          Pagar $0
+                        </button>
+                        <button 
+                          onClick={() => {
+                            setIsMobileCartOpen(false);
+                            handleFreeEmissionClick();
+                          }} 
+                          style={{ 
+                            background: 'linear-gradient(135deg, #059669 0%, #047857 100%)',
+                            color: '#fff',
+                            border: 'none',
+                            padding: '14px 16px',
+                            borderRadius: 8,
+                            fontWeight: 600,
+                            fontSize: 16,
+                            cursor: 'pointer'
+                          }}
+                        >
+                          Emitir entradas
+                        </button>
+                      </>
+                    )}
+                    
+                    <button 
+                      onClick={cancelReservation}
+                      style={{
+                        background: '#fff',
+                        color: '#dc3545',
+                        border: '1px solid #dc3545',
+                        padding: '10px 12px',
+                        borderRadius: 6,
+                        fontSize: 13,
+                        cursor: 'pointer'
+                      }}
+                    >
+                      ✕ Cancelar reserva
+                    </button>
+                  </div>
+                )}
+              </div>
+            )}
+          </div>
+
+          {/* Spacer for fixed peek when drawer is closed */}
+          {!isMobileCartOpen && <div style={{ height: 95 }} />}
+        </>
       )}
     </div>
   );

@@ -1,4 +1,5 @@
 import { useState, useEffect, useMemo } from 'react';
+import { formatDateShort, formatTime } from '../../lib/dateFormatter.js';
 
 const VENUE_LABELS = {
   sala_principal: 'Sala Principal',
@@ -270,9 +271,7 @@ export default function ShowList({ shows, onEdit, onDelete, onManageSessions, on
                     </div>
                     {nextSession && tab === 'activos' && (
                       <div style={{ marginTop: 4, color: '#28a745', fontWeight: 600 }}>
-                        Próxima: {new Date(nextSession.starts_at).toLocaleDateString('es-AR', {
-                          weekday: 'short', day: 'numeric', month: 'short', year: 'numeric'
-                        })} · {new Date(nextSession.starts_at).toLocaleTimeString('es-AR', { hour: '2-digit', minute: '2-digit', hour12: false })}
+                        Próxima: {formatDateShort(nextSession.starts_at)} · {formatTime(nextSession.starts_at)}
                         {upcomingSessions.length > 1 && (
                           <span style={{ color: '#888', fontWeight: 400, marginLeft: 8 }}>
                             (+{upcomingSessions.length - 1} más)

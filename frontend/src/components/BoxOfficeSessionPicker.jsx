@@ -1,5 +1,6 @@
 import { useState, useMemo } from 'react';
 import { API_URL } from '../lib/api.js';
+import { formatDateLong, formatTime } from '../lib/dateFormatter.js';
 
 const venueLabelMap = {
   sala_principal: 'Sala Principal',
@@ -86,24 +87,6 @@ const BoxOfficeSessionPicker = ({
     return todayOrFutureSessions[0] || null;
   };
 
-  const formatDate = (dateStr) => {
-    const date = new Date(dateStr);
-    return date.toLocaleDateString('es-AR', {
-      weekday: 'short',
-      day: 'numeric',
-      month: 'short'
-    });
-  };
-
-  const formatTime = (dateStr) => {
-    const date = new Date(dateStr);
-    return date.toLocaleTimeString('es-AR', {
-      hour: '2-digit',
-      minute: '2-digit',
-      hour12: false
-    });
-  };
-
   const getShowImageUrl = (show) => {
     if (show.image_principal_mobile) {
       if (show.image_principal_mobile.startsWith('http')) return show.image_principal_mobile;
@@ -178,16 +161,8 @@ const BoxOfficeSessionPicker = ({
           </label>
           <div style={{ display: 'grid', gap: 8 }}>
             {showSessions.map((session) => {
-              const date = new Date(session.starts_at);
-              const dateStr = date.toLocaleDateString('es-AR', {
-                weekday: 'long',
-                day: 'numeric',
-                month: 'long'
-              });
-              const timeStr = date.toLocaleTimeString('es-AR', {
-                hour: '2-digit',
-                minute: '2-digit'
-              });
+              const dateStr = formatDateLong(session.starts_at);
+              const timeStr = formatTime(session.starts_at);
               const isSelected = selectedSession === session.id;
 
               return (
@@ -347,7 +322,7 @@ const BoxOfficeSessionPicker = ({
                   </h4>
                   {nextSession && (
                     <span style={{ fontSize: 12, color: '#6b7280' }}>
-                      {formatDate(nextSession.starts_at)} - {formatTime(nextSession.starts_at)}
+                      {formatDateLong(nextSession.starts_at)} - {formatTime(nextSession.starts_at)}
                     </span>
                   )}
                   <span style={{ fontSize: 11, color: '#9ca3af' }}>

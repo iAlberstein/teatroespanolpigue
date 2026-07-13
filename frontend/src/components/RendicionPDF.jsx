@@ -2,6 +2,7 @@ import { useState, useEffect } from 'react';
 import { apiAuthFetch } from '../lib/api';
 import { jsPDF } from 'jspdf';
 import autoTable from 'jspdf-autotable';
+import { formatDate } from '../lib/dateFormatter.js';
 import logoAteneo from '../assets/images/logo_ateneo.png';
 
 const MESES = ['Enero','Febrero','Marzo','Abril','Mayo','Junio','Julio','Agosto','Septiembre','Octubre','Noviembre','Diciembre'];
@@ -305,7 +306,7 @@ export default function RendicionPDF({ token, clases }) {
     y += 10;
     doc.setFontSize(8);
     doc.setTextColor(150, 150, 150);
-    doc.text(`Generado: ${new Date().toLocaleDateString('es-AR')} — Ateneo Teatro Español Pigüé`, pageW / 2, y, { align: 'center' });
+    doc.text(`Generado: ${formatDate(new Date())} — Ateneo Teatro Español Pigüé`, pageW / 2, y, { align: 'center' });
 
     const nombreArchivo = `rendicion_${(claseInfo?.nombre || 'clase').toLowerCase().replace(/\s+/g, '_')}_${periodosSeleccionados.join('-') || 'sin_periodo'}.pdf`;
     doc.save(nombreArchivo);

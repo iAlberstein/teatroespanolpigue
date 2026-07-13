@@ -2,13 +2,16 @@ import { useParams, useNavigate } from 'react-router-dom';
 import { useEffect, useState } from 'react';
 import { apiFetch } from '../lib/api';
 import { getShowImageUrl } from '../lib/media';
+import { formatDate, formatTime } from '../lib/dateFormatter.js';
 
 export default function ShowInfo() {
   const { id } = useParams();
   const navigate = useNavigate();
   const [show, setShow] = useState(null);
   const [sessions, setSessions] = useState([]);
-  const [seatPricing, setSeatPricing] = useState([]);
+  const [sessionPricing, setSessionPricing] = useState({}); // Map sessionId -> pricing rules
+  const [selectedSessionId, setSelectedSessionId] = useState(null);
+  const [flippedCardId, setFlippedCardId] = useState(null); // Which card is flipped
   const [isMobile, setIsMobile] = useState(() => {
     if (typeof window === 'undefined') return false;
     return window.innerWidth < 768;
@@ -44,20 +47,36 @@ export default function ShowInfo() {
       .then(sessions => {
         console.log('[ShowInfo] Sessions loaded:', sessions);
         setSessions(sessions);
+        
+        // Load pricing rules for each session
+        const pricingPromises = sessions.map(session => 
+          apiFetch(`/api/seat-pricing/rules?sessionId=${session.id}`)
+            .then(res => res.json())
+            .then(data => ({ sessionId: session.id, rules: data.rules || [] }))
+            .catch(() => ({ sessionId: session.id, rules: [] }))
+        );
+        
+        Promise.all(pricingPromises).then(results => {
+          const pricingMap = {};
+          results.forEach(({ sessionId, rules }) => {
+            pricingMap[sessionId] = rules;
+          });
+          setSessionPricing(pricingMap);
+          
+          // Select first session by default
+          if (sessions.length > 0 && !selectedSessionId) {
+            setSelectedSessionId(sessions[0].id);
+          }
+          
+          // Auto-flip if only one session
+          if (sessions.length === 1) {
+            setFlippedCardId(sessions[0].id);
+          }
+        });
       })
       .catch(err => {
         console.error('[ShowInfo] Error loading sessions:', err);
       });
-
-    // Load seat pricing for this show
-    apiFetch(`/api/seat-pricing/show/${id}`)
-      .then(res => res.json())
-      .then(pricing => {
-        if (Array.isArray(pricing)) {
-          setSeatPricing(pricing);
-        }
-      })
-      .catch(() => {});
 
     // Inject JSON-LD structured data for SEO (Google rich results with correct timezone)
     apiFetch(`/api/seo/show/${id}`)
@@ -194,261 +213,170 @@ export default function ShowInfo() {
             </div>
           </div>
 
-          {sessions.length > 0 && (
+          {show.duration_minutes && (
             <div>
-              <div style={{ fontSize: 14, color: '#64748b', fontWeight: 600 }}>
-                {sessions.length === 1 ? 'Fecha y Hora' : 'Fechas y Horarios'}
+              <div style={{ fontSize: 14, color: '#64748b', fontWeight: 600 }}>Duración</div>
+              <div style={{ fontSize: 16, color: '#0f172a', fontWeight: 600 }}>
+                {show.duration_minutes} minutos
               </div>
-              <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+            </div>
+          )}
+
+          {/* Session Cards with Flip Animation */}
+          {sessions.length > 0 && (
+            <div style={{ marginTop: 16 }}>
+              <div style={{ fontSize: 14, color: '#64748b', fontWeight: 600, marginBottom: 12 }}>
+                {sessions.length === 1 ? 'Función' : 'Funciones'}
+              </div>
+              
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
                 {sessions.map(session => {
-                  const date = new Date(session.starts_at);
-                  const dateStr = date.toLocaleDateString('es-AR', {
-                    day: 'numeric',
-                    month: 'long'
-                  });
-                  const timeStr = date.toLocaleTimeString('es-AR', {
-                    hour: '2-digit',
-                    minute: '2-digit',
-                    hour12: false
-                  });
+                  const dateStr = formatDate(session.starts_at);
+                  const timeStr = formatTime(session.starts_at);
+
+                  const isFlipped = flippedCardId === session.id;
+                  const seatPricing = sessionPricing[session.id] || [];
+                  const isSoldOut = !!session.is_sold_out;
+                  
                   return (
-                    <div key={session.id} style={{ fontSize: 16, color: '#0f172a', fontWeight: 600 }}>
-                      {dateStr} - {timeStr}
+                    <div
+                      key={session.id}
+                      onClick={() => !isSoldOut && setFlippedCardId(isFlipped ? null : session.id)}
+                      style={{
+                        position: 'relative',
+                        height: isFlipped ? 'auto' : 80,
+                        cursor: isSoldOut ? 'default' : 'pointer',
+                        perspective: '1000px'
+                      }}
+                    >
+                      {/* Card Container with Flip Animation */}
+                      <div style={{
+                        position: 'relative',
+                        width: '100%',
+                        height: '100%',
+                        transformStyle: 'preserve-3d',
+                        transition: 'transform 0.6s',
+                        transform: isFlipped ? 'rotateX(180deg)' : 'rotateX(0deg)'
+                      }}>
+                        {/* Front of card (always visible initially) */}
+                        <div style={{
+                          position: isFlipped ? 'absolute' : 'relative',
+                          width: '100%',
+                          height: '100%',
+                          backfaceVisibility: 'hidden',
+                          display: 'flex',
+                          alignItems: 'center',
+                          justifyContent: 'space-between',
+                          padding: '16px 20px',
+                          background: isSoldOut
+                            ? 'linear-gradient(135deg, #94a3b8 0%, #64748b 100%)'
+                            : 'linear-gradient(135deg, #a78bfa 0%, #8b5cf6 100%)',
+                          borderRadius: 12,
+                          boxShadow: isSoldOut
+                            ? '0 4px 6px -1px rgba(100, 116, 139, 0.2)'
+                            : '0 4px 6px -1px rgba(139, 92, 246, 0.2)',
+                          transform: isFlipped ? 'rotateX(180deg)' : 'rotateX(0deg)',
+                          overflow: 'hidden'
+                        }}>
+                          <div>
+                            <div style={{ fontSize: 18, color: '#ffffff', fontWeight: 700 }}>
+                              {timeStr}
+                            </div>
+                            <div style={{ fontSize: 14, color: isSoldOut ? '#e2e8f0' : '#ede9fe', marginTop: 2 }}>
+                              {dateStr}
+                            </div>
+                          </div>
+                          {isSoldOut ? (
+                            <div style={{
+                              background: '#ef4444',
+                              color: '#ffffff',
+                              fontSize: 12,
+                              fontWeight: 800,
+                              letterSpacing: '0.5px',
+                              padding: '6px 14px',
+                              borderRadius: 999,
+                              textTransform: 'uppercase',
+                              whiteSpace: 'nowrap',
+                              boxShadow: '0 2px 8px rgba(239,68,68,0.4)'
+                            }}>
+                              LOCALIDADES AGOTADAS
+                            </div>
+                          ) : (
+                          <div style={{ 
+                            display: 'flex', 
+                            alignItems: 'center', 
+                            gap: 8
+                          }}>
+                            <div style={{ 
+                              fontSize: 13, 
+                              color: '#ffffff', 
+                              fontWeight: 700,
+                              letterSpacing: '0.5px'
+                            }}>
+                              VER PRECIOS
+                            </div>
+                            <div style={{ fontSize: 20, color: '#ffffff' }}>
+                              →
+                            </div>
+                          </div>
+                          )}
+                        </div>
+                        
+                        {/* Back of card (pricing info) */}
+                        {isFlipped && (
+                          <div style={{
+                            width: '100%',
+                            background: '#f8fafc',
+                            borderRadius: 12,
+                            border: '1px solid #e5e7eb',
+                            padding: 16,
+                            transform: 'rotateX(180deg)'
+                          }}>
+                            {/* Header */}
+                            <div style={{
+                              display: 'flex',
+                              justifyContent: 'space-between',
+                              alignItems: 'center',
+                              marginBottom: 12,
+                              paddingBottom: 12,
+                              borderBottom: '1px solid #e5e7eb'
+                            }}>
+                              <div>
+                                <div style={{ fontSize: 16, color: '#0f172a', fontWeight: 700 }}>
+                                  {dateStr} - {timeStr}
+                                </div>
+                                <div style={{ fontSize: 12, color: '#64748b' }}>
+                                  Precios según ubicación
+                                </div>
+                              </div>
+                              <div style={{
+                                fontSize: 12,
+                                color: '#8b5cf6',
+                                fontWeight: 600,
+                                cursor: 'pointer'
+                              }}>
+                                ← Volver
+                              </div>
+                            </div>
+                            
+                            {/* Pricing Display for this session */}
+                            <SessionPricingDisplay 
+                              session={session} 
+                              seatPricing={seatPricing}
+                              pricing={pricing}
+                              palcosIndividualSeats={palcosIndividualSeats}
+                              venueType={show.venue_type}
+                              isMobile={isMobile}
+                            />
+                          </div>
+                        )}
+                      </div>
                     </div>
                   );
                 })}
               </div>
             </div>
           )}
-
-          {(() => {
-            const isGeneralAdmission = (show.venue_type === 'el_tablado' || show.venue_type === 'las_gemelas');
-            
-            // Group seat pricing by sector
-            const plateaPricing = seatPricing.filter(p => p.row_from && p.row_to);
-            const palcoBajoPricing = seatPricing.filter(p => p.palco_from !== null && !p.is_palco_alto);
-            const palcoAltoPricing = seatPricing.filter(p => p.palco_from !== null && p.is_palco_alto);
-            
-            // Check if we have special pricing for each sector
-            const hasMultiplePlateaPrices = plateaPricing.length > 0;
-            const hasMultiplePalcoBajoPrices = palcoBajoPricing.length > 0;
-            const hasMultiplePalcoAltoPrices = palcoAltoPricing.length > 0;
-            
-            if (!pricing && seatPricing.length === 0) return null;
-            
-            return (
-              <div>
-                <div style={{ fontSize: 14, color: '#64748b', fontWeight: 600, marginBottom: 12 }}>
-                  {isGeneralAdmission ? 'Precio' : 'Precios según ubicación'}
-                </div>
-                <div
-                  style={{
-                    display: 'grid',
-                    gridTemplateColumns: isGeneralAdmission ? '1fr' : (isMobile ? 'repeat(2, 1fr)' : 'repeat(4, 1fr)'),
-                    gap: 12
-                  }}
-                >
-                  {/* Platea General - show multiple prices if special pricing exists */}
-                  {(pricing?.platea_general || hasMultiplePlateaPrices) && (
-                    <div
-                      style={{
-                        padding: 12,
-                        background: '#f8fafc',
-                        borderRadius: 8,
-                        border: '1px solid #e5e7eb'
-                      }}
-                    >
-                      <div style={{ fontSize: 12, color: '#64748b', fontWeight: 600 }}>Platea General</div>
-                      {hasMultiplePlateaPrices ? (
-                        <div style={{ marginTop: 8 }}>
-                          {plateaPricing.map((p, idx) => (
-                            <div key={idx} style={{ marginBottom: 4, display: 'flex', alignItems: 'center', gap: 6 }}>
-                              {p.color && (
-                                <div
-                                  style={{
-                                    width: 12,
-                                    height: 12,
-                                    borderRadius: 3,
-                                    backgroundColor: p.color,
-                                    border: '1px solid #e5e7eb',
-                                    flexShrink: 0
-                                  }}
-                                />
-                              )}
-                              <span style={{ fontSize: 11, color: '#0369a1' }}>
-                                Filas {p.row_from} a {p.row_to}:{' '}
-                              </span>
-                              <span style={{ fontSize: 14, color: '#0f172a', fontWeight: 600 }}>
-                                ${Number(p.price).toLocaleString('es-AR')}
-                              </span>
-                            </div>
-                          ))}
-                          {/* Show base price if exists */}
-                          {pricing?.platea_general && (
-                            <div>
-                              <span style={{ fontSize: 11, color: '#64748b' }}>
-                                Resto:{' '}
-                              </span>
-                              <span style={{ fontSize: 14, color: '#0f172a', fontWeight: 600 }}>
-                                ${Number(pricing.platea_general).toLocaleString('es-AR')}
-                              </span>
-                            </div>
-                          )}
-                        </div>
-                      ) : (
-                        <div style={{ fontSize: 16, color: '#0f172a', fontWeight: 700 }}>
-                          ${Number(pricing?.platea_general).toLocaleString('es-AR')}
-                        </div>
-                      )}
-                    </div>
-                  )}
-                  
-                  {/* Palcos Bajos */}
-                  {(pricing?.palcos_bajos || hasMultiplePalcoBajoPrices) && (
-                    <div
-                      style={{
-                        padding: 12,
-                        background: '#f8fafc',
-                        borderRadius: 8,
-                        border: '1px solid #e5e7eb'
-                      }}
-                    >
-                      <div style={{ fontSize: 12, color: '#64748b', fontWeight: 600 }}>
-                        Palcos Bajos{!palcosIndividualSeats && ' (x4 localidades)'}
-                      </div>
-                      {hasMultiplePalcoBajoPrices ? (
-                        <div style={{ marginTop: 8 }}>
-                          {palcoBajoPricing.map((p, idx) => (
-                            <div key={idx} style={{ marginBottom: 4, display: 'flex', alignItems: 'center', gap: 6 }}>
-                              {p.color && (
-                                <div
-                                  style={{
-                                    width: 12,
-                                    height: 12,
-                                    borderRadius: 3,
-                                    backgroundColor: p.color,
-                                    border: '1px solid #e5e7eb',
-                                    flexShrink: 0
-                                  }}
-                                />
-                              )}
-                              <span style={{ fontSize: 11, color: '#0369a1' }}>
-                                PB {p.palco_from} a {p.palco_to}:{' '}
-                              </span>
-                              <span style={{ fontSize: 14, color: '#0f172a', fontWeight: 600 }}>
-                                ${Number(p.price).toLocaleString('es-AR')}
-                              </span>
-                            </div>
-                          ))}
-                          {pricing?.palcos_bajos && (
-                            <div>
-                              <span style={{ fontSize: 11, color: '#64748b' }}>
-                                Resto:{' '}
-                              </span>
-                              <span style={{ fontSize: 14, color: '#0f172a', fontWeight: 600 }}>
-                                ${Number(pricing.palcos_bajos).toLocaleString('es-AR')}
-                              </span>
-                            </div>
-                          )}
-                        </div>
-                      ) : (
-                        <div style={{ fontSize: 16, color: '#0f172a', fontWeight: 700 }}>
-                          ${Number(pricing?.palcos_bajos).toLocaleString('es-AR')}
-                        </div>
-                      )}
-                    </div>
-                  )}
-                  
-                  {/* Palcos Altos */}
-                  {(pricing?.palcos_altos || hasMultiplePalcoAltoPrices) && (
-                    <div
-                      style={{
-                        padding: 12,
-                        background: '#f8fafc',
-                        borderRadius: 8,
-                        border: '1px solid #e5e7eb'
-                      }}
-                    >
-                      <div style={{ fontSize: 12, color: '#64748b', fontWeight: 600 }}>
-                        Palcos Altos{!palcosIndividualSeats && ' (x2 localidades)'}
-                      </div>
-                      {hasMultiplePalcoAltoPrices ? (
-                        <div style={{ marginTop: 8 }}>
-                          {palcoAltoPricing.map((p, idx) => (
-                            <div key={idx} style={{ marginBottom: 4, display: 'flex', alignItems: 'center', gap: 6 }}>
-                              {p.color && (
-                                <div
-                                  style={{
-                                    width: 12,
-                                    height: 12,
-                                    borderRadius: 3,
-                                    backgroundColor: p.color,
-                                    border: '1px solid #e5e7eb',
-                                    flexShrink: 0
-                                  }}
-                                />
-                              )}
-                              <span style={{ fontSize: 11, color: '#0369a1' }}>
-                                PA {p.palco_from} a {p.palco_to}:{' '}
-                              </span>
-                              <span style={{ fontSize: 14, color: '#0f172a', fontWeight: 600 }}>
-                                ${Number(p.price).toLocaleString('es-AR')}
-                              </span>
-                            </div>
-                          ))}
-                          {pricing?.palcos_altos && (
-                            <div>
-                              <span style={{ fontSize: 11, color: '#64748b' }}>
-                                Resto:{' '}
-                              </span>
-                              <span style={{ fontSize: 14, color: '#0f172a', fontWeight: 600 }}>
-                                ${Number(pricing.palcos_altos).toLocaleString('es-AR')}
-                              </span>
-                            </div>
-                          )}
-                        </div>
-                      ) : (
-                        <div style={{ fontSize: 16, color: '#0f172a', fontWeight: 700 }}>
-                          ${Number(pricing?.palcos_altos).toLocaleString('es-AR')}
-                        </div>
-                      )}
-                    </div>
-                  )}
-                  
-                  {pricing?.pullman && (
-                    <div
-                      style={{
-                        padding: 12,
-                        background: '#f8fafc',
-                        borderRadius: 8,
-                        border: '1px solid #e5e7eb'
-                      }}
-                    >
-                      <div style={{ fontSize: 12, color: '#64748b' }}>Pullman (ubicación libre)</div>
-                      <div style={{ fontSize: 16, color: '#0f172a', fontWeight: 700 }}>
-                        ${Number(pricing.pullman).toLocaleString('es-AR')}
-                      </div>
-                    </div>
-                  )}
-                  {pricing?.general && (
-                    <div
-                      style={{
-                        padding: 12,
-                        background: '#f8fafc',
-                        borderRadius: 8,
-                        border: '1px solid #e5e7eb'
-                      }}
-                    >
-                      <div style={{ fontSize: 12, color: '#64748b' }}>Entrada General</div>
-                      <div style={{ fontSize: 16, color: '#0f172a', fontWeight: 700 }}>
-                        ${Number(pricing.general).toLocaleString('es-AR')}
-                      </div>
-                    </div>
-                  )}
-                </div>
-              </div>
-            );
-          })()}
         </div>
 
         {/* Buy Button - only show if show is not finished */}
@@ -499,7 +427,13 @@ export default function ShowInfo() {
           <button
             onClick={() => {
               window.scrollTo(0, 0);
-              navigate(`/detalle/${id}`);
+              // If a card is flipped, navigate to that specific session
+              const targetSession = flippedCardId || sessions[0]?.id;
+              if (targetSession) {
+                navigate(`/detalle/${id}?sesion=${targetSession}`);
+              } else {
+                navigate(`/detalle/${id}`);
+              }
             }}
             style={{
               width: '100%',
@@ -563,6 +497,185 @@ export default function ShowInfo() {
           ← Volver al inicio
         </button>
       </div>
+    </div>
+  );
+}
+
+// Component to display pricing for a specific session
+function SessionPricingDisplay({ seatPricing, pricing, palcosIndividualSeats, venueType, isMobile }) {
+  const isGeneralAdmission = (venueType === 'el_tablado' || venueType === 'las_gemelas');
+  
+  if (!pricing && seatPricing.length === 0) {
+    return (
+      <div style={{ fontSize: 14, color: '#64748b', textAlign: 'center', padding: 20 }}>
+        Información de precios no disponible
+      </div>
+    );
+  }
+  
+  // Group seat pricing by section
+  const tiersBySection = {
+    platea: seatPricing.filter(p => p.row_from && p.row_to),
+    palcos_bajos: seatPricing.filter(p => p.palco_from !== null && p.palco_from !== undefined && !p.is_palco_alto),
+    palcos_altos: seatPricing.filter(p => p.palco_from !== null && p.palco_from !== undefined && p.is_palco_alto),
+    pullman: []
+  };
+  
+  // Base colors for each section
+  const baseColors = {
+    platea: '#a8d8a8',
+    palcos_bajos: '#8fbc8f',
+    palcos_altos: '#6b8e6b',
+    pullman: '#c0c0c0'
+  };
+
+  // Sector configuration — 3 separate fields: title, localidades, location
+  const sectorConfig = {
+    platea: { 
+      badge: 'Platea', 
+      title: 'Platea General',
+      localidades: null,
+      location: 'Planta baja',
+      hasPricing: pricing?.platea_general || tiersBySection.platea.length > 0
+    },
+    palcos_bajos: { 
+      badge: 'PB', 
+      title: 'Palcos Bajos',
+      localidades: !palcosIndividualSeats ? '4 localidades' : null,
+      location: 'Planta baja',
+      hasPricing: pricing?.palcos_bajos || tiersBySection.palcos_bajos.length > 0
+    },
+    palcos_altos: { 
+      badge: 'PA', 
+      title: 'Palcos Altos',
+      localidades: !palcosIndividualSeats ? '2 localidades' : null,
+      location: '1° piso por escalera',
+      hasPricing: pricing?.palcos_altos || tiersBySection.palcos_altos.length > 0
+    },
+    pullman: { 
+      badge: 'Pullman', 
+      title: 'Pullman',
+      localidades: null,
+      location: '2° piso por escalera\nSin ubicación fija',
+      hasPricing: pricing?.pullman
+    }
+  };
+  
+  // Section order
+  const sectionOrder = ['platea', 'palcos_bajos', 'palcos_altos', 'pullman'];
+  
+  // Render a single price row — always 3 lines: name, localidades, location
+  const renderPriceRow = (badge, badgeColor, title, localidades, location, price, isPA = false) => (
+    <div key={`${badge}-${title}`} style={{ 
+      display: 'flex', 
+      alignItems: 'center', 
+      gap: 8,
+      padding: '8px 0',
+      borderBottom: '1px solid #f1f5f9'
+    }}>
+      <span style={{
+        background: badgeColor,
+        color: isPA ? '#ffffff' : '#1f2937',
+        padding: '4px 10px',
+        borderRadius: 999,
+        fontSize: 11,
+        fontWeight: 600,
+        minWidth: 50,
+        textAlign: 'center',
+        flexShrink: 0
+      }}>{badge}</span>
+      <div style={{ flex: 1 }}>
+        <div style={{ fontSize: 12, color: '#64748b', fontWeight: 600 }}>{title}</div>
+        {localidades && <div style={{ fontSize: 11, color: '#94a3b8' }}>{localidades}</div>}
+        {location && location.split('\n').map((line, i) => (
+          <div key={i} style={{ fontSize: 11, color: '#94a3b8' }}>{line}</div>
+        ))}
+      </div>
+      <div style={{ fontSize: 14, color: '#0f172a', fontWeight: 700, whiteSpace: 'nowrap' }}>
+        ${Number(price).toLocaleString('es-AR')}
+      </div>
+    </div>
+  );
+  
+  return (
+    <div style={{
+      display: 'grid',
+      gridTemplateColumns: isGeneralAdmission ? '1fr' : (isMobile ? '1fr' : 'repeat(2, 1fr)'),
+      gap: 12
+    }}>
+      {sectionOrder.map(section => {
+        const config = sectorConfig[section];
+        const sectionTiers = tiersBySection[section] || [];
+        const isPA = section === 'palcos_altos';
+        const isPalco = section === 'palcos_bajos' || section === 'palcos_altos';
+        
+        if (!config.hasPricing) return null;
+
+        const basePrice = pricing?.[
+          section === 'platea' ? 'platea_general' :
+          section === 'palcos_bajos' ? 'palcos_bajos' :
+          section === 'palcos_altos' ? 'palcos_altos' : 'pullman'
+        ];
+        
+        return (
+          <div key={section} style={{
+            padding: 12,
+            background: '#ffffff',
+            borderRadius: 8,
+            border: '1px solid #e5e7eb'
+          }}>
+            {/* For palcos: always show base row with 3 lines, then tiers as sub-rows */}
+            {isPalco ? (
+              <>
+                {basePrice && renderPriceRow(
+                  config.badge, baseColors[section],
+                  config.title, config.localidades, config.location,
+                  basePrice, isPA
+                )}
+                {sectionTiers.map((tier) => renderPriceRow(
+                  config.badge,
+                  tier.color || baseColors[section],
+                  section === 'palcos_bajos'
+                    ? `PB ${tier.palco_from} a ${tier.palco_to}`
+                    : `PA ${tier.palco_from} a ${tier.palco_to}`,
+                  config.localidades, config.location,
+                  tier.price, isPA
+                ))}
+              </>
+            ) : section === 'platea' ? (
+              <>
+                {basePrice && renderPriceRow(
+                  config.badge, baseColors[section],
+                  config.title, config.localidades, config.location,
+                  basePrice
+                )}
+                {sectionTiers.map(tier => renderPriceRow(
+                  config.badge,
+                  tier.color || baseColors[section],
+                  `Filas ${tier.row_from} a ${tier.row_to}`,
+                  config.localidades, config.location,
+                  tier.price
+                ))}
+              </>
+            ) : (
+              /* Pullman */
+              basePrice && renderPriceRow(config.badge, baseColors[section], config.title, config.localidades, config.location, basePrice)
+            )}
+          </div>
+        );
+      })}
+      
+      {/* General Admission */}
+      {pricing?.general && (
+        <div style={{
+          padding: 12,
+          background: '#ffffff',
+          borderRadius: 8,
+          border: '1px solid #e5e7eb'
+        }}>
+          {renderPriceRow('General', '#94a3b8', 'Entrada General', 'Sin ubicación fija', pricing.general)}
+        </div>
+      )}
     </div>
   );
 }

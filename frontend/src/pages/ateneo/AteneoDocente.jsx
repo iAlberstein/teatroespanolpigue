@@ -3,13 +3,7 @@ import { apiAuthFetch } from '../../lib/api';
 import { useAuth } from '../../contexts/AuthContext';
 import { theme } from '../../styles/theme';
 import DateInput from '../../components/DateInput';
-
-const formatFecha = (fecha) => {
-  if (!fecha) return '-';
-  const d = new Date(typeof fecha === 'string' && fecha.length === 10 ? fecha + 'T12:00:00' : fecha);
-  if (isNaN(d)) return '-';
-  return `${String(d.getDate()).padStart(2, '0')}/${String(d.getMonth() + 1).padStart(2, '0')}/${d.getFullYear()}`;
-};
+import { formatDate, formatMonthYear } from '../../lib/dateFormatter.js';
 
 // Helper: nombre del alumno (si es menor, muestra nombre del menor + responsable entre paréntesis)
 const getNombreAlumno = (alumno) => {
@@ -217,7 +211,7 @@ export default function AteneoDocente() {
                   <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4, marginTop: 4 }}>
                     {c.horarios?.length > 0 ? c.horarios.map((h, i) => (
                       <span key={i} style={{ fontSize: 10, background: '#f3f4f6', padding: '1px 6px', borderRadius: 4, color: '#6b7280' }}>
-                        {c.taller_corto && h.fecha ? formatFecha(h.fecha) : h.dia_semana} {(h.hora_inicio||'').substring(0,5)}-{(h.hora_fin||'').substring(0,5)}
+                        {c.taller_corto && h.fecha ? formatDate(h.fecha) : h.dia_semana} {(h.hora_inicio||'').substring(0,5)}-{(h.hora_fin||'').substring(0,5)}
                       </span>
                     )) : c.horario ? <span style={{ fontSize: 10, color: '#6b7280' }}>{c.horario}</span> : null}
                   </div>
@@ -401,7 +395,7 @@ export default function AteneoDocente() {
                         return (
                           <div key={i} style={{ background: '#fff', border: '1px solid #e5e7eb', borderRadius: 8, padding: 12, display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
                             <div>
-                              <div style={{ fontSize: 13, fontWeight: 600 }}>{formatFecha(h.fecha)}</div>
+                              <div style={{ fontSize: 13, fontWeight: 600 }}>{formatDate(h.fecha)}</div>
                               <div style={{ fontSize: 12, color: '#6b7280' }}>{presentes}/{total} presentes · <span style={{ fontWeight: 600, color: pct >= 80 ? '#059669' : pct >= 50 ? '#d97706' : '#dc2626' }}>{pct}%</span></div>
                             </div>
                             <button onClick={() => loadDetalle(h.fecha)} style={{ padding: '3px 10px', background: '#ede9fe', color: '#7c3aed', border: 'none', borderRadius: 4, cursor: 'pointer', fontSize: 11, fontWeight: 600, flexShrink: 0 }}>Detalle</button>
@@ -428,7 +422,7 @@ export default function AteneoDocente() {
                             const pct = total > 0 ? Math.round((presentes / total) * 100) : 0;
                             return (
                               <tr key={i} style={{ borderBottom: '1px solid #f3f4f6' }}>
-                                <td style={tdStyle}>{formatFecha(h.fecha)}</td>
+                                <td style={tdStyle}>{formatDate(h.fecha)}</td>
                                 <td style={tdStyle}>{total}</td>
                                 <td style={tdStyle}>{presentes}</td>
                                 <td style={tdStyle}><span style={{ fontWeight: 600, color: pct >= 80 ? '#059669' : pct >= 50 ? '#d97706' : '#dc2626' }}>{pct}%</span></td>
@@ -459,7 +453,7 @@ export default function AteneoDocente() {
             background: '#fff', borderRadius: 12, padding: 24, maxWidth: 600, width: '100%',
             boxShadow: '0 20px 60px rgba(0,0,0,0.3)', maxHeight: '90vh', overflowY: 'auto'
           }} onClick={e => e.stopPropagation()}>
-            <h3 style={{ marginTop: 0, fontSize: 16 }}>Asistencia — {formatFecha(detalleModal)}</h3>
+            <h3 style={{ marginTop: 0, fontSize: 16 }}>Asistencia — {formatDate(detalleModal)}</h3>
             <p style={{ fontSize: 13, color: '#6b7280', margin: '0 0 12px' }}>{selectedClase?.nombre}</p>
             {loadingDetalle ? <div style={{ textAlign: 'center', padding: 16, color: '#9ca3af' }}>Cargando...</div> : (
               detalleAlumnos.length === 0 ? <div style={{ textAlign: 'center', padding: 16, color: '#9ca3af', fontSize: 13 }}>Sin registros</div> : (
@@ -599,7 +593,7 @@ function DocenteCalendario({ clases, mesActual, setMesActual, feriados, selected
     return result;
   };
 
-  const mesLabel = mesActual.toLocaleDateString('es-AR', { month: 'long', year: 'numeric' });
+  const mesLabel = formatMonthYear(mesActual);
   const hoy = new Date();
   const esHoy = (dia) => dia && hoy.getFullYear() === mesActual.getFullYear() && hoy.getMonth() === mesActual.getMonth() && hoy.getDate() === dia;
   const esFeriado = (dia) => dia && feriadosSet.has(getFechaStr(dia));
@@ -741,7 +735,7 @@ function DocenteCalendario({ clases, mesActual, setMesActual, feriados, selected
                 <span>{c.nombre}</span>
                 {c.horarios && c.horarios.map((h, j) => (
                   <span key={j} style={{ fontSize: 11, color: '#6b7280' }}>
-                    {c.taller_corto && h.fecha ? formatFecha(h.fecha) : h.dia_semana} {(h.hora_inicio || '').substring(0, 5)}-{(h.hora_fin || '').substring(0, 5)}
+                    {c.taller_corto && h.fecha ? formatDate(h.fecha) : h.dia_semana} {(h.hora_inicio || '').substring(0, 5)}-{(h.hora_fin || '').substring(0, 5)}
                   </span>
                 ))}
               </div>

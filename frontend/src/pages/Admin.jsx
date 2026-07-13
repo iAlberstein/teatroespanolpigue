@@ -15,6 +15,7 @@ import Mailing from '../components/admin/Mailing.jsx';
 import Billing from '../components/admin/Billing.jsx';
 import Sponsors from '../components/admin/Sponsors.jsx';
 import TicketSettings from '../components/admin/TicketSettings.jsx';
+import AportesAdmin from '../components/admin/AportesAdmin.jsx';
 import { theme } from '../styles/theme.js';
 
 export default function Admin() {
@@ -508,6 +509,29 @@ export default function Admin() {
           </button>
         )}
 
+        {/* Aportes - solo admin */}
+        {user?.role === 'admin' && (
+          <button
+            onClick={() => setSection('aportes')}
+            style={{
+              padding: isMobile ? `${theme.spacing.xs} ${theme.spacing.sm}` : `${theme.spacing.sm} ${theme.spacing.lg}`,
+              background: 'none',
+              border: 'none',
+              borderBottom: section === 'aportes' ? `3px solid ${theme.colors.primary}` : 'none',
+              color: section === 'aportes' ? theme.colors.primary : theme.colors.textSecondary,
+              fontWeight: theme.typography.semibold,
+              fontSize: isMobile ? theme.typography.small : theme.typography.body,
+              cursor: 'pointer',
+              marginBottom: '-2px',
+              transition: theme.transitions.fast,
+              whiteSpace: 'nowrap',
+              flexShrink: 0
+            }}
+          >
+            Aportes
+          </button>
+        )}
+
         {/* Patrocinadores - solo admin */}
         {user?.role === 'admin' && (
           <button
@@ -631,6 +655,10 @@ export default function Admin() {
 
       {section === 'tickets' && (
         <TicketSettings />
+      )}
+
+      {section === 'aportes' && (
+        <AportesAdmin token={token} />
       )}
     </div>
   );

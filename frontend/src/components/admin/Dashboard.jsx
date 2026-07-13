@@ -2,6 +2,7 @@ import { useState, useEffect } from 'react';
 import { useAuth } from '../../contexts/AuthContext';
 import { apiAuthFetch } from '../../lib/api';
 import { Line } from 'react-chartjs-2';
+import { formatDateShort, formatTime } from '../../lib/dateFormatter.js';
 
 export default function Dashboard() {
   const { token } = useAuth();
@@ -45,10 +46,7 @@ export default function Dashboard() {
   }
 
   const chartData = {
-    labels: dashboardData.trends.dates.slice(-7).map(date => {
-      const d = new Date(date);
-      return d.toLocaleDateString('es-AR', { weekday: 'short', day: 'numeric' });
-    }),
+    labels: dashboardData.trends.dates.slice(-7).map(date => formatDateShort(date)),
     datasets: [
       {
         label: 'Ingresos ($)',
@@ -95,7 +93,7 @@ export default function Dashboard() {
           padding: '6px 12px',
           borderRadius: 6
         }}>
-          Actualizado: {new Date().toLocaleTimeString('es-AR', { hour: '2-digit', minute: '2-digit' })}
+          Actualizado: {formatTime(new Date())}
         </div>
       </div>
 

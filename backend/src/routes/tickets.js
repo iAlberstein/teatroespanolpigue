@@ -1,8 +1,10 @@
 import express from 'express';
+import { Op } from 'sequelize';
 import { sequelize } from '../lib/sequelize.js';
 import { validateQRData } from '../lib/qr.js';
 import { authenticateToken, requireRole } from '../middleware/auth.js';
 import { createActivityLog, ActionTypes, EntityTypes } from '../middleware/activityLogger.js';
+import { getSeatPrice } from '../lib/seatPricing.js';
 import crypto from 'crypto';
 
 const router = express.Router();
@@ -444,8 +446,33 @@ router.post('/box-office-sale', authenticateToken, requireRole('boleteria', 'adm
       if (existingUser) userFoundBy = 'phone';
     }
 
+    // Recalculate prices using seat pricing rules and calculate subtotal
+    const pricing = session.pricing_json || session.show?.pricing_json || {};
+    const sessionId = session.id;
+    const showId = session.show_id;
+    
+    // Recalculate item prices with seat pricing rules
+    const itemsWithCorrectPrices = [];
+    for (const item of (items || [])) {
+      let finalPrice = Number(item.price || 0);
+      
+      // For butacas and palcos, recalculate price using seat pricing rules
+      if ((item.type === 'butaca' || item.type === 'palco') && item.seat_code) {
+        const seatPriceResult = await getSeatPrice(sessionId, showId, item.seat_code, pricing);
+        if (seatPriceResult && seatPriceResult.price !== undefined) {
+          finalPrice = seatPriceResult.price;
+          console.log(`[BOX_OFFICE] Recalculated price for ${item.seat_code}: ${finalPrice} (source: ${seatPriceResult.source})`);
+        }
+      }
+      
+      itemsWithCorrectPrices.push({
+        ...item,
+        price: finalPrice
+      });
+    }
+    
     // Calculate subtotal (tickets + services)
-    const ticketsSubtotal = (items || []).reduce((sum, item) => {
+    const ticketsSubtotal = itemsWithCorrectPrices.reduce((sum, item) => {
       if ((item.type === 'pullman' || item.type === 'general') && item.quantity > 0) {
         return sum + (Number(item.price || 0) * Number(item.quantity || 1));
       }
@@ -497,7 +524,7 @@ router.post('/box-office-sale', authenticateToken, requireRole('boleteria', 'adm
       service_items: validServiceItems.length > 0 ? validServiceItems : null,
       metadata: {
         source: 'box_office',
-        items,
+        items: itemsWithCorrectPrices,
         service_items: validServiceItems,
         discount_applied: validDiscount ? {
           code: validDiscount.code,
@@ -519,7 +546,7 @@ router.post('/box-office-sale', authenticateToken, requireRole('boleteria', 'adm
     const tickets = [];
     const ticketUserId = existingUser ? existingUser.id : null;
     
-    for (const item of items) {
+    for (const item of itemsWithCorrectPrices) {
       if (item.type === 'butaca' || item.type === 'palco') {
         // Determinar sección correcta y capacidad
         let section = 'platea_general'; // Por defecto para butacas
@@ -625,7 +652,7 @@ router.post('/box-office-sale', authenticateToken, requireRole('boleteria', 'adm
       let pullmanCount = io.pullmanSold.get(session_id) || 0;
 
       let generalCount = 0;
-      for (const item of items) {
+      for (const item of itemsWithCorrectPrices) {
         if (item.type === 'butaca' && item.seat_code) {
           seatSet.add(item.seat_code);
           io.to(`session:${session_id}`).emit('seat_sold', { seatId: item.seat_code });
@@ -657,7 +684,7 @@ router.post('/box-office-sale', authenticateToken, requireRole('boleteria', 'adm
       if (generalCount > 0) {
         const capacity = session.capacity_override || session.show.general_capacity;
         const soldCount = await Ticket.count({
-          where: { session_id, status: 'sold' }
+          where: { session_id, type: 'general', status: { [Op.in]: ['sold', 'validated'] } }
         });
         const available = Math.max(0, capacity - soldCount);
         console.log('[BOX_OFFICE] Emitting general-admission-update:', {

@@ -1,5 +1,6 @@
 import { useState } from 'react';
 import SeatPricingManager from './SeatPricingManager';
+import { formatDateLong, formatTime } from '../../lib/dateFormatter.js';
 
 /**
  * Component to manage sessions for a show
@@ -400,18 +401,9 @@ export default function SessionManager({ show, sessions, onAddSession, onDeleteS
         ) : (
           <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
             {sortedSessions.map(session => {
+              const dateStr = formatDateLong(session.starts_at);
+              const timeStr = formatTime(session.starts_at);
               const date = new Date(session.starts_at);
-              const dateStr = date.toLocaleDateString('es-AR', { 
-                weekday: 'long',
-                day: 'numeric', 
-                month: 'long', 
-                year: 'numeric' 
-              });
-              const timeStr = date.toLocaleTimeString('es-AR', { 
-                hour: '2-digit', 
-                minute: '2-digit',
-                hour12: false
-              });
 
               const isPast = date < new Date();
 

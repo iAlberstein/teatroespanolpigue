@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { useAuth } from '../../contexts/AuthContext';
 import { apiAuthFetch } from '../../lib/api';
+import { formatDateTimeCompact } from '../../lib/dateFormatter.js';
 import Button from '../ui/Button';
 
 export default function TicketViewModal({ sale, tickets, onClose }) {
@@ -14,7 +15,6 @@ export default function TicketViewModal({ sale, tickets, onClose }) {
   const isDetailsOnly = !!sale?.detailsOnly;
   const isRefund = !!(sale?.refunded || sale?.is_refund_operation);
   const refundReason = sale?.refund_reason || null;
-  const refundedAt = sale?.refunded_at ? new Date(sale.refunded_at) : null;
 
   const handleReprintTickets = () => {
     if (!sale?.id) return;
@@ -180,10 +180,10 @@ export default function TicketViewModal({ sale, tickets, onClose }) {
               <div style={{ marginBottom: 8 }}>
                 <strong>Estado:</strong> Venta reintegrada
               </div>
-              {refundedAt && (
+              {sale?.refunded_at && (
                 <div style={{ marginBottom: 8, fontSize: 14, color: '#4b5563' }}>
                   <strong>Fecha de devolución:</strong>{' '}
-                  {refundedAt.toLocaleString('es-AR')}
+                  {formatDateTimeCompact(sale.refunded_at)}
                 </div>
               )}
               <div style={{ fontSize: 14, color: '#4b5563' }}>

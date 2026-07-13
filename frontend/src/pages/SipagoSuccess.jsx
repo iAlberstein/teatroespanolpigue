@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import { apiFetch } from '../lib/api';
+import { formatDateLong, formatTime, formatDateShort } from '../lib/dateFormatter.js';
 
 export default function SipagoSuccess(){
   const [searchParams] = useSearchParams();
@@ -202,14 +203,12 @@ export default function SipagoSuccess(){
     if (!whatsapp || !saleId) return;
     const cleanPhone = whatsapp.replace(/[\s\-()]/g, '');
     const showName = reservation?.session?.show?.title || 'el espectáculo';
-    const sessionDate = reservation?.session?.starts_at ? 
-      new Date(reservation.session.starts_at).toLocaleDateString('es-AR', { 
-        weekday: 'short', day: 'numeric', month: 'short' 
-      }) : '';
-    const sessionTime = reservation?.session?.starts_at ? 
-      new Date(reservation.session.starts_at).toLocaleTimeString('es-AR', { 
-        hour: '2-digit', minute: '2-digit', hour12: true 
-      }) : '';
+    const sessionDate = reservation?.session?.starts_at
+      ? formatDateShort(reservation.session.starts_at)
+      : '';
+    const sessionTime = reservation?.session?.starts_at
+      ? formatTime(reservation.session.starts_at)
+      : '';
     const shareUrl = `${window.location.origin}/api/share/sale/${saleId}`;
     const message = `Hola! Te comparto tus entradas para el show ${showName}${sessionDate ? ` del día ${sessionDate}` : ''}${sessionTime ? ` a las ${sessionTime}` : ''}.\n\n Ver entradas: ${shareUrl}\n\nRecordá llegar al menos 30 minutos antes y mostrar el QR en el acceso. Una vez comenzada la función, la ubicación pierde validez (el personal de la sala te asignará un nuevo lugar).\n\nLas entradas no tienen cambio ni devolución, excepto en casos de cancelación/modificación del espectáculo.\n\n(Si no podés acceder al link, es porque no tenés agendado este número. Una vez que lo hagas, podrás acceder)\n\n¡Nos vemos!`;
     const waUrl = `https://wa.me/549${cleanPhone}?text=${encodeURIComponent(message)}`;
@@ -241,8 +240,8 @@ export default function SipagoSuccess(){
               {reservation.session.show.title}
             </h3>
             <p style={{ margin: 0, fontSize: 14, color: '#64748b' }}>
-              📅 Fecha: {new Date(reservation.session.starts_at).toLocaleDateString('es-AR', { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' })}<br/>
-              🕐 Hora: {new Date(reservation.session.starts_at).toLocaleTimeString('es-AR', { hour: '2-digit', minute: '2-digit', hour12: false })}
+              📅 Fecha: {formatDateLong(reservation.session.starts_at)}<br/>
+              🕐 Hora: {formatTime(reservation.session.starts_at)}
             </p>
           </div>
         )}

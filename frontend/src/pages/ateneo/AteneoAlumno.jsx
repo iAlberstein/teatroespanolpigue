@@ -4,14 +4,7 @@ import { apiAuthFetch } from '../../lib/api';
 import { useAuth } from '../../contexts/AuthContext';
 import { theme } from '../../styles/theme';
 import DateInputMask from '../../components/DateInputMask';
-
-// Helper: formato DD/MM/AAAA argentino
-const formatFecha = (fecha) => {
-  if (!fecha) return '-';
-  const d = new Date(fecha + (fecha.length === 10 ? 'T12:00:00' : ''));
-  if (isNaN(d)) return '-';
-  return `${String(d.getDate()).padStart(2, '0')}/${String(d.getMonth() + 1).padStart(2, '0')}/${d.getFullYear()}`;
-};
+import { formatDate, formatMonthYear } from '../../lib/dateFormatter.js';
 
 // Helper: formato concepto de pago
 const MESES_NOMBRE = ['Enero','Febrero','Marzo','Abril','Mayo','Junio','Julio','Agosto','Septiembre','Octubre','Noviembre','Diciembre'];
@@ -335,7 +328,7 @@ export default function AteneoAlumno() {
                   </div>
                   <div>
                     <span style={{ fontSize: 12, color: '#6b7280', display: 'block', marginBottom: 4, fontWeight: 500 }}>Fecha de ingreso</span>
-                    <div style={{ fontSize: 14 }}>{formatFecha(perfil.fecha_ingreso)}</div>
+                    <div style={{ fontSize: 14 }}>{formatDate(perfil.fecha_ingreso)}</div>
                   </div>
                 </div>
                 <div style={{ borderTop: '1px solid #e5e7eb', paddingTop: 20 }}>
@@ -420,7 +413,7 @@ export default function AteneoAlumno() {
                       <div style={{ display: 'grid', gridTemplateColumns: isMobile ? '1fr' : '1fr 1fr', gap: 16 }}>
                         <div>
                           <span style={{ fontSize: 12, color: '#6b7280', display: 'block', marginBottom: 4, fontWeight: 500 }}>Fecha de nacimiento</span>
-                          <div style={{ fontSize: 14 }}>{formatFecha(perfil.fecha_nacimiento)}</div>
+                          <div style={{ fontSize: 14 }}>{formatDate(perfil.fecha_nacimiento)}</div>
                         </div>
                         <div>
                           <span style={{ fontSize: 12, color: '#6b7280', display: 'block', marginBottom: 4, fontWeight: 500 }}>Direccion</span>
@@ -454,7 +447,7 @@ export default function AteneoAlumno() {
                             </div>
                             <div>
                               <span style={{ fontSize: 12, color: '#6b7280', display: 'block', marginBottom: 4, fontWeight: 500 }}>Fecha de nacimiento</span>
-                              <div style={{ fontSize: 14 }}>{formatFecha(perfil.fecha_nacimiento_menor)}</div>
+                              <div style={{ fontSize: 14 }}>{formatDate(perfil.fecha_nacimiento_menor)}</div>
                             </div>
                           </div>
                         </div>
@@ -612,7 +605,7 @@ export default function AteneoAlumno() {
                         padding: '2px 8px', background: '#ede9fe', color: '#7c3aed',
                         borderRadius: 8, fontSize: 11, fontWeight: 500
                       }}>
-                        {i.clase?.taller_corto && h.fecha ? formatFecha(h.fecha) : h.dia_semana} {(h.hora_inicio||'').substring(0,5)}-{(h.hora_fin||'').substring(0,5)}
+                        {i.clase?.taller_corto && h.fecha ? formatDate(h.fecha) : h.dia_semana} {(h.hora_inicio||'').substring(0,5)}-{(h.hora_fin||'').substring(0,5)}
                       </span>
                     ))
                   ) : i.clase?.horario ? (
@@ -773,7 +766,7 @@ export default function AteneoAlumno() {
                             {r.presente ? 'P' : 'A'}
                           </span>
                           <div style={{ flex: 1, minWidth: 0 }}>
-                            <div style={{ fontSize: 13, fontWeight: 500 }}>{formatFecha(r.fecha)} · {r.clase?.nombre || '-'}</div>
+                            <div style={{ fontSize: 13, fontWeight: 500 }}>{formatDate(r.fecha)} · {r.clase?.nombre || '-'}</div>
                             {r.observaciones && <div style={{ fontSize: 11, color: '#6b7280' }}>{r.observaciones}</div>}
                           </div>
                         </div>
@@ -793,7 +786,7 @@ export default function AteneoAlumno() {
                         <tbody>
                           {asistencia.map(r => (
                             <tr key={r.id} style={{ borderBottom: '1px solid #f3f4f6' }}>
-                              <td style={tdS}>{formatFecha(r.fecha)}</td>
+                              <td style={tdS}>{formatDate(r.fecha)}</td>
                               <td style={tdS}>{r.clase?.nombre || '-'}</td>
                               <td style={{...tdS, textAlign: 'center'}}>
                                 <span style={{
@@ -889,7 +882,7 @@ export default function AteneoAlumno() {
                               )}
                             </div>
                             <div style={{ textAlign: 'right' }}>
-                              <div style={{ fontSize: 12, color: '#6b7280' }}>Vence: {formatFecha(p.fecha_vencimiento)}</div>
+                              <div style={{ fontSize: 12, color: '#6b7280' }}>Vence: {formatDate(p.fecha_vencimiento)}</div>
                               {esCuotaVencida(p) && <div style={{ fontSize: 10, color: '#dc2626', fontWeight: 600 }}>Pago vencido, 15% de recargo</div>}
                             </div>
                           </div>
@@ -944,7 +937,7 @@ export default function AteneoAlumno() {
                                 <span style={getEstadoBadge(p.estado || 'pendiente')}>{p.estado || 'pendiente'}</span>
                               </td>
                               <td style={tdS}>
-                                <span style={{ color: '#6b7280' }}>{formatFecha(p.fecha_vencimiento)}</span>
+                                <span style={{ color: '#6b7280' }}>{formatDate(p.fecha_vencimiento)}</span>
                                 {esCuotaVencida(p) && <div style={{ fontSize: 10, color: '#dc2626', fontWeight: 600 }}>Pago vencido, 15% de recargo</div>}
                               </td>
                               <td style={{...tdS, textAlign: 'center'}}>
@@ -1168,7 +1161,7 @@ function CalendarioTab({ perfil, inscripciones }) {
     return result;
   };
 
-  const mesLabel = mesActual.toLocaleDateString('es-AR', { month: 'long', year: 'numeric' });
+  const mesLabel = formatMonthYear(mesActual);
   const hoy = new Date();
   const esHoy = (dia) => dia && hoy.getFullYear() === mesActual.getFullYear() && hoy.getMonth() === mesActual.getMonth() && hoy.getDate() === dia;
   const esFeriado = (dia) => dia && feriadosSet.has(getFechaStr(dia));
@@ -1332,7 +1325,7 @@ function CalendarioTab({ perfil, inscripciones }) {
                 <span>{c.nombre}</span>
                 {c.horarios && c.horarios.map((h, j) => (
                   <span key={j} style={{ fontSize: 11, color: '#6b7280' }}>
-                    {c.taller_corto && h.fecha ? formatFecha(h.fecha) : h.dia_semana} {(h.hora_inicio || '').substring(0, 5)}-{(h.hora_fin || '').substring(0, 5)}
+                    {c.taller_corto && h.fecha ? formatDate(h.fecha) : h.dia_semana} {(h.hora_inicio || '').substring(0, 5)}-{(h.hora_fin || '').substring(0, 5)}
                   </span>
                 ))}
               </div>

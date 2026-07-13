@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { useAuth } from '../../contexts/AuthContext';
 import { apiAuthFetch } from '../../lib/api';
+import { formatDate } from '../../lib/dateFormatter.js';
 import Button from '../ui/Button';
 
 export default function ComparisonReport() {
@@ -69,10 +70,7 @@ export default function ComparisonReport() {
     return `$${value.toLocaleString('es-AR', { minimumFractionDigits: 0, maximumFractionDigits: 0 })}`;
   };
 
-  const formatDate = (dateStr) => {
-    const date = new Date(dateStr);
-    return date.toLocaleDateString('es-AR', { day: '2-digit', month: 'short', year: 'numeric' });
-  };
+  const formatDateLocal = (dateStr) => formatDate(dateStr);
 
   return (
     <div>
@@ -197,7 +195,7 @@ export default function ComparisonReport() {
                 Período 1
               </h3>
               <div style={{ fontSize: 14, color: '#6b7280', marginBottom: 16 }}>
-                {formatDate(comparison.period1.start)} - {formatDate(comparison.period1.end)}
+                {formatDateLocal(comparison.period1.start)} - {formatDateLocal(comparison.period1.end)}
               </div>
               
               <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
@@ -241,7 +239,7 @@ export default function ComparisonReport() {
                 Período 2
               </h3>
               <div style={{ fontSize: 14, color: '#6b7280', marginBottom: 16 }}>
-                {formatDate(comparison.period2.start)} - {formatDate(comparison.period2.end)}
+                {formatDateLocal(comparison.period2.start)} - {formatDateLocal(comparison.period2.end)}
               </div>
               
               <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>

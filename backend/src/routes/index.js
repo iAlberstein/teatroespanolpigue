@@ -25,6 +25,8 @@ import ateneoRouter from './ateneo/index.js';
 import sponsors from './sponsors.js';
 import seo from './seo.js';
 import seatPricing from './seatPricing.js';
+import aportes from './aportes.js';
+import muestras2026 from './muestras2026.js';
 
 const router = Router();
 
@@ -54,5 +56,7 @@ router.use('/ateneo', ateneoRouter);
 router.use('/sponsors', sponsors);
 router.use('/seo', seo);
 router.use('/seat-pricing', seatPricing);
+router.use('/aportes', aportes);
+router.use('/muestras2026', muestras2026);
 
 export default router;

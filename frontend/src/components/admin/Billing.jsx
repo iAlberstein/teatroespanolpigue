@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { apiAuthFetch } from '../../lib/api';
+import { formatDate, formatDateTimeCompact, formatDateISO } from '../../lib/dateFormatter.js';
 
 const Billing = ({ token }) => {
   const [sales, setSales] = useState([]);
@@ -103,15 +104,7 @@ const Billing = ({ token }) => {
   };
 
   // Format date
-  const formatDate = (dateString) => {
-    return new Date(dateString).toLocaleString('es-AR', {
-      day: '2-digit',
-      month: '2-digit',
-      year: 'numeric',
-      hour: '2-digit',
-      minute: '2-digit'
-    });
-  };
+  const formatDateTime = (dateString) => formatDateTimeCompact(dateString);
 
   // Normalize numeric amount
   const toNumber = (value) => {
@@ -132,7 +125,7 @@ const Billing = ({ token }) => {
   const getReleaseDate = (purchaseDate) => {
     const date = new Date(purchaseDate);
     date.setDate(date.getDate() + 10);
-    return formatDate(date);
+    return formatDate(date.toISOString());
   };
 
   // Helpers for date filters in calculator
@@ -147,13 +140,7 @@ const Billing = ({ token }) => {
     }
   };
 
-  const getTodayDateString = () => {
-    const today = new Date();
-    const year = today.getFullYear();
-    const month = String(today.getMonth() + 1).padStart(2, '0');
-    const day = String(today.getDate()).padStart(2, '0');
-    return `${year}-${month}-${day}`;
-  };
+  const getTodayDateString = () => formatDateISO(new Date());
 
   const handleUntilToday = () => {
     const todayStr = getTodayDateString();
@@ -190,13 +177,13 @@ const Billing = ({ token }) => {
       sale.customerEmail || 'N/A',
       sale.customerDni || 'N/A',
       sale.showTitle || 'N/A',
-      sale.sessionDate ? new Date(sale.sessionDate).toLocaleDateString('es-AR') : 'N/A',
+      sale.sessionDate ? formatDate(sale.sessionDate) : 'N/A',
       // Monto neto (butacas sin service charge)
       sale.netAmount ?? sale.totalAmount,
       sale.serviceCharge,
       getReleaseDate(sale.createdAt),
       sale.billingStatus === 'invoiced' ? 'Facturado' : 'Pendiente',
-      sale.invoicedAt ? formatDate(sale.invoicedAt) : 'N/A',
+      sale.invoicedAt ? formatDateTime(sale.invoicedAt) : 'N/A',
       sale.invoicedBy ? sale.invoicedBy.name : 'N/A'
     ]);
 
@@ -209,7 +196,7 @@ const Billing = ({ token }) => {
     const link = document.createElement('a');
     const url = URL.createObjectURL(blob);
     link.setAttribute('href', url);
-    link.setAttribute('download', `facturacion_${activeTab}_${new Date().toISOString().split('T')[0]}.csv`);
+    link.setAttribute('download', `facturacion_${activeTab}_${formatDateISO(new Date())}.csv`);
     link.style.visibility = 'hidden';
     document.body.appendChild(link);
     link.click();

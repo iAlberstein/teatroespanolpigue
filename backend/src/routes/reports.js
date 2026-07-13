@@ -71,13 +71,24 @@ function calculateSessionCapacity(session, show) {
 router.get('/show/:show_id', authenticateToken, requireRole('admin', 'boleteria', 'productor'), async (req, res) => {
   try {
     const { show_id } = req.params;
-    const { date, seller_id, channel } = req.query; // Filtros opcionales
-    const { shows: Show, sessions: Session, tickets: Ticket, sales: Sale, discounts: Discount, users: User } = sequelize.models;
-    
+    const { date, seller_id, channel, session_id } = req.query; // Filtros opcionales
+    const { shows: Show, sessions: Session, tickets: Ticket, sales: Sale, discounts: Discount, users: User, show_services: ShowService } = sequelize.models;
+
     // Get dynamic service fee percentage
     const serviceFeePercent = await getServiceFeePercent();
     const serviceFeeDivisor = 1 + (serviceFeePercent / 100);
-    
+
+    // Cargar servicios del show para clasificar por include_in_bordereaux
+    const showServices = await ShowService.findAll({
+      where: { show_id: show_id, active: true },
+      attributes: ['name', 'include_in_bordereaux'],
+      raw: true
+    });
+    const serviceBordereauxMap = {};
+    showServices.forEach(svc => {
+      serviceBordereauxMap[svc.name] = svc.include_in_bordereaux === true || svc.include_in_bordereaux === 1;
+    });
+
     // Obtener show con todas sus sesiones
     const show = await Show.findByPk(show_id, {
       include: [{
@@ -154,11 +165,18 @@ router.get('/show/:show_id', authenticateToken, requireRole('admin', 'boleteria'
       pullman: { count: 0, people: 0, revenue: 0 }
     };
 
-    const serviceBreakdown = {};
+    const serviceBreakdown = {
+      bordereaux: {},  // Servicios a bordereaux (del productor)
+      teatro: {}       // Servicios del teatro
+    };
 
-    for (const session of show.sessions) {
+    const sessionsToProcess = session_id
+      ? show.sessions.filter(s => String(s.id) === String(session_id))
+      : show.sessions;
+
+    for (const session of sessionsToProcess) {
       const sessionCapacity = calculateSessionCapacity(session, show);
-      const soldTickets = session.tickets || [];
+      const soldTickets = (session.tickets || []).filter(t => t.type !== 'service');
       const validatedTickets = soldTickets.filter(t => t.status === 'validated');
       const sessionSales = session.sales || [];
       
@@ -176,15 +194,21 @@ router.get('/show/:show_id', authenticateToken, requireRole('admin', 'boleteria'
       sessionSales.forEach(sale => {
         const saleTickets = sale.tickets || [];
         if (saleTickets.length === 0) return;
-        
-        // Calcular el subtotal base de la venta (suma de precios de tickets)
-        const subtotalBase = saleTickets.reduce((sum, t) => sum + parseFloat(t.price || 0), 0);
-        
-        // Calcular factor de descuento: total_amount / subtotalBase
-        // Solo mp incluye service charge en total_amount, el resto no
+
+        // Calcular subtotal de entradas (excluyendo servicios)
+        const subtotalBase = saleTickets
+          .filter(t => t.type !== 'service')
+          .reduce((sum, t) => sum + parseFloat(t.price || 0), 0);
+
+        // Calcular factor de descuento (igual que en bordereaux.js)
+        // Si netPaid < subtotalBase * 0.995, hay descuento y calculamos el factor
+        // Si no, el factor queda en 1.0 (sin descuento)
         const totalPaid = parseFloat(sale.total_amount || 0);
         const netPaid = sale.payment_method === 'mp' ? totalPaid / serviceFeeDivisor : totalPaid;
-        const discountFactor = subtotalBase > 0 ? netPaid / subtotalBase : 1;
+        let discountFactor = 1.0;
+        if (subtotalBase > 0 && netPaid < subtotalBase * 0.995) {
+          discountFactor = netPaid / subtotalBase;
+        }
         
         saleTickets.forEach(ticket => {
           const basePrice = parseFloat(ticket.price || 0);
@@ -250,11 +274,14 @@ router.get('/show/:show_id', authenticateToken, requireRole('admin', 'boleteria'
             const name = si.name || 'Servicio';
             const qty = Number(si.quantity || 1);
             const price = Number(si.price || 0);
-            if (!serviceBreakdown[name]) {
-              serviceBreakdown[name] = { quantity: 0, total: 0 };
+            // Determinar si es a bordereaux o del teatro
+            const isBordereaux = serviceBordereauxMap[name] === true;
+            const targetCategory = isBordereaux ? serviceBreakdown.bordereaux : serviceBreakdown.teatro;
+            if (!targetCategory[name]) {
+              targetCategory[name] = { quantity: 0, total: 0 };
             }
-            serviceBreakdown[name].quantity += qty;
-            serviceBreakdown[name].total += qty * price;
+            targetCategory[name].quantity += qty;
+            targetCategory[name].total += qty * price;
           });
         }
       });
@@ -283,7 +310,7 @@ router.get('/show/:show_id', authenticateToken, requireRole('admin', 'boleteria'
     }
     
     // Calcular descuentos
-    const allSales = show.sessions.flatMap(s => s.sales || []);
+    const allSales = sessionsToProcess.flatMap(s => s.sales || []);
     const salesWithDiscount = allSales.filter(s => s.discount_id);
     const totalDiscountAmount = salesWithDiscount.reduce((sum, sale) => {
       const discount = sale.discount;
@@ -305,7 +332,9 @@ router.get('/show/:show_id', authenticateToken, requireRole('admin', 'boleteria'
         title: show.title,
         description: show.description,
         venue_type: show.venue_type || 'sala_principal',
-        sessionsCount: show.sessions.length
+        sessionsCount: show.sessions.length,
+        filteredSessionId: session_id || null,
+        sessions: show.sessions.map(s => ({ id: s.id, starts_at: s.starts_at }))
       },
       summary: {
         totalRevenue: totalRevenue.toFixed(2),
@@ -347,12 +376,23 @@ router.get('/show/:show_id', authenticateToken, requireRole('admin', 'boleteria'
 router.get('/general', authenticateToken, requireRole('admin', 'boleteria', 'productor'), async (req, res) => {
   try {
     const { status = 'all', startDate, endDate, date, seller_id, channel, producer_id } = req.query;
-    const { shows: Show, sessions: Session, tickets: Ticket, sales: Sale, discounts: Discount, users: User, show_producer: ShowProducer, bordereaux: Bordereaux } = sequelize.models;
-    
+    const { shows: Show, sessions: Session, tickets: Ticket, sales: Sale, discounts: Discount, users: User, show_producer: ShowProducer, bordereaux: Bordereaux, show_services: ShowService } = sequelize.models;
+
     // Get dynamic service fee percentage
     const serviceFeePercent = await getServiceFeePercent();
     const serviceFeeDivisor = 1 + (serviceFeePercent / 100);
-    
+
+    // Cargar todos los servicios activos para clasificar por include_in_bordereaux
+    const allServices = await ShowService.findAll({
+      where: { active: true },
+      attributes: ['name', 'include_in_bordereaux'],
+      raw: true
+    });
+    const serviceBordereauxMap = {};
+    allServices.forEach(svc => {
+      serviceBordereauxMap[svc.name] = svc.include_in_bordereaux === true || svc.include_in_bordereaux === 1;
+    });
+
     // Construir filtro de fechas
     const dateFilter = {};
     if (startDate) {
@@ -425,8 +465,11 @@ router.get('/general', authenticateToken, requireRole('admin', 'boleteria', 'pro
       pullman: { count: 0, people: 0, revenue: 0 }
     };
 
-    const serviceBreakdown = {};
-    
+    const serviceBreakdown = {
+      bordereaux: {},  // Servicios a bordereaux (del productor)
+      teatro: {}       // Servicios del teatro
+    };
+
     for (const show of shows) {
       const sessions = show.sessions || [];
       if (sessions.length === 0) continue;
@@ -450,7 +493,7 @@ router.get('/general', authenticateToken, requireRole('admin', 'boleteria', 'pro
       
       for (const session of sessions) {
         const sessionCapacity = calculateSessionCapacity(session, show);
-        const soldTickets = session.tickets || [];
+        const soldTickets = (session.tickets || []).filter(t => t.type !== 'service');
         const validatedTickets = soldTickets.filter(t => t.status === 'validated');
         const sessionSales = session.sales || [];
         
@@ -467,15 +510,19 @@ router.get('/general', authenticateToken, requireRole('admin', 'boleteria', 'pro
         sessionSales.forEach(sale => {
           const saleTickets = sale.tickets || [];
           if (saleTickets.length === 0) return;
-          
-          // Calcular el subtotal base de la venta (suma de precios de tickets)
-          const subtotalBase = saleTickets.reduce((sum, t) => sum + parseFloat(t.price || 0), 0);
-          
-          // Calcular factor de descuento
+
+          // Calcular subtotal de entradas (excluyendo servicios)
+          const subtotalBase = saleTickets
+            .filter(t => t.type !== 'service')
+            .reduce((sum, t) => sum + parseFloat(t.price || 0), 0);
+
+          // Calcular factor de descuento (igual que en bordereaux.js)
           const totalPaid = parseFloat(sale.total_amount || 0);
-          // Solo mp incluye service charge en total_amount
           const netPaid = sale.payment_method === 'mp' ? totalPaid / serviceFeeDivisor : totalPaid;
-          const discountFactor = subtotalBase > 0 ? netPaid / subtotalBase : 1;
+          let discountFactor = 1.0;
+          if (subtotalBase > 0 && netPaid < subtotalBase * 0.995) {
+            discountFactor = netPaid / subtotalBase;
+          }
           
           saleTickets.forEach(ticket => {
             const basePrice = parseFloat(ticket.price || 0);
@@ -523,11 +570,14 @@ router.get('/general', authenticateToken, requireRole('admin', 'boleteria', 'pro
                 const name = si.name || 'Servicio';
                 const qty = Number(si.quantity || 1);
                 const price = Number(si.price || 0);
-                if (!serviceBreakdown[name]) {
-                  serviceBreakdown[name] = { quantity: 0, total: 0 };
+                // Determinar si es a bordereaux o del teatro
+                const isBordereaux = serviceBordereauxMap[name] === true;
+                const targetCategory = isBordereaux ? serviceBreakdown.bordereaux : serviceBreakdown.teatro;
+                if (!targetCategory[name]) {
+                  targetCategory[name] = { quantity: 0, total: 0 };
                 }
-                serviceBreakdown[name].quantity += qty;
-                serviceBreakdown[name].total += qty * price;
+                targetCategory[name].quantity += qty;
+                targetCategory[name].total += qty * price;
               });
             }
           }
@@ -1092,6 +1142,7 @@ router.get('/sales-detail', authenticateToken, requireRole('admin', 'boleteria',
   try {
     const { 
       show_id, 
+      session_id,
       status = 'all', 
       page = 1, 
       limit = 20, 
@@ -1179,6 +1230,9 @@ router.get('/sales-detail', authenticateToken, requireRole('admin', 'boleteria',
     }
     
     // First, get total count (fast query)
+    const sessionWhere = {};
+    if (show_id) sessionWhere.show_id = show_id;
+    if (session_id) sessionWhere.id = session_id;
     const countQuery = await Sale.findAll({
       where: Object.keys(saleDateFilter).length > 0 ? saleDateFilter : undefined,
       include: [
@@ -1186,7 +1240,7 @@ router.get('/sales-detail', authenticateToken, requireRole('admin', 'boleteria',
           model: Session,
           as: 'session',
           required: true,
-          where: show_id ? { show_id } : undefined,
+          where: Object.keys(sessionWhere).length > 0 ? sessionWhere : undefined,
           include: [{
             model: Show,
             as: 'show',
@@ -1213,7 +1267,7 @@ router.get('/sales-detail', authenticateToken, requireRole('admin', 'boleteria',
           model: Session,
           as: 'session',
           required: true,
-          where: show_id ? { show_id } : undefined,
+          where: Object.keys(sessionWhere).length > 0 ? sessionWhere : undefined,
           include: [{
             model: Show,
             as: 'show',

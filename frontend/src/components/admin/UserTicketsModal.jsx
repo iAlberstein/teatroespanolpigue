@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { useAuth } from '../../contexts/AuthContext';
 import { apiAuthFetch } from '../../lib/api';
+import { formatDateTimeCompact } from '../../lib/dateFormatter.js';
 import Button from '../ui/Button';
 
 export default function UserTicketsModal({ user, onClose }) {
@@ -303,7 +304,7 @@ export default function UserTicketsModal({ user, onClose }) {
                           
                           {sale.any_validated && sale.validated_at && (
                             <div style={{ fontSize: 12, color: '#059669', marginTop: 4 }}>
-                               Validada: {new Date(sale.validated_at).toLocaleString('es-AR')}
+                               Validada: {formatDateTimeCompact(sale.validated_at)}
                             </div>
                           )}
                         </div>

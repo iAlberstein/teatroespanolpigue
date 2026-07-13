@@ -210,19 +210,29 @@ io.on('connection', (socket) => {
     if (!seatHolds.has(sessionId)) seatHolds.set(sessionId, new Map());
     if (!palcoHolds.has(sessionId)) palcoHolds.set(sessionId, new Map());
     
-    // Clean orphan holds - release all holds from disconnected sockets
-    // No restoration - user requested clean slate on page refresh
+    // Clean orphan holds - release holds from disconnected sockets ONLY if they are NOT covered by an active reservation
+    // This prevents releasing seats while another user is actively paying for them.
     try {
+      const { reservations: Reservation } = sequelize.models;
+      const now = dayjs().toDate();
+      const actives = await Reservation.findAll({
+        where: { session_id: sessionId, status: 'active', expires_at: { [Op.gt]: now } },
+        attributes: ['id', 'items']
+      });
+      const isSeatKept = (seatId) => actives.some(r => Array.isArray(r.items) && r.items.some(it => it.type === 'butaca' && it.seat_code === seatId));
+      const isPalcoKept = (palco) => actives.some(r => Array.isArray(r.items) && r.items.some(it => it.type === 'palco' && it.seat_code === palco));
+      console.log(`[Socket][join_session] Active reservations loaded: ${actives.length} for session ${sessionId}`);
+
       const seatMap = seatHolds.get(sessionId);
       const palcoMap = palcoHolds.get(sessionId);
       const toRelease = [];
       const toReleasePalcos = [];
       
-      // Release holds from disconnected sockets
+      // Release holds from disconnected sockets only if not covered by an active reservation
       for (const [seatId, hold] of seatMap.entries()) {
         const holderSocketId = typeof hold === 'string' ? hold : hold?.socketId;
         const holderSocket = io.sockets.sockets.get(holderSocketId);
-        if (!holderSocket) {
+        if (!holderSocket && !isSeatKept(seatId)) {
           toRelease.push(seatId);
         }
       }
@@ -230,7 +240,7 @@ io.on('connection', (socket) => {
       for (const [palco, hold] of palcoMap.entries()) {
         const holderSocketId = typeof hold === 'string' ? hold : hold?.socketId;
         const holderSocket = io.sockets.sockets.get(holderSocketId);
-        if (!holderSocket) {
+        if (!holderSocket && !isPalcoKept(palco)) {
           toReleasePalcos.push(palco);
         }
       }
@@ -238,18 +248,18 @@ io.on('connection', (socket) => {
       // Release orphan holds and notify all users in session
       for (const seatId of toRelease) {
         seatMap.delete(seatId);
-        io.to(`session:${sessionId}`).emit('seat_released', { seatId, by: 'system' });
+        io.to(`session:${sessionId}`).emit('seat_released', { seatId, by: 'system', reason: 'orphan_cleanup' });
       }
       for (const palco of toReleasePalcos) {
         palcoMap.delete(palco);
-        io.to(`session:${sessionId}`).emit('palco_released', { palco, by: 'system' });
+        io.to(`session:${sessionId}`).emit('palco_released', { palco, by: 'system', reason: 'orphan_cleanup' });
       }
       
       if (toRelease.length > 0 || toReleasePalcos.length > 0) {
-        console.log(`[Socket] Cleaned and broadcast ${toRelease.length} orphan seat holds and ${toReleasePalcos.length} orphan palco holds`);
+        console.log(`[Socket][join_session] Cleaned and broadcast ${toRelease.length} orphan seat holds and ${toReleasePalcos.length} orphan palco holds (kept by active reservations: ${actives.length})`);
       }
     } catch (err) {
-      console.error('[Socket] Error cleaning orphan holds:', err);
+      console.error('[Socket][join_session] Error cleaning orphan holds:', err);
     }
   });
 
@@ -485,6 +495,7 @@ io.on('connection', (socket) => {
   socket.on('disconnect', async () => {
     const sessionId = socket.data.sessionId;
     if (!sessionId) return;
+    console.log(`[Socket][disconnect] Socket ${socket.id} disconnecting from session ${sessionId}`);
     const st = pullmanState.get(sessionId);
     if (!st) return;
     if (st.heldBySocket.has(socket.id)) {
@@ -495,61 +506,78 @@ io.on('connection', (socket) => {
       const available = Math.max(0, st.capacity - newTotal - soldCount - blockedCount);
       io.to(`session:${sessionId}`).emit('pullman_updated', { available, capacity: st.capacity });
     }
-    // Release all seats held by this socket
-    // Hold structure: { socketId, guestId, userId } or legacy string
+
+    // Load active reservations once to decide which holds must survive payment/navigation
+    let actives = [];
+    try {
+      const { reservations: Reservation } = sequelize.models;
+      const now = dayjs().toDate();
+      actives = await Reservation.findAll({
+        where: { session_id: sessionId, status: 'active', expires_at: { [Op.gt]: now } },
+        attributes: ['id', 'items']
+      });
+      console.log(`[Socket][disconnect] Found ${actives.length} active reservations for session ${sessionId}`);
+    } catch (err) {
+      console.error('[Socket][disconnect] Error loading active reservations:', err);
+    }
+    const isSeatKept = (seatId) => actives.some(r => Array.isArray(r.items) && r.items.some(it => it.type === 'butaca' && it.seat_code === seatId));
+    const isPalcoKept = (palco) => actives.some(r => Array.isArray(r.items) && r.items.some(it => it.type === 'palco' && it.seat_code === palco));
+
+    // Release all seats held by this socket that are NOT covered by an active reservation
     const holds = seatHolds.get(sessionId);
     if (holds) {
       const toRelease = [];
       for (const [seatId, holder] of holds.entries()) {
         const holderSocketId = typeof holder === 'string' ? holder : holder?.socketId;
-        if (holderSocketId === socket.id) toRelease.push(seatId);
+        if (holderSocketId === socket.id && !isSeatKept(seatId)) {
+          toRelease.push(seatId);
+        }
       }
-      // check active reservations to persist holds during payment/navigation
-      try {
-        const { reservations: Reservation } = sequelize.models;
-        const now = dayjs().toDate();
-        const actives = await Reservation.findAll({ where: { session_id: sessionId, status: 'active', expires_at: { [Op.gt]: now } } });
-        for (const seatId of toRelease) {
-          const keptByActive = actives.some(r => Array.isArray(r.items) && r.items.some(it => it.type === 'butaca' && it.seat_code === seatId));
-          if (keptByActive) {
-            // keep hold: do NOT delete or emit release
-            continue;
-          }
-          holds.delete(seatId);
-          io.to(`session:${sessionId}`).emit('seat_released', { seatId, by: socket.id });
+      for (const seatId of toRelease) {
+        holds.delete(seatId);
+        io.to(`session:${sessionId}`).emit('seat_released', { seatId, by: socket.id, reason: 'disconnect' });
+      }
+      if (toRelease.length > 0) {
+        console.log(`[Socket][disconnect] Released ${toRelease.length} seats not covered by active reservations`);
+      }
+      const kept = [];
+      for (const [seatId, holder] of holds.entries()) {
+        const holderSocketId = typeof holder === 'string' ? holder : holder?.socketId;
+        if (holderSocketId === socket.id && isSeatKept(seatId)) {
+          kept.push(seatId);
         }
-      } catch {
-        // fallback: release all
-        for (const seatId of toRelease) {
-          holds.delete(seatId);
-          io.to(`session:${sessionId}`).emit('seat_released', { seatId, by: socket.id });
-        }
+      }
+      if (kept.length > 0) {
+        console.log(`[Socket][disconnect] Kept ${kept.length} seats covered by active reservations`, kept);
       }
     }
-    // Release all palcos held by this socket
-    // Hold structure: { socketId, guestId, userId } or legacy string
+
+    // Release all palcos held by this socket that are NOT covered by an active reservation
     const pHolds = palcoHolds.get(sessionId);
     if (pHolds) {
       const toReleasePalcos = [];
       for (const [palco, holder] of pHolds.entries()) {
         const holderSocketId = typeof holder === 'string' ? holder : holder?.socketId;
-        if (holderSocketId === socket.id) toReleasePalcos.push(palco);
+        if (holderSocketId === socket.id && !isPalcoKept(palco)) {
+          toReleasePalcos.push(palco);
+        }
       }
-      try {
-        const { reservations: Reservation } = sequelize.models;
-        const now = dayjs().toDate();
-        const actives = await Reservation.findAll({ where: { session_id: sessionId, status: 'active', expires_at: { [Op.gt]: now } } });
-        for (const palco of toReleasePalcos) {
-          const keptByActive = actives.some(r => Array.isArray(r.items) && r.items.some(it => it.type === 'palco' && it.seat_code === palco));
-          if (keptByActive) continue;
-          pHolds.delete(palco);
-          io.to(`session:${sessionId}`).emit('palco_released', { palco, by: socket.id });
+      for (const palco of toReleasePalcos) {
+        pHolds.delete(palco);
+        io.to(`session:${sessionId}`).emit('palco_released', { palco, by: socket.id, reason: 'disconnect' });
+      }
+      if (toReleasePalcos.length > 0) {
+        console.log(`[Socket][disconnect] Released ${toReleasePalcos.length} palcos not covered by active reservations`);
+      }
+      const keptPalcos = [];
+      for (const [palco, holder] of pHolds.entries()) {
+        const holderSocketId = typeof holder === 'string' ? holder : holder?.socketId;
+        if (holderSocketId === socket.id && isPalcoKept(palco)) {
+          keptPalcos.push(palco);
         }
-      } catch {
-        for (const palco of toReleasePalcos) {
-          pHolds.delete(palco);
-          io.to(`session:${sessionId}`).emit('palco_released', { palco, by: socket.id });
-        }
+      }
+      if (keptPalcos.length > 0) {
+        console.log(`[Socket][disconnect] Kept ${keptPalcos.length} palcos covered by active reservations`, keptPalcos);
       }
     }
   });
@@ -583,7 +611,7 @@ io.on('connection', (socket) => {
         const s = sessionMap.get(t.session_id);
         if (t.type === 'butaca' && t.seat_code) s.seats.add(t.seat_code);
         if (t.type === 'palco' && t.seat_code) s.palcos.add(t.seat_code);
-        if (t.type === 'pullman') s.pullman++;
+        if (t.type === 'pullman' || t.type === 'general') s.pullman++;
       }
       
       // Populate io maps

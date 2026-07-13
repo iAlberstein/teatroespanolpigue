@@ -1,4 +1,5 @@
 import { Router } from 'express';
+import { Op } from 'sequelize';
 import { sequelize } from '../lib/sequelize.js';
 import { authenticateToken, requireRole } from '../middleware/auth.js';
 import { getPriceTiers } from '../lib/seatPricing.js';
@@ -57,6 +58,7 @@ router.get('/:id/availability', async (req, res) => {
 
   // Load pricing from session (with fallback to show)
   let pricing = null;
+  let session = null;
   
   // Helper to parse pricing_json (handles string or object)
   const parsePricing = (pricingData) => {
@@ -75,7 +77,7 @@ router.get('/:id/availability', async (req, res) => {
   
   try {
     const { sessions: Session, shows: Show } = sequelize.models;
-    const session = await Session.findByPk(sessionId, {
+    session = await Session.findByPk(sessionId, {
       include: [{ model: Show, as: 'show' }]
     });
     
@@ -100,7 +102,7 @@ router.get('/:id/availability', async (req, res) => {
   // Get price tiers for display
   let priceTiers = [];
   try {
-    priceTiers = await getPriceTiers(sessionId, session.show_id, pricing);
+    priceTiers = await getPriceTiers(sessionId, session?.show_id, pricing);
   } catch (err) {
     console.error('[SESSIONS] Error getting price tiers:', err);
     // Don't fail the request, just skip price tiers
@@ -161,11 +163,12 @@ router.get('/:id/general-admission-availability', async (req, res) => {
       });
     }
     
-    // Count sold tickets for this session
+    // Count sold+validated tickets for this session (validated tickets are still consumed capacity)
     const soldCount = await Ticket.count({
       where: {
         session_id: sessionId,
-        status: 'sold'
+        type: 'general',
+        status: { [Op.in]: ['sold', 'validated'] }
       }
     });
     
@@ -256,6 +259,8 @@ router.post('/', authenticateToken, requireRole('admin'), async (req, res) => {
       palcos_individual_seats: palcos_individual_seats !== undefined ? palcos_individual_seats : null
     });
     
+    // Note: Pricing rules are now managed only at session level, not copied from show
+    
     res.status(201).json(session);
   } catch (error) {
     console.error('[SESSIONS] Error creating session:', error);
@@ -342,6 +347,56 @@ router.delete('/:id', authenticateToken, requireRole('admin'), async (req, res) 
   } catch (error) {
     console.error('[SESSIONS] Error deleting session:', error);
     res.status(500).json({ error: 'internal_error', message: 'Error al eliminar sesión' });
+  }
+});
+
+// TEMPORARY DEBUG ENDPOINT - Check pricing rules for a show
+router.get('/debug/pricing/:showId', async (req, res) => {
+  try {
+    const { showId } = req.params;
+    const { seat_pricing: SeatPricing } = sequelize.models;
+    const Show = sequelize.models.shows;
+    
+    const show = await Show.findByPk(showId);
+    if (!show) {
+      return res.status(404).json({ error: 'Show not found' });
+    }
+    
+    // Get all pricing rules for this show
+    const rules = await SeatPricing.findAll({
+      where: { show_id: showId }
+    });
+    
+    // Get tickets with $20000 price for palcos bajos
+    const { QueryTypes } = require('sequelize');
+    const tickets = await sequelize.query(
+      `SELECT t.id, t.seat_code, t.section, t.price, t.status, t.created_at, t.sale_id
+       FROM tickets t
+       JOIN sessions ss ON t.session_id = ss.id
+       WHERE ss.show_id = :showId
+         AND t.section = 'palcos_bajos'
+         AND t.price = 20000
+         AND t.status IN ('sold', 'validated')
+       ORDER BY t.created_at DESC
+       LIMIT 20`,
+      {
+        replacements: { showId },
+        type: QueryTypes.SELECT
+      }
+    );
+    
+    res.json({
+      show: {
+        id: show.id,
+        title: show.title,
+        pricing_json: show.pricing_json
+      },
+      pricing_rules: rules,
+      tickets_with_20000: tickets
+    });
+  } catch (error) {
+    console.error('[DEBUG] Error:', error);
+    res.status(500).json({ error: error.message });
   }
 });
 

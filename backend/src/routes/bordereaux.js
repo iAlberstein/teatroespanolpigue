@@ -496,16 +496,17 @@ router.get('/show/:show_id', authenticateToken, async (req, res) => {
       return null;
     }
     
-    // Primero agrupamos por ubicación+precio para detectar precios especiales
+    // Primero agrupamos por ubicación+precio+descuento para detectar precios especiales
     const locationPriceGroups = {};
     Object.values(salesByLocationPriceChannel).forEach(item => {
-      const key = `${item.location}|${item.price.toFixed(2)}`;
+      const key = `${item.location}|${item.price.toFixed(2)}|${item.discountCode || 'none'}`;
       if (!locationPriceGroups[key]) {
         const specialPricing = findSpecialPricingRule(item.location, item.price);
         const color = findRuleColor(item.location, item.price);
         locationPriceGroups[key] = {
           location: item.location,
           price: item.price,
+          discountCode: item.discountCode || null,
           specialPricing: specialPricing,
           color: color,
           quantity: 0,
@@ -538,6 +539,7 @@ router.get('/show/:show_id', authenticateToken, async (req, res) => {
         quantity: group.quantity,
         people: group.people,
         total: group.total,
+        discountCode: group.discountCode,
         specialPricing: group.specialPricing,
         color: group.color
       });
@@ -679,10 +681,12 @@ router.get('/show/:show_id', authenticateToken, async (req, res) => {
         id: show.id,
         title: show.title,
         author_name: bordereaux.author_name || '',
-        // Obtener la primera fecha de sesión del show
         session_date: show.sessions && show.sessions.length > 0 
-          ? show.sessions.sort((a, b) => new Date(a.starts_at) - new Date(b.starts_at))[0].starts_at 
-          : null
+          ? [...show.sessions].sort((a, b) => new Date(a.starts_at) - new Date(b.starts_at))[0].starts_at 
+          : null,
+        session_dates: show.sessions && show.sessions.length > 0
+          ? [...show.sessions].sort((a, b) => new Date(a.starts_at) - new Date(b.starts_at)).map(s => s.starts_at)
+          : []
       },
       sales: {
         cortesias: {
@@ -698,8 +702,9 @@ router.get('/show/:show_id', authenticateToken, async (req, res) => {
           if (locCmp !== 0) return locCmp;
           return (b.price || 0) - (a.price || 0);
         }),
-        online: onlineSales,
-        boleteria: boleteriaSales,
+        // OCULTADO: Detalle de ventas online vs boletería
+        // online: onlineSales,
+        // boleteria: boleteriaSales,
         onlineServices,
         boleteriaServices,
         onlineBordereauxServices,
@@ -759,6 +764,276 @@ router.get('/show/:show_id', authenticateToken, async (req, res) => {
       message: error.message,
       details: process.env.NODE_ENV === 'development' ? error.stack : undefined
     });
+  }
+});
+
+/**
+ * GET /api/bordereaux/show/:show_id/session/:session_id
+ * Obtener bordereaux para una sesión específica de un show (solo lectura, usa config del show)
+ */
+router.get('/show/:show_id/session/:session_id', authenticateToken, async (req, res) => {
+  try {
+    const { show_id, session_id } = req.params;
+    const { bordereaux: Bordereaux, shows: Show, sessions: Session, tickets: Ticket, sales: Sale, seat_pricing: SeatPricing } = sequelize.models;
+
+    const serviceFeePercent = await getServiceFeePercent();
+    const serviceFeeDivisor = 1 + (serviceFeePercent / 100);
+
+    if (!Bordereaux) {
+      return res.status(500).json({ error: 'Bordereaux model not loaded' });
+    }
+
+    // Buscar bordereaux del show (para config: deducciones, porcentajes)
+    let bordereaux = await Bordereaux.findOne({ where: { show_id }, include: [{ model: Show, as: 'show' }] });
+    if (!bordereaux) {
+      bordereaux = await Bordereaux.create({ show_id, status: 'provisional' });
+      bordereaux = await Bordereaux.findByPk(bordereaux.id, { include: [{ model: Show, as: 'show' }] });
+    }
+
+    // Obtener la sesión específica con sus ventas y tickets
+    const session = await Session.findOne({
+      where: { id: session_id, show_id },
+      include: [
+        {
+          model: Ticket,
+          as: 'tickets',
+          where: { status: { [Op.in]: ['sold', 'validated'] } },
+          required: false,
+          separate: true
+        },
+        {
+          model: Sale,
+          as: 'sales',
+          required: false,
+          separate: true,
+          include: [
+            { model: Ticket, as: 'tickets', required: false, separate: true },
+            { model: sequelize.models.discounts, as: 'discount', required: false }
+          ]
+        }
+      ]
+    });
+
+    if (!session) {
+      return res.status(404).json({ error: 'Session not found' });
+    }
+
+    const show = await Show.findByPk(show_id, {
+      include: [{ model: sequelize.models.show_services, as: 'services', required: false }]
+    });
+
+    if (!show) {
+      return res.status(404).json({ error: 'Show not found' });
+    }
+
+    // Cargar reglas de precios especiales
+    let seatPricingRules = [];
+    if (SeatPricing) {
+      seatPricingRules = await SeatPricing.findAll({
+        where: { [Op.or]: [{ show_id }, { session_id }] }
+      });
+    }
+
+    const serviceMap = {};
+    if (show.services && Array.isArray(show.services)) {
+      show.services.forEach(svc => {
+        serviceMap[svc.name] = svc.include_in_bordereaux === true || svc.include_in_bordereaux === 1;
+      });
+    }
+
+    // Calcular datos de venta para esta sesión (misma lógica que el endpoint general)
+    const salesByLocationPriceChannel = {};
+    let totalCortesias = 0;
+    let totalCortesiasAmount = 0;
+    let totalOnline = 0;
+    let totalBoleteria = 0;
+
+    const sessionSales = session.sales || [];
+    for (const sale of sessionSales) {
+      const saleTickets = sale.tickets || [];
+      if (saleTickets.length === 0) continue;
+      const isOnline = (sale.payment_method === 'mp' || sale.payment_method === 'card');
+      const channel = isOnline ? 'online' : 'boleteria';
+      const discountCode = sale.discount?.alias || sale.discount?.code || null;
+
+      let saleSubtotal = 0;
+      const ticketsWithPrices = [];
+
+      for (const ticket of saleTickets) {
+        if (ticket.type === 'service') continue;
+        let price = parseFloat(ticket.price || 0);
+        const location = ticket.section || ticket.type || 'Sin ubicación';
+        if (price === 0 && show.pricing_json) {
+          const pricingKey = ticket.section || ticket.type;
+          if (pricingKey && show.pricing_json[pricingKey]) {
+            price = parseFloat(show.pricing_json[pricingKey]);
+          }
+        }
+        if (price === 0) { totalCortesias++; continue; }
+        saleSubtotal += price;
+        ticketsWithPrices.push({ ticket, price, location });
+      }
+
+      let discountMultiplier = 1.0;
+      if (saleSubtotal > 0) {
+        const saleTotalAmount = parseFloat(sale.total_amount || 0);
+        const netPaid = sale.payment_method === 'mp' ? saleTotalAmount / serviceFeeDivisor : saleTotalAmount;
+        if (netPaid === 0) {
+          discountMultiplier = 0;
+        } else if (netPaid < saleSubtotal * 0.995) {
+          discountMultiplier = netPaid / saleSubtotal;
+        }
+      }
+
+      for (const { ticket, price, location } of ticketsWithPrices) {
+        const effectivePrice = price * discountMultiplier;
+        const key = `${location}|${effectivePrice.toFixed(2)}|${channel}|${discountCode || 'none'}`;
+        if (!salesByLocationPriceChannel[key]) {
+          salesByLocationPriceChannel[key] = { location, price: effectivePrice, channel, discountCode, quantity: 0, people: 0, total: 0 };
+        }
+        salesByLocationPriceChannel[key].quantity++;
+        salesByLocationPriceChannel[key].people += (ticket.type === 'palco' ?
+          (ticket.seat_code?.startsWith('PB') ? 4 : 2) : (ticket.type === 'pullman' ? (ticket.capacity || 1) : 1));
+        salesByLocationPriceChannel[key].total += effectivePrice;
+        if (isOnline) { totalOnline += effectivePrice; } else { totalBoleteria += effectivePrice; }
+      }
+    }
+
+    // Servicios
+    const servicesByNameChannel = {};
+    const bordereauxServicesByNameChannel = {};
+    for (const sale of sessionSales) {
+      if (!sale.service_items) continue;
+      let saleServiceItems = sale.service_items;
+      if (typeof saleServiceItems === 'string') {
+        try {
+          saleServiceItems = JSON.parse(saleServiceItems);
+          if (typeof saleServiceItems === 'string') saleServiceItems = JSON.parse(saleServiceItems);
+        } catch { continue; }
+      }
+      if (!Array.isArray(saleServiceItems) || saleServiceItems.length === 0) continue;
+      const isOnline = (sale.payment_method === 'mp' || sale.payment_method === 'card');
+      const channel = isOnline ? 'online' : 'boleteria';
+      for (const si of saleServiceItems) {
+        const qty = Number(si.quantity || 1);
+        const price = Number(si.price || 0);
+        const name = si.name || 'Servicio';
+        const key = `${name}|${price.toFixed(2)}|${channel}`;
+        const includeInBordereaux = serviceMap[name] === true;
+        const targetMap = includeInBordereaux ? bordereauxServicesByNameChannel : servicesByNameChannel;
+        if (!targetMap[key]) { targetMap[key] = { name, price, channel, quantity: 0, total: 0 }; }
+        targetMap[key].quantity += qty;
+        targetMap[key].total += qty * price;
+      }
+    }
+
+    const onlineServices = Object.values(bordereauxServicesByNameChannel).filter(s => s.channel === 'online');
+    const boleteriaServices = Object.values(bordereauxServicesByNameChannel).filter(s => s.channel === 'boleteria');
+
+    // Sector totals
+    const locationNameMap = { 'palco': 'Palco', 'palcos_bajos': 'Palcos Bajos', 'palcos_altos': 'Palcos Altos', 'butaca': 'Platea General', 'platea_general': 'Platea General', 'pullman': 'Pullman' };
+    const sectorGroups = {};
+    Object.values(salesByLocationPriceChannel).forEach(item => {
+      if (!sectorGroups[item.location]) {
+        sectorGroups[item.location] = { location: item.location, quantity: 0, people: 0, total: 0, items: [] };
+      }
+      sectorGroups[item.location].quantity += item.quantity;
+      sectorGroups[item.location].people += item.people || item.quantity;
+      sectorGroups[item.location].total += item.total;
+      sectorGroups[item.location].items.push({ price: item.price, quantity: item.quantity, people: item.people || item.quantity, total: item.total, discountCode: item.discountCode || null });
+    });
+
+    const onlineSales = [];
+    const boleteriaSales = [];
+    Object.values(salesByLocationPriceChannel).forEach(item => {
+      let readableLocation = locationNameMap[item.location] || item.location;
+      if (item.discountCode) readableLocation = `${readableLocation} ( ${item.discountCode})`;
+      const itemWithReadableName = { ...item, location: readableLocation };
+      if (item.channel === 'online') { onlineSales.push(itemWithReadableName); } else { boleteriaSales.push(itemWithReadableName); }
+    });
+
+    const totalBruto = totalOnline + totalBoleteria;
+    const totalTickets = Object.values(salesByLocationPriceChannel).reduce((sum, item) => sum + item.quantity, 0) + totalCortesias;
+
+    let deductionsA = bordereaux.deductions_a || [];
+    if (typeof deductionsA === 'string') { try { deductionsA = JSON.parse(deductionsA); } catch { deductionsA = []; } }
+    if (!Array.isArray(deductionsA)) deductionsA = [];
+    let totalDeductionsA = 0;
+    const deductionsACalculated = deductionsA.map(ded => {
+      let amount = ded.type === 'fixed' ? parseFloat(ded.fixedAmount || 0) : (totalBruto * (ded.percentage / 100));
+      totalDeductionsA += amount;
+      return { ...ded, amount: amount.toFixed(2) };
+    });
+    const neto1 = totalBruto - totalDeductionsA;
+
+    const totalServices = onlineServices.reduce((sum, s) => sum + s.total, 0) + boleteriaServices.reduce((sum, s) => sum + s.total, 0);
+    const neto2 = neto1 + totalServices;
+
+    const theaterPercentage = bordereaux.contract_theater_percentage || 0;
+    const userPercentage = bordereaux.contract_user_percentage || 0;
+    const theaterAmount = neto2 * (theaterPercentage / 100);
+    const userAmount = neto2 * (userPercentage / 100);
+
+    let deductionsB = bordereaux.deductions_b || [];
+    if (typeof deductionsB === 'string') { try { deductionsB = JSON.parse(deductionsB); } catch { deductionsB = []; } }
+    if (!Array.isArray(deductionsB)) deductionsB = [];
+    const totalDeductionsB = deductionsB.reduce((sum, item) => sum + parseFloat(item.amount || 0), 0);
+
+    const userBoleteriaShare = totalBoleteria * (userPercentage / 100);
+    const userOnlineShare = totalOnline * (userPercentage / 100);
+    const userCashAmount = Math.max(0, userBoleteriaShare - totalDeductionsB);
+    const userTransferAmount = userOnlineShare;
+
+    const response = {
+      bordereaux: { id: bordereaux.id, status: bordereaux.status, closed_at: bordereaux.closed_at, closed_by: bordereaux.closed_by },
+      session: { id: session.id, starts_at: session.starts_at },
+      show: {
+        id: show.id,
+        title: show.title,
+        author_name: bordereaux.author_name || '',
+        session_date: session.starts_at
+      },
+      sales: {
+        cortesias: { quantity: totalCortesias, amount: totalCortesiasAmount.toFixed(2) },
+        sectorTotals: Object.values(sectorGroups).map(s => ({
+          ...s,
+          location: locationNameMap[s.location] || s.location,
+          total: Number(s.total).toFixed(2)
+        })).sort((a, b) => a.location.localeCompare(b.location)),
+        onlineServices,
+        boleteriaServices,
+        onlineBordereauxServices: onlineServices,
+        boleteriaBordereauxServices: boleteriaServices,
+        totals: {
+          tickets: totalTickets,
+          amount: totalBruto.toFixed(2),
+          onlineAmount: totalOnline.toFixed(2),
+          boleteriaAmount: totalBoleteria.toFixed(2),
+          onlineTickets: onlineSales.reduce((sum, s) => sum + s.quantity, 0),
+          boleteriaTickets: boleteriaSales.reduce((sum, s) => sum + s.quantity, 0),
+          onlinePeople: onlineSales.reduce((sum, s) => sum + (s.people || s.quantity), 0),
+          boleteriaPeople: boleteriaSales.reduce((sum, s) => sum + (s.people || s.quantity), 0),
+          people: onlineSales.reduce((sum, s) => sum + (s.people || s.quantity), 0) + boleteriaSales.reduce((sum, s) => sum + (s.people || s.quantity), 0) + totalCortesias
+        }
+      },
+      recaudacion: { efectivo: totalBoleteria.toFixed(2), online: totalOnline.toFixed(2), bruto: totalBruto.toFixed(2) },
+      deductions_a: { items: deductionsACalculated, total: totalDeductionsA.toFixed(2), neto1: neto1.toFixed(2) },
+      services: {
+        online: onlineServices.map(s => ({ name: s.name, quantity: s.quantity, total: s.total.toFixed(2) })),
+        boleteria: boleteriaServices.map(s => ({ name: s.name, quantity: s.quantity, total: s.total.toFixed(2) })),
+        total: totalServices.toFixed(2)
+      },
+      neto2: neto2.toFixed(2),
+      contract: { theater_percentage: bordereaux.contract_theater_percentage, user_percentage: bordereaux.contract_user_percentage, theater_amount: theaterAmount.toFixed(2), user_amount: userAmount.toFixed(2) },
+      deductions_b: { items: deductionsB, total: totalDeductionsB.toFixed(2) },
+      liquidacion: { user_cash: userCashAmount.toFixed(2), user_transfer: userTransferAmount.toFixed(2), user_total: (userCashAmount + userTransferAmount).toFixed(2) }
+    };
+
+    res.json(response);
+
+  } catch (error) {
+    console.error('[BORDEREAUX] Error generating session bordereaux:', error);
+    res.status(500).json({ error: 'Internal server error', message: error.message });
   }
 });
 
@@ -1050,27 +1325,58 @@ router.get('/show/:show_id/pdf', authenticateToken, async (req, res) => {
     const onlineServicesPDF = Object.values(servicesByNameChannelPDF).filter(s => s.channel === 'online');
     const boleteriaServicesPDF = Object.values(servicesByNameChannelPDF).filter(s => s.channel === 'boleteria');
 
-    // Sector totals for PDF
-    const sectorTotalsPDF = {};
+    // Build sectorGroups from salesByLocationPriceChannel (same logic as regular endpoint)
+    const locationPriceGroupsPDF = {};
     Object.values(salesByLocationPriceChannel).forEach(item => {
-      const k = item.location;
-      if (!sectorTotalsPDF[k]) sectorTotalsPDF[k] = { location: k, quantity: 0, people: 0, total: 0 };
-      sectorTotalsPDF[k].quantity += item.quantity;
-      sectorTotalsPDF[k].people += item.people || item.quantity;
-      sectorTotalsPDF[k].total += item.total;
+      const key = `${item.location}|${item.price.toFixed(2)}|${item.discountCode || 'none'}`;
+      if (!locationPriceGroupsPDF[key]) {
+        locationPriceGroupsPDF[key] = {
+          location: item.location,
+          price: item.price,
+          discountCode: item.discountCode || null,
+          quantity: 0,
+          people: 0,
+          total: 0
+        };
+      }
+      locationPriceGroupsPDF[key].quantity += item.quantity;
+      locationPriceGroupsPDF[key].people += item.people || item.quantity;
+      locationPriceGroupsPDF[key].total += item.total;
     });
-    // NO incluir servicios en sector totals PDF (se agregan debajo de deducciones A)
-    // Object.values(servicesByNameChannelPDF).forEach(item => {
-    //   const k = item.name;
-    //   if (!sectorTotalsPDF[k]) sectorTotalsPDF[k] = { location: k, quantity: 0, people: 0, total: 0 };
-    //   sectorTotalsPDF[k].quantity += item.quantity;
-    //   sectorTotalsPDF[k].people += item.quantity;
-    //   sectorTotalsPDF[k].total += item.total;
-    // });
-    const sectorTotalsPDFArray = Object.values(sectorTotalsPDF).map(s => ({
+
+    const sectorGroups = {};
+    Object.values(locationPriceGroupsPDF).forEach(group => {
+      if (!sectorGroups[group.location]) {
+        sectorGroups[group.location] = {
+          location: group.location,
+          quantity: 0,
+          people: 0,
+          total: 0,
+          items: []
+        };
+      }
+      sectorGroups[group.location].quantity += group.quantity;
+      sectorGroups[group.location].people += group.people;
+      sectorGroups[group.location].total += group.total;
+      sectorGroups[group.location].items.push({
+        price: group.price,
+        quantity: group.quantity,
+        people: group.people,
+        total: group.total,
+        discountCode: group.discountCode
+      });
+    });
+
+    // Sector totals for PDF
+    const sectorTotalsPDFArray = Object.values(sectorGroups).map(s => ({
       ...s,
       location: locationNameMap[s.location] || s.location,
-      total: Number(s.total).toFixed(2)
+      total: Number(s.total).toFixed(2),
+      items: s.items ? s.items.map(i => ({
+        ...i,
+        price: Number(i.price).toFixed(2),
+        total: Number(i.total).toFixed(2)
+      })) : []
     })).sort((a, b) => a.location.localeCompare(b.location));
 
     // Separate by channel
@@ -1145,10 +1451,12 @@ router.get('/show/:show_id/pdf', authenticateToken, async (req, res) => {
     const userCash = Math.max(0, userBoleteriaShare - totalDeductionsB);
     const userTransfer = userOnlineShare;
     
-    // Get session date
-    const sessionDate = show.sessions && show.sessions.length > 0 
-      ? show.sessions.sort((a, b) => new Date(a.starts_at) - new Date(b.starts_at))[0].starts_at 
-      : null;
+    // Get session dates (all sessions sorted)
+    const sortedSessions = show.sessions
+      ? [...show.sessions].sort((a, b) => new Date(a.starts_at) - new Date(b.starts_at))
+      : [];
+    const sessionDate = sortedSessions.length > 0 ? sortedSessions[0].starts_at : null;
+    const sessionDates = sortedSessions.map(s => s.starts_at);
     
     const isClosed = bordereaux.status === 'cerrado';
     
@@ -1178,6 +1486,7 @@ router.get('/show/:show_id/pdf', authenticateToken, async (req, res) => {
       userCash,
       userTransfer,
       sessionDate,
+      sessionDates,
       isClosed
     };
     
@@ -1203,6 +1512,257 @@ router.get('/show/:show_id/pdf', authenticateToken, async (req, res) => {
     
   } catch (error) {
     console.error('[BORDEREAUX] Error generating PDF:', error);
+    if (!res.headersSent) {
+      res.status(500).json({ error: 'Internal server error' });
+    }
+  }
+});
+
+/**
+ * GET /api/bordereaux/show/:show_id/session/:session_id/pdf
+ * Generate PDF bordereaux for a specific session
+ */
+router.get('/show/:show_id/session/:session_id/pdf', authenticateToken, async (req, res) => {
+  try {
+    const { show_id, session_id } = req.params;
+    const { bordereaux: Bordereaux, shows: Show, sessions: Session, tickets: Ticket, sales: Sale, seat_pricing: SeatPricing } = sequelize.models;
+
+    const serviceFeePercent = await getServiceFeePercent();
+    const serviceFeeDivisor = 1 + (serviceFeePercent / 100);
+
+    let bordereaux = await Bordereaux.findOne({ where: { show_id } });
+    if (!bordereaux) {
+      return res.status(404).json({ error: 'Bordereaux not found' });
+    }
+
+    const show = await Show.findByPk(show_id, {
+      include: [{ model: sequelize.models.show_services, as: 'services', required: false }]
+    });
+    if (!show) {
+      return res.status(404).json({ error: 'Show not found' });
+    }
+
+    const session = await Session.findOne({
+      where: { id: session_id, show_id },
+      include: [
+        {
+          model: Sale,
+          as: 'sales',
+          required: false,
+          separate: true,
+          include: [
+            { model: Ticket, as: 'tickets', required: false, separate: true },
+            { model: sequelize.models.discounts, as: 'discount', required: false }
+          ]
+        }
+      ]
+    });
+    if (!session) {
+      return res.status(404).json({ error: 'Session not found' });
+    }
+
+    const serviceMapPDF = {};
+    if (show.services && Array.isArray(show.services)) {
+      show.services.forEach(svc => {
+        serviceMapPDF[svc.name] = svc.include_in_bordereaux === true || svc.include_in_bordereaux === 1;
+      });
+    }
+
+    const locationNameMap = {
+      'palco': 'Palco', 'palcos_bajos': 'Palcos Bajos', 'palcos_altos': 'Palcos Altos',
+      'butaca': 'Platea General', 'platea_general': 'Platea General', 'pullman': 'Pullman'
+    };
+
+    const salesByLocationPriceChannel = {};
+    let totalCortesias = 0;
+    let totalOnline = 0;
+    let totalBoleteria = 0;
+
+    const sessionSales = session.sales || [];
+    for (const sale of sessionSales) {
+      const saleTickets = sale.tickets || [];
+      if (saleTickets.length === 0) continue;
+      const isOnline = (sale.payment_method === 'mp' || sale.payment_method === 'card');
+      const channel = isOnline ? 'online' : 'boleteria';
+      const discountCode = sale.discount?.alias || sale.discount?.code || null;
+
+      let saleSubtotal = 0;
+      const ticketsWithPrices = [];
+      for (const ticket of saleTickets) {
+        if (ticket.type === 'service') continue;
+        let price = parseFloat(ticket.price || 0);
+        const location = ticket.section || ticket.type || 'Sin ubicación';
+        if (price === 0 && show.pricing_json) {
+          const pricingKey = ticket.section || ticket.type;
+          if (pricingKey && show.pricing_json[pricingKey]) price = parseFloat(show.pricing_json[pricingKey]);
+        }
+        if (price === 0) { totalCortesias++; continue; }
+        saleSubtotal += price;
+        ticketsWithPrices.push({ ticket, price, location });
+      }
+
+      let discountMultiplier = 1.0;
+      if (saleSubtotal > 0) {
+        const saleTotalAmount = parseFloat(sale.total_amount || 0);
+        const netPaid = sale.payment_method === 'mp' ? saleTotalAmount / serviceFeeDivisor : saleTotalAmount;
+        if (netPaid === 0) { discountMultiplier = 0; }
+        else if (netPaid < saleSubtotal * 0.995) { discountMultiplier = netPaid / saleSubtotal; }
+      }
+
+      for (const { ticket, price, location } of ticketsWithPrices) {
+        const effectivePrice = price * discountMultiplier;
+        const key = `${location}|${effectivePrice.toFixed(2)}|${channel}|${discountCode || 'none'}`;
+        if (!salesByLocationPriceChannel[key]) {
+          salesByLocationPriceChannel[key] = { location, price: effectivePrice, channel, discountCode, quantity: 0, people: 0, total: 0 };
+        }
+        salesByLocationPriceChannel[key].quantity++;
+        salesByLocationPriceChannel[key].people += (ticket.type === 'palco' ?
+          (ticket.seat_code?.startsWith('PB') ? 4 : 2) : (ticket.type === 'pullman' ? (ticket.capacity || 1) : 1));
+        salesByLocationPriceChannel[key].total += effectivePrice;
+        if (isOnline) { totalOnline += effectivePrice; } else { totalBoleteria += effectivePrice; }
+      }
+    }
+
+    // Services
+    const servicesByNameChannelPDF = {};
+    for (const sale of sessionSales) {
+      if (!sale.service_items) continue;
+      let svcItems = sale.service_items;
+      if (typeof svcItems === 'string') {
+        try { svcItems = JSON.parse(svcItems); } catch { continue; }
+        if (typeof svcItems === 'string') { try { svcItems = JSON.parse(svcItems); } catch { continue; } }
+      }
+      if (!Array.isArray(svcItems) || svcItems.length === 0) continue;
+      const isOnlinePDF = (sale.payment_method === 'mp' || sale.payment_method === 'card');
+      const ch = isOnlinePDF ? 'online' : 'boleteria';
+      for (const si of svcItems) {
+        const qty = Number(si.quantity || 1);
+        const price = Number(si.price || 0);
+        const name = si.name || 'Servicio';
+        const key = `${name}|${price.toFixed(2)}|${ch}`;
+        if (!serviceMapPDF[name]) continue;
+        if (!servicesByNameChannelPDF[key]) servicesByNameChannelPDF[key] = { name, price, channel: ch, quantity: 0, total: 0 };
+        servicesByNameChannelPDF[key].quantity += qty;
+        servicesByNameChannelPDF[key].total += qty * price;
+      }
+    }
+    const onlineServicesPDF = Object.values(servicesByNameChannelPDF).filter(s => s.channel === 'online');
+    const boleteriaServicesPDF = Object.values(servicesByNameChannelPDF).filter(s => s.channel === 'boleteria');
+
+    // Build sector groups
+    const locationPriceGroupsPDF = {};
+    Object.values(salesByLocationPriceChannel).forEach(item => {
+      const key = `${item.location}|${item.price.toFixed(2)}|${item.discountCode || 'none'}`;
+      if (!locationPriceGroupsPDF[key]) {
+        locationPriceGroupsPDF[key] = { location: item.location, price: item.price, discountCode: item.discountCode || null, quantity: 0, people: 0, total: 0 };
+      }
+      locationPriceGroupsPDF[key].quantity += item.quantity;
+      locationPriceGroupsPDF[key].people += item.people || item.quantity;
+      locationPriceGroupsPDF[key].total += item.total;
+    });
+    const sectorGroups = {};
+    Object.values(locationPriceGroupsPDF).forEach(group => {
+      if (!sectorGroups[group.location]) {
+        sectorGroups[group.location] = { location: group.location, quantity: 0, people: 0, total: 0, items: [] };
+      }
+      sectorGroups[group.location].quantity += group.quantity;
+      sectorGroups[group.location].people += group.people;
+      sectorGroups[group.location].total += group.total;
+      sectorGroups[group.location].items.push({ price: group.price, quantity: group.quantity, people: group.people, total: group.total, discountCode: group.discountCode });
+    });
+    const sectorTotalsPDFArray = Object.values(sectorGroups).map(s => ({
+      ...s,
+      location: locationNameMap[s.location] || s.location,
+      total: Number(s.total).toFixed(2),
+      items: s.items ? s.items.map(i => ({ ...i, price: Number(i.price).toFixed(2), total: Number(i.total).toFixed(2) })) : []
+    })).sort((a, b) => a.location.localeCompare(b.location));
+
+    const onlineSales = [];
+    const boleteriaSales = [];
+    Object.values(salesByLocationPriceChannel).forEach(item => {
+      let readableLocation = locationNameMap[item.location] || item.location;
+      if (item.discountCode) readableLocation = `${readableLocation} ( ${item.discountCode})`;
+      const itemWithReadableName = { ...item, location: readableLocation };
+      if (item.channel === 'online') { onlineSales.push(itemWithReadableName); } else { boleteriaSales.push(itemWithReadableName); }
+    });
+
+    const totalBruto = totalOnline + totalBoleteria;
+
+    let deductionsA = bordereaux.deductions_a || [];
+    if (typeof deductionsA === 'string') { try { deductionsA = JSON.parse(deductionsA); } catch { deductionsA = []; } }
+    if (!Array.isArray(deductionsA)) deductionsA = [];
+    let totalDeductionsA = 0;
+    const deductionsACalculated = deductionsA.map(ded => {
+      let amount = ded.type === 'fixed' ? parseFloat(ded.fixedAmount || 0) : (totalBruto * (ded.percentage / 100));
+      totalDeductionsA += amount;
+      return { ...ded, amount };
+    });
+    const neto1 = totalBruto - totalDeductionsA;
+
+    const totalServices = onlineServicesPDF.reduce((sum, s) => sum + s.total, 0) + boleteriaServicesPDF.reduce((sum, s) => sum + s.total, 0);
+    const neto2 = neto1 + totalServices;
+
+    const theaterPercentage = bordereaux.contract_theater_percentage || 0;
+    const userPercentage = bordereaux.contract_user_percentage || 0;
+    const theaterAmount = neto2 * (theaterPercentage / 100);
+    const userAmount = neto2 * (userPercentage / 100);
+
+    let deductionsB = bordereaux.deductions_b || [];
+    if (typeof deductionsB === 'string') { try { deductionsB = JSON.parse(deductionsB); } catch { deductionsB = []; } }
+    if (!Array.isArray(deductionsB)) deductionsB = [];
+    const totalDeductionsB = deductionsB.reduce((sum, item) => sum + parseFloat(item.amount || 0), 0);
+
+    const userBoleteriaShare = totalBoleteria * (userPercentage / 100);
+    const userOnlineShare = totalOnline * (userPercentage / 100);
+    const userCash = Math.max(0, userBoleteriaShare - totalDeductionsB);
+    const userTransfer = userOnlineShare;
+
+    const isClosed = bordereaux.status === 'cerrado';
+
+    const pdfData = {
+      show,
+      bordereaux,
+      onlineSales,
+      boleteriaSales,
+      onlineServices: onlineServicesPDF,
+      boleteriaServices: boleteriaServicesPDF,
+      sectorTotals: sectorTotalsPDFArray,
+      totalOnline,
+      totalBoleteria,
+      totalBruto,
+      deductionsACalculated,
+      totalDeductionsA,
+      neto1,
+      totalServices,
+      neto2,
+      theaterPercentage,
+      userPercentage,
+      theaterAmount,
+      userAmount,
+      deductionsB,
+      totalDeductionsB,
+      userCash,
+      userTransfer,
+      sessionDate: session.starts_at,
+      sessionDates: [session.starts_at],
+      isClosed
+    };
+
+    const estimatedHeight = calculatePDFHeight(pdfData);
+    const doc = new PDFDocument({
+      margin: 40,
+      size: [595.28, Math.max(841.89, estimatedHeight)],
+      autoFirstPage: true
+    });
+
+    res.setHeader('Content-Type', 'application/pdf');
+    res.setHeader('Content-Disposition', `attachment; filename="bordereaux_sesion_${show.title.replace(/\s/g, '_')}.pdf"`);
+    doc.pipe(res);
+    generateBordereauxPDF(doc, pdfData);
+    doc.end();
+
+  } catch (error) {
+    console.error('[BORDEREAUX] Error generating session PDF:', error);
     if (!res.headersSent) {
       res.status(500).json({ error: 'Internal server error' });
     }

@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react';
 import { useAuth } from '../contexts/AuthContext';
 import { apiAuthFetch } from '../lib/api';
+import { formatDateTimeCompact } from '../lib/dateFormatter.js';
 import Button from '../components/ui/Button';
 
 export default function ActivityLogs() {
@@ -146,15 +147,7 @@ export default function ActivityLogs() {
 
   const formatDate = (dateString) => {
     if (!dateString) return '-';
-    const date = new Date(dateString);
-    return date.toLocaleDateString('es-AR', {
-      day: '2-digit',
-      month: '2-digit',
-      year: 'numeric',
-      hour: '2-digit',
-      minute: '2-digit',
-      hour12: false
-    });
+    return formatDateTimeCompact(dateString);
   };
 
   const formatActionType = (action) => {

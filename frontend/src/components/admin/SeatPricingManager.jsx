@@ -1,5 +1,6 @@
 import { useState, useEffect } from 'react';
-import { apiFetch } from '../../lib/api';
+import { apiAuthFetch } from '../../lib/api';
+import { useAuth } from '../../contexts/AuthContext';
 
 function formatPrice(price) {
   return new Intl.NumberFormat('es-AR', {
@@ -30,11 +31,24 @@ const SECTION_CONFIG = {
   }
 };
 
-export default function SeatPricingManager({ showId, sessionId = null }) {
-  const [rules, setRules] = useState([]);
+export default function SeatPricingManager({ 
+  showId, 
+  sessionId = null, 
+  draftRules = [], 
+  onRulesChange,
+  isDraft = false 
+}) {
+  const { token } = useAuth();
+  
+  // Server rules (for existing shows/sessions)
+  const [serverRules, setServerRules] = useState([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
   const [success, setSuccess] = useState(null);
+  
+  // Use draftRules if in draft mode, otherwise use serverRules
+  const rules = isDraft ? draftRules : serverRules;
+  const setRules = isDraft ? onRulesChange : setServerRules;
   
   // Form state
   const [selectedType, setSelectedType] = useState('platea_rows'); // platea_rows, palcos_bajos, palcos_altos
@@ -46,29 +60,18 @@ export default function SeatPricingManager({ showId, sessionId = null }) {
   const [isPalcoAlto, setIsPalcoAlto] = useState(false);
   const [selectedColor, setSelectedColor] = useState('#10b981');
 
-  // Predefined colors for selection
-  const COLOR_OPTIONS = [
-    '#10b981', // green
-    '#3b82f6', // blue
-    '#f59e0b', // amber
-    '#ef4444', // red
-    '#8b5cf6', // violet
-    '#06b6d4', // cyan
-    '#ec4899', // pink
-    '#84cc16', // lime
-  ];
-
   const loadRules = async () => {
-    if (!showId) return;
+    // Skip if in draft mode or no showId
+    if (isDraft || !showId) return;
     
     setLoading(true);
     try {
       const queryParams = sessionId ? `?sessionId=${sessionId}` : '';
-      const res = await apiFetch(`/api/seat-pricing/rules/${showId}${queryParams}`);
+      const res = await apiAuthFetch(`/api/seat-pricing/rules/${showId}${queryParams}`, {}, token);
       const data = await res.json();
       
       if (data.success) {
-        setRules(data.rules);
+        setServerRules(data.rules);
       } else {
         setError(data.message || 'Error al cargar reglas');
       }
@@ -81,7 +84,7 @@ export default function SeatPricingManager({ showId, sessionId = null }) {
 
   useEffect(() => {
     loadRules();
-  }, [showId, sessionId]);
+  }, [showId, sessionId, isDraft]);
 
   const handleSubmit = async (e) => {
     e.preventDefault();
@@ -118,21 +121,35 @@ export default function SeatPricingManager({ showId, sessionId = null }) {
     }
 
     try {
-      const res = await apiFetch('/api/seat-pricing/rules', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(payload)
-      });
-
-      const data = await res.json();
-
-      if (data.success) {
-        setSuccess('Regla de precio creada exitosamente');
+      if (isDraft) {
+        // In draft mode, just add to local state
+        const newRule = {
+          id: `draft-${Date.now()}`,
+          ...payload,
+          created_at: new Date().toISOString()
+        };
+        onRulesChange([...draftRules, newRule]);
+        setSuccess('Regla agregada (se guardará al crear el espectáculo)');
         setPrice('');
         setSelectedColor('#10b981');
-        loadRules();
       } else {
-        setError(data.message || 'Error al crear regla');
+        // Server mode - save to API
+        const res = await apiAuthFetch('/api/seat-pricing/rules', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload)
+        }, token);
+
+        const data = await res.json();
+
+        if (data.success) {
+          setSuccess('Regla de precio creada exitosamente');
+          setPrice('');
+          setSelectedColor('#10b981');
+          loadRules();
+        } else {
+          setError(data.message || 'Error al crear regla');
+        }
       }
     } catch (err) {
       setError('Error de conexión al guardar');
@@ -145,21 +162,28 @@ export default function SeatPricingManager({ showId, sessionId = null }) {
     setError(null);
     setSuccess(null);
 
-    try {
-      const res = await apiFetch(`/api/seat-pricing/rules/${ruleId}`, {
-        method: 'DELETE'
-      });
+    if (isDraft) {
+      // In draft mode, just remove from local state
+      onRulesChange(draftRules.filter(r => r.id !== ruleId));
+      setSuccess('Regla eliminada');
+    } else {
+      // Server mode - delete from API
+      try {
+        const res = await apiAuthFetch(`/api/seat-pricing/rules/${ruleId}`, {
+          method: 'DELETE'
+        }, token);
 
-      const data = await res.json();
+        const data = await res.json();
 
-      if (data.success) {
-        setSuccess('Regla eliminada');
-        loadRules();
-      } else {
-        setError(data.message || 'Error al eliminar');
+        if (data.success) {
+          setSuccess('Regla eliminada');
+          loadRules();
+        } else {
+          setError(data.message || 'Error al eliminar');
+        }
+      } catch (err) {
+        setError('Error de conexión al eliminar');
       }
-    } catch (err) {
-      setError('Error de conexión al eliminar');
     }
   };
 
@@ -191,19 +215,6 @@ export default function SeatPricingManager({ showId, sessionId = null }) {
         💰 Precios por Ubicación
       </h3>
 
-      {sessionId && (
-        <div style={{ 
-          padding: '8px 12px', 
-          background: '#dbeafe', 
-          borderRadius: '6px', 
-          fontSize: '13px', 
-          color: '#1e40af',
-          marginBottom: '16px'
-        }}>
-          ⚠️ Estás configurando precios específicos para esta sesión. 
-          Estos sobrescribirán los precios del espectáculo base.
-        </div>
-      )}
 
       {/* Existing Rules */}
       {rules.length > 0 && (
@@ -285,7 +296,7 @@ export default function SeatPricingManager({ showId, sessionId = null }) {
       )}
 
       {/* Add New Rule Form */}
-      <form onSubmit={handleSubmit} style={{ background: 'white', padding: '16px', borderRadius: '8px', border: '1px solid #e5e7eb' }}>
+      <div style={{ background: 'white', padding: '16px', borderRadius: '8px', border: '1px solid #e5e7eb' }}>
         <h4 style={{ fontSize: '14px', color: '#374151', margin: '0 0 12px 0' }}>
           Agregar nueva regla:
         </h4>
@@ -460,29 +471,30 @@ export default function SeatPricingManager({ showId, sessionId = null }) {
           <label style={{ display: 'block', fontSize: '13px', color: '#4b5563', marginBottom: '6px' }}>
             Color de la regla:
           </label>
-          <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
-            {COLOR_OPTIONS.map(color => (
-              <button
-                key={color}
-                type="button"
-                onClick={() => setSelectedColor(color)}
-                style={{
-                  width: '32px',
-                  height: '32px',
-                  borderRadius: '6px',
-                  backgroundColor: color,
-                  border: selectedColor === color ? '3px solid #1f2937' : '2px solid transparent',
-                  cursor: 'pointer',
-                  boxShadow: selectedColor === color ? '0 0 0 2px #fff, 0 0 0 4px ' + color : 'none'
-                }}
-                title={color}
-              />
-            ))}
+          <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
+            <input
+              type="color"
+              value={selectedColor}
+              onChange={(e) => setSelectedColor(e.target.value)}
+              style={{
+                width: '50px',
+                height: '36px',
+                padding: '2px',
+                border: '1px solid #d1d5db',
+                borderRadius: '6px',
+                cursor: 'pointer',
+                background: '#fff'
+              }}
+            />
+            <span style={{ fontSize: '13px', color: '#6b7280', fontFamily: 'monospace' }}>
+              {selectedColor}
+            </span>
           </div>
         </div>
 
         <button
-          type="submit"
+          type="button"
+          onClick={handleSubmit}
           disabled={loading}
           style={{
             width: '100%',
@@ -498,7 +510,7 @@ export default function SeatPricingManager({ showId, sessionId = null }) {
         >
           {loading ? 'Guardando...' : 'Agregar regla de precio'}
         </button>
-      </form>
+      </div>
     </div>
   );
 }

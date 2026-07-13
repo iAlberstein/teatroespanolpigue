@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import { apiFetch } from '../lib/api';
+import { formatDateLong, formatTime, formatDateShort } from '../lib/dateFormatter.js';
 
 export default function MpSuccess(){
   const [searchParams] = useSearchParams();
@@ -264,14 +265,12 @@ export default function MpSuccess(){
     
     // Get show details from reservation
     const showName = reservation?.session?.show?.title || 'el espectáculo';
-    const sessionDate = reservation?.session?.starts_at ? 
-      new Date(reservation.session.starts_at).toLocaleDateString('es-AR', { 
-        weekday: 'short', day: 'numeric', month: 'short' 
-      }) : '';
-    const sessionTime = reservation?.session?.starts_at ? 
-      new Date(reservation.session.starts_at).toLocaleTimeString('es-AR', { 
-        hour: '2-digit', minute: '2-digit', hour12: true 
-      }) : '';
+    const sessionDate = reservation?.session?.starts_at
+      ? formatDateShort(reservation.session.starts_at)
+      : '';
+    const sessionTime = reservation?.session?.starts_at
+      ? formatTime(reservation.session.starts_at)
+      : '';
     
     // Build share URL
     const shareUrl = `${window.location.origin}/api/share/sale/${saleId}`;
@@ -332,12 +331,8 @@ export default function MpSuccess(){
               {reservation.session.show.title}
             </h3>
             <p style={{ margin: 0, fontSize: 14, color: '#64748b' }}>
-              📅 Fecha: {new Date(reservation.session.starts_at).toLocaleDateString('es-AR', { 
-                weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' 
-              })}<br/>
-              🕐 Hora: {new Date(reservation.session.starts_at).toLocaleTimeString('es-AR', { 
-                hour: '2-digit', minute: '2-digit', hour12: false 
-              })}
+              📅 Fecha: {formatDateLong(reservation.session.starts_at)}<br/>
+              🕐 Hora: {formatTime(reservation.session.starts_at)}
             </p>
           </div>
         )}

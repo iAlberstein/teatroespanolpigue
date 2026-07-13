@@ -2,10 +2,11 @@ import { useState, useEffect } from 'react';
 import { apiAuthFetch } from '../../lib/api.js';
 import { useAuth } from '../../contexts/AuthContext.jsx';
 import theme from '../../styles/theme.js';
+import { formatDateLong, formatTime, formatDateTimeCompact } from '../../lib/dateFormatter.js';
 import Button from '../ui/Button.jsx';
 import isologoBdx from '../../assets/images/NUEVO_ISOLOGO_bdx.png';
 
-export default function BordereauxModal({ showId, onClose }) {
+export default function BordereauxModal({ showId, sessionId, onClose }) {
   const { token, user } = useAuth();
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(true);
@@ -23,12 +24,15 @@ export default function BordereauxModal({ showId, onClose }) {
 
   useEffect(() => {
     loadBordereaux();
-  }, [showId]);
+  }, [showId, sessionId]);
 
   const loadBordereaux = async () => {
     try {
       setLoading(true);
-      const res = await apiAuthFetch(`/api/bordereaux/show/${showId}`, {}, token);
+      const url = sessionId
+        ? `/api/bordereaux/show/${showId}/session/${sessionId}`
+        : `/api/bordereaux/show/${showId}`;
+      const res = await apiAuthFetch(url, {}, token);
       
       if (!res.ok) {
         throw new Error(`HTTP error! status: ${res.status}`);
@@ -58,8 +62,8 @@ export default function BordereauxModal({ showId, onClose }) {
   };
 
   const handleSave = async () => {
-    // Productores no pueden editar
-    if (user?.role === 'productor') {
+    // Productores no pueden editar, ni la vista de sesión individual
+    if (user?.role === 'productor' || sessionId) {
       alert('No tenés permisos para editar el bordereaux');
       return;
     }
@@ -95,8 +99,8 @@ export default function BordereauxModal({ showId, onClose }) {
   };
 
   const handleClose = async () => {
-    // Productores no pueden cerrar ventas
-    if (user?.role === 'productor') {
+    // Productores ni vista de sesión individual pueden cerrar
+    if (user?.role === 'productor' || sessionId) {
       alert('No tenés permisos para cerrar el bordereaux');
       return;
     }
@@ -167,8 +171,11 @@ export default function BordereauxModal({ showId, onClose }) {
     try {
       setPrinting(true);
       
-      // Call backend PDF endpoint
-      const res = await apiAuthFetch(`/api/bordereaux/show/${showId}/pdf`, { method: 'GET' }, token);
+      // Call backend PDF endpoint (session-specific or consolidated)
+      const pdfUrl = sessionId
+        ? `/api/bordereaux/show/${showId}/session/${sessionId}/pdf`
+        : `/api/bordereaux/show/${showId}/pdf`;
+      const res = await apiAuthFetch(pdfUrl, { method: 'GET' }, token);
       
       if (!res.ok) {
         throw new Error('Error al generar PDF');
@@ -181,7 +188,9 @@ export default function BordereauxModal({ showId, onClose }) {
       const url = window.URL.createObjectURL(blob);
       const a = document.createElement('a');
       a.href = url;
-      a.download = `bordereaux_${data?.show?.title || 'show'}.pdf`;
+      a.download = sessionId
+        ? `bordereaux_sesion_${data?.show?.title || 'show'}.pdf`
+        : `bordereaux_${data?.show?.title || 'show'}.pdf`;
       document.body.appendChild(a);
       a.click();
       document.body.removeChild(a);
@@ -328,7 +337,9 @@ export default function BordereauxModal({ showId, onClose }) {
               />
               {/* Info */}
               <div>
-                <h2 style={{ margin: 0, marginBottom: theme.spacing.sm }}>BORDEREAUX</h2>
+                <h2 style={{ margin: 0, marginBottom: theme.spacing.sm }}>
+                  BORDEREAUX{sessionId ? ' — SESIÓN' : ''}
+                </h2>
                 <div><strong>OBRA:</strong> {data.show.title}</div>
                 <div style={{ display: 'flex', alignItems: 'center', gap: theme.spacing.sm }}>
                   <strong>AUTOR:</strong> 
@@ -344,9 +355,24 @@ export default function BordereauxModal({ showId, onClose }) {
                     <span>{data.show.author_name || '-'}</span>
                   )}
                 </div>
-                <div><strong>FECHA:</strong> {data.show.session_date 
-                  ? new Date(data.show.session_date).toLocaleDateString('es-AR', { day: 'numeric', month: 'long', year: 'numeric' })
-                  : 'Sin fecha'}</div>
+                {sessionId ? (
+                  <div><strong>FECHA:</strong> {data.show.session_date
+                    ? `${formatDateLong(data.show.session_date)} ${formatTime(data.show.session_date)}hs`
+                    : 'Sin fecha'}</div>
+                ) : data.show.session_dates && data.show.session_dates.length > 1 ? (
+                  <div>
+                    <strong>FUNCIONES:</strong>
+                    {data.show.session_dates.map((sd, i) => (
+                      <div key={i} style={{ marginLeft: 8, fontSize: theme.typography.small }}>
+                        {formatDateLong(sd)} {formatTime(sd)}hs
+                      </div>
+                    ))}
+                  </div>
+                ) : (
+                  <div><strong>FECHA:</strong> {data.show.session_date
+                    ? formatDateLong(data.show.session_date)
+                    : 'Sin fecha'}</div>
+                )}
               </div>
             </div>
             <button 
@@ -376,12 +402,32 @@ export default function BordereauxModal({ showId, onClose }) {
                 marginBottom: theme.spacing.sm,
                 textAlign: 'center'
               }}>
-                 Bordereaux cerrado el {new Date(data.bordereaux.closed_at).toLocaleString('es-AR')}
+                 Bordereaux cerrado el {formatDateTimeCompact(data.bordereaux.closed_at)}
               </div>
             )}
 
-            {/* Productores solo pueden ver, no editar ni cerrar */}
-            {user?.role === 'productor' ? (
+            {/* Vista por sesión individual: solo lectura + PDF */}
+            {sessionId ? (
+              <div style={{ display: 'flex', flexDirection: 'column', gap: theme.spacing.sm, width: '100%' }}>
+                <div style={{
+                  padding: theme.spacing.md,
+                  background: '#eff6ff',
+                  borderRadius: theme.borderRadius.md,
+                  color: '#1e40af',
+                  fontSize: theme.typography.small
+                }}>
+                  Vista de sesión individual — solo lectura. Para editar el bordereaux usá la vista consolidada del show.
+                </div>
+                <Button
+                  variant="success"
+                  size="sm"
+                  onClick={handleDownloadPDF}
+                  disabled={printing}
+                >
+                  {printing ? ' Generando...' : ' Descargar PDF (Sesión)'}
+                </Button>
+              </div>
+            ) : user?.role === 'productor' ? (
               !isClosed && (
                 <div style={{
                   padding: theme.spacing.md,
@@ -454,6 +500,7 @@ export default function BordereauxModal({ showId, onClose }) {
                   <tr style={{ borderBottom: `2px solid ${theme.colors.border}` }}>
                     <th style={{ padding: theme.spacing.xs, textAlign: 'left' }}>SECTOR</th>
                     <th style={{ padding: theme.spacing.xs, textAlign: 'right' }}>CANTIDAD</th>
+                    <th style={{ padding: theme.spacing.xs, textAlign: 'right' }}>VALOR</th>
                     <th style={{ padding: theme.spacing.xs, textAlign: 'right' }}>TOTAL</th>
                   </tr>
                 </thead>
@@ -464,7 +511,7 @@ export default function BordereauxModal({ showId, onClose }) {
                       <tr 
                         key={idx} 
                         style={{ 
-                          borderBottom: sector.items?.length > 1 ? 'none' : `1px solid ${theme.colors.border}`,
+                          borderBottom: sector.items?.length > 0 ? 'none' : `1px solid ${theme.colors.border}`,
                           background: theme.colors.surfaceAlt,
                           fontWeight: 600
                         }}
@@ -473,15 +520,26 @@ export default function BordereauxModal({ showId, onClose }) {
                           {sector.location}
                         </td>
                         <td style={{ padding: theme.spacing.xs, textAlign: 'right' }}>
-                          {sector.people || sector.quantity}
+                          {/* Para palcos: cantidad de palcos (calculado) con localidades entre paréntesis */}
+                          {sector.location?.toLowerCase().includes('palco')
+                            ? (() => {
+                                const localidades = sector.people || sector.quantity;
+                                const isBajo = sector.location.toLowerCase().includes('bajo');
+                                const palcos = isBajo ? Math.round(localidades / 4) : Math.round(localidades / 2);
+                                return `${palcos} (${localidades} localidades)`;
+                              })()
+                            : (sector.people || sector.quantity)}
+                        </td>
+                        <td style={{ padding: theme.spacing.xs, textAlign: 'right' }}>
+                          {/* Valor vacío para fila de total */}
                         </td>
                         <td style={{ padding: theme.spacing.xs, textAlign: 'right' }}>
                           {formatCurrency(sector.total)}
                         </td>
                       </tr>
                       
-                      {/* Subtítulos para precios especiales (solo si hay múltiples items) */}
-                      {sector.items?.length > 1 && sector.items.map((item, itemIdx) => (
+                      {/* Detalle de items con precios */}
+                      {sector.items?.length > 0 && sector.items.map((item, itemIdx) => (
                         <tr 
                           key={`${idx}-item-${itemIdx}`}
                           style={{ 
@@ -507,15 +565,28 @@ export default function BordereauxModal({ showId, onClose }) {
                                 color: item.specialPricing?.isSpecial ? '#0369a1' : '#64748b',
                                 fontWeight: item.specialPricing?.isSpecial ? 500 : 400
                               }}>
-                                {item.specialPricing 
-                                  ? item.specialPricing.label 
-                                  : `Precio base (${formatCurrency(item.price)})`
-                                }
+                                {(() => {
+                                  const parts = [];
+                                  if (item.specialPricing?.isSpecial && item.specialPricing?.label) parts.push(item.specialPricing.label);
+                                  if (item.discountCode) parts.push(`(${item.discountCode})`);
+                                  return parts.join(' ') || sector.location;
+                                })()}
                               </span>
                             </div>
                           </td>
                           <td style={{ padding: theme.spacing.xs, textAlign: 'right', fontSize: '0.9em' }}>
-                            {item.people || item.quantity}
+                            {/* Para palcos: cantidad de palcos (calculado) con localidades entre paréntesis */}
+                            {sector.location?.toLowerCase().includes('palco')
+                              ? (() => {
+                                  const localidades = item.people || item.quantity;
+                                  const isBajo = sector.location.toLowerCase().includes('bajo');
+                                  const palcos = isBajo ? Math.round(localidades / 4) : Math.round(localidades / 2);
+                                  return `${palcos} (${localidades} localidades)`;
+                                })()
+                              : (item.people || item.quantity)}
+                          </td>
+                          <td style={{ padding: theme.spacing.xs, textAlign: 'right', fontSize: '0.9em', fontWeight: 500 }}>
+                            {formatCurrency(item.price)}
                           </td>
                           <td style={{ padding: theme.spacing.xs, textAlign: 'right', fontSize: '0.9em' }}>
                             {formatCurrency(item.total)}
@@ -525,110 +596,15 @@ export default function BordereauxModal({ showId, onClose }) {
                     </>
                   ))}
                   <tr style={{ borderTop: `2px solid ${theme.colors.border}`, fontWeight: 'bold', background: theme.colors.surfaceAlt }}>
-                    <td style={{ padding: theme.spacing.xs }}>TOTAL GENERAL</td>
+                    <td style={{ padding: theme.spacing.xs }}>TOTAL BRUTO</td>
                     <td style={{ padding: theme.spacing.xs, textAlign: 'right' }}>{data.sales.totals.people || data.sales.totals.tickets}</td>
+                    <td style={{ padding: theme.spacing.xs, textAlign: 'right' }}></td>
                     <td style={{ padding: theme.spacing.xs, textAlign: 'right' }}>{formatCurrency(data.sales.totals.amount)}</td>
                   </tr>
                 </tbody>
               </table>
             </div>
           )}
-
-          {/* Tabla de entradas */}
-          <div style={{ marginBottom: theme.spacing.lg }}>
-            <h3>DETALLE DE VENTAS</h3>
-            <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: theme.typography.small }}>
-              <thead>
-                <tr style={{ borderBottom: `2px solid ${theme.colors.border}` }}>
-                  <th style={{ padding: theme.spacing.xs, textAlign: 'left' }}>UBICACIÓN</th>
-                  <th style={{ padding: theme.spacing.xs, textAlign: 'right' }}>VALOR</th>
-                  <th style={{ padding: theme.spacing.xs, textAlign: 'right' }}>CANTIDAD</th>
-                  <th style={{ padding: theme.spacing.xs, textAlign: 'right' }}>TOTAL</th>
-                </tr>
-              </thead>
-              <tbody>
-                {/* Venta Online */}
-                <tr>
-                  <td colSpan="4" style={{ padding: theme.spacing.xs, fontWeight: 'bold', background: theme.colors.surfaceAlt }}>
-                    VENTA ONLINE
-                  </td>
-                </tr>
-                {data.sales.online.map((sale, idx) => (
-                  <tr key={idx}>
-                    <td style={{ padding: theme.spacing.xs }}>{sale.location}</td>
-                    <td style={{ padding: theme.spacing.xs, textAlign: 'right' }}>{formatCurrency(sale.price)}</td>
-                    <td style={{ padding: theme.spacing.xs, textAlign: 'right' }}>
-                      {sale.people && sale.people !== sale.quantity
-                        ? <>{sale.quantity} <span style={{ fontSize: '0.85em', color: '#666' }}>({sale.people} entradas)</span></>
-                        : sale.quantity}
-                    </td>
-                    <td style={{ padding: theme.spacing.xs, textAlign: 'right' }}>{formatCurrency(sale.total)}</td>
-                  </tr>
-                ))}
-                
-                {/* Subtotal Online */}
-                <tr style={{ borderTop: `1px solid ${theme.colors.border}`, fontWeight: 'bold', background: theme.colors.successLight }}>
-                  <td style={{ padding: theme.spacing.xs }} colSpan="2">SUBTOTAL ONLINE</td>
-                  <td style={{ padding: theme.spacing.xs, textAlign: 'right' }}>{data.sales.totals.onlinePeople || data.sales.totals.onlineTickets}</td>
-                  <td style={{ padding: theme.spacing.xs, textAlign: 'right' }}>{formatCurrency(data.sales.totals.onlineAmount)}</td>
-                </tr>
-
-                {/* NO incluir servicios en detalle de ventas (se muestran debajo de deducciones A) */}
-
-                {/* Boletería */}
-                <tr>
-                  <td colSpan="4" style={{ padding: theme.spacing.xs, fontWeight: 'bold', background: theme.colors.surfaceAlt }}>
-                    BOLETERÍA
-                  </td>
-                </tr>
-                {data.sales.boleteria.map((sale, idx) => (
-                  <tr key={idx}>
-                    <td style={{ padding: theme.spacing.xs }}>{sale.location}</td>
-                    <td style={{ padding: theme.spacing.xs, textAlign: 'right' }}>{formatCurrency(sale.price)}</td>
-                    <td style={{ padding: theme.spacing.xs, textAlign: 'right' }}>
-                      {sale.people && sale.people !== sale.quantity
-                        ? <>{sale.quantity} <span style={{ fontSize: '0.85em', color: '#666' }}>({sale.people} entradas)</span></>
-                        : sale.quantity}
-                    </td>
-                    <td style={{ padding: theme.spacing.xs, textAlign: 'right' }}>{formatCurrency(sale.total)}</td>
-                  </tr>
-                ))}
-                
-                {/* Subtotal Boletería */}
-                <tr style={{ borderTop: `1px solid ${theme.colors.border}`, fontWeight: 'bold', background: theme.colors.infoLight }}>
-                  <td style={{ padding: theme.spacing.xs }} colSpan="2">SUBTOTAL BOLETERÍA</td>
-                  <td style={{ padding: theme.spacing.xs, textAlign: 'right' }}>{data.sales.totals.boleteriaPeople || data.sales.totals.boleteriaTickets}</td>
-                  <td style={{ padding: theme.spacing.xs, textAlign: 'right' }}>{formatCurrency(data.sales.totals.boleteriaAmount)}</td>
-                </tr>
-
-                {/* NO incluir servicios en detalle de ventas (se muestran debajo de deducciones A) */}
-
-                {/* Totales */}
-                <tr style={{ borderTop: `2px solid ${theme.colors.border}`, fontWeight: 'bold' }}>
-                  <td style={{ padding: theme.spacing.xs }}>TOTALES</td>
-                  <td style={{ padding: theme.spacing.xs }}></td>
-                  <td style={{ padding: theme.spacing.xs, textAlign: 'right' }}>{data.sales.totals.people || data.sales.totals.tickets}</td>
-                  <td style={{ padding: theme.spacing.xs, textAlign: 'right' }}>{formatCurrency(data.sales.totals.amount)}</td>
-                </tr>
-              </tbody>
-            </table>
-          </div>
-
-          {/* Recaudación */}
-          <div style={{ marginBottom: theme.spacing.lg, padding: theme.spacing.md, background: theme.colors.surfaceAlt, borderRadius: theme.borderRadius.md }}>
-            <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: theme.spacing.xs }}>
-              <span>RECAUDADO EN EFECTIVO (BOLETERÍA):</span>
-              <strong>{formatCurrency(data.recaudacion.efectivo)}</strong>
-            </div>
-            <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: theme.spacing.xs }}>
-              <span>RECAUDADO EN VENTA ONLINE (plataforma web):</span>
-              <strong>{formatCurrency(data.recaudacion.online)}</strong>
-            </div>
-            <div style={{ display: 'flex', justifyContent: 'space-between', borderTop: `2px solid ${theme.colors.border}`, paddingTop: theme.spacing.xs, fontWeight: 'bold', fontSize: theme.typography.body }}>
-              <span>TOTAL BRUTO:</span>
-              <span>{formatCurrency(data.recaudacion.bruto)}</span>
-            </div>
-          </div>
 
           {/* Deducciones A */}
           <div style={{ marginBottom: theme.spacing.lg }}>
@@ -760,95 +736,56 @@ export default function BordereauxModal({ showId, onClose }) {
             </table>
           </div>
 
-          {/* Servicios */}
-          {data.services && (data.services.online?.length > 0 || data.services.boleteria?.length > 0) && (
-            <div style={{ marginBottom: theme.spacing.lg }}>
-              <h3>SERVICIOS</h3>
-              <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: theme.typography.small }}>
-                <thead>
-                  <tr style={{ borderBottom: `2px solid ${theme.colors.border}` }}>
-                    <th style={{ padding: theme.spacing.xs, textAlign: 'left' }}>SERVICIO</th>
-                    <th style={{ padding: theme.spacing.xs, textAlign: 'center' }}>CANTIDAD</th>
-                    <th style={{ padding: theme.spacing.xs, textAlign: 'right' }}>TOTAL</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {data.services.online.map((svc, idx) => (
-                    <tr key={`online-${idx}`}>
-                      <td style={{ padding: theme.spacing.xs }}>{svc.name} (Online)</td>
-                      <td style={{ padding: theme.spacing.xs, textAlign: 'center' }}>{svc.quantity}</td>
-                      <td style={{ padding: theme.spacing.xs, textAlign: 'right' }}>{formatCurrency(svc.total)}</td>
+          {/* Servicios Asociados */}
+          {Array.isArray(data.sales.onlineBordereauxServices) && (data.sales.onlineBordereauxServices.length > 0 || data.sales.boleteriaBordereauxServices?.length > 0) && (() => {
+            // Consolidate online + boleteria rows by service name
+            const allSvcs = [
+              ...(data.sales.onlineBordereauxServices || []),
+              ...(data.sales.boleteriaBordereauxServices || [])
+            ];
+            const consolidated = Object.values(
+              allSvcs.reduce((acc, svc) => {
+                if (!acc[svc.name]) {
+                  acc[svc.name] = { name: svc.name, price: svc.price, quantity: 0, total: 0 };
+                }
+                acc[svc.name].quantity += svc.quantity;
+                acc[svc.name].total += svc.total;
+                return acc;
+              }, {})
+            );
+            const totalQty = consolidated.reduce((sum, s) => sum + s.quantity, 0);
+            const totalAmt = consolidated.reduce((sum, s) => sum + s.total, 0);
+            return (
+              <div style={{ marginBottom: theme.spacing.lg }}>
+                <h3>SERVICIOS ASOCIADOS</h3>
+                <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: theme.typography.small }}>
+                  <thead>
+                    <tr style={{ borderBottom: `2px solid ${theme.colors.border}` }}>
+                      <th style={{ padding: theme.spacing.xs, textAlign: 'left' }}>SERVICIO</th>
+                      <th style={{ padding: theme.spacing.xs, textAlign: 'right' }}>VALOR</th>
+                      <th style={{ padding: theme.spacing.xs, textAlign: 'right' }}>CANTIDAD</th>
+                      <th style={{ padding: theme.spacing.xs, textAlign: 'right' }}>TOTAL</th>
                     </tr>
-                  ))}
-                  {data.services.boleteria.map((svc, idx) => (
-                    <tr key={`bole-${idx}`}>
-                      <td style={{ padding: theme.spacing.xs }}>{svc.name} (Boletería)</td>
-                      <td style={{ padding: theme.spacing.xs, textAlign: 'center' }}>{svc.quantity}</td>
-                      <td style={{ padding: theme.spacing.xs, textAlign: 'right' }}>{formatCurrency(svc.total)}</td>
+                  </thead>
+                  <tbody>
+                    {consolidated.map((svc, idx) => (
+                      <tr key={idx}>
+                        <td style={{ padding: theme.spacing.xs }}>{svc.name}</td>
+                        <td style={{ padding: theme.spacing.xs, textAlign: 'right' }}>{formatCurrency(svc.price)}</td>
+                        <td style={{ padding: theme.spacing.xs, textAlign: 'right' }}>{svc.quantity}</td>
+                        <td style={{ padding: theme.spacing.xs, textAlign: 'right' }}>{formatCurrency(svc.total)}</td>
+                      </tr>
+                    ))}
+                    <tr style={{ borderTop: `2px solid ${theme.colors.border}`, fontWeight: 'bold' }}>
+                      <td style={{ padding: theme.spacing.xs }} colSpan="2">TOTAL SERVICIOS ASOCIADOS</td>
+                      <td style={{ padding: theme.spacing.xs, textAlign: 'right' }}>{totalQty}</td>
+                      <td style={{ padding: theme.spacing.xs, textAlign: 'right' }}>{formatCurrency(totalAmt)}</td>
                     </tr>
-                  ))}
-                  <tr style={{ borderTop: `2px solid ${theme.colors.border}`, fontWeight: 'bold' }}>
-                    <td style={{ padding: theme.spacing.xs }}>TOTAL SERVICIOS</td>
-                    <td style={{ padding: theme.spacing.xs, textAlign: 'center' }}>
-                      {(data.services.online?.reduce((sum, s) => sum + s.quantity, 0) || 0) +
-                       (data.services.boleteria?.reduce((sum, s) => sum + s.quantity, 0) || 0)}
-                    </td>
-                    <td style={{ padding: theme.spacing.xs, textAlign: 'right' }}>
-                      {formatCurrency(data.services.total || 0)}
-                    </td>
-                  </tr>
-                </tbody>
-              </table>
-            </div>
-          )}
-
-          {/* Servicios a Bordereaux */}
-          {Array.isArray(data.sales.onlineBordereauxServices) && data.sales.onlineBordereauxServices.length > 0 && (
-            <div style={{ marginBottom: theme.spacing.lg }}>
-              <h3>SERVICIOS A BORDEREAUX</h3>
-              <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: theme.typography.small }}>
-                <thead>
-                  <tr style={{ borderBottom: `2px solid ${theme.colors.border}` }}>
-                    <th style={{ padding: theme.spacing.xs, textAlign: 'left' }}>SERVICIO</th>
-                    <th style={{ padding: theme.spacing.xs, textAlign: 'right' }}>VALOR</th>
-                    <th style={{ padding: theme.spacing.xs, textAlign: 'right' }}>CANTIDAD</th>
-                    <th style={{ padding: theme.spacing.xs, textAlign: 'right' }}>TOTAL</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {data.sales.onlineBordereauxServices.map((svc, idx) => (
-                    <tr key={idx}>
-                      <td style={{ padding: theme.spacing.xs }}>{svc.name}</td>
-                      <td style={{ padding: theme.spacing.xs, textAlign: 'right' }}>{formatCurrency(svc.price)}</td>
-                      <td style={{ padding: theme.spacing.xs, textAlign: 'right' }}>{svc.quantity}</td>
-                      <td style={{ padding: theme.spacing.xs, textAlign: 'right' }}>{formatCurrency(svc.total)}</td>
-                    </tr>
-                  ))}
-                  {data.sales.boleteriaBordereauxServices.map((svc, idx) => (
-                    <tr key={`bole-${idx}`}>
-                      <td style={{ padding: theme.spacing.xs }}>{svc.name}</td>
-                      <td style={{ padding: theme.spacing.xs, textAlign: 'right' }}>{formatCurrency(svc.price)}</td>
-                      <td style={{ padding: theme.spacing.xs, textAlign: 'right' }}>{svc.quantity}</td>
-                      <td style={{ padding: theme.spacing.xs, textAlign: 'right' }}>{formatCurrency(svc.total)}</td>
-                    </tr>
-                  ))}
-                  <tr style={{ borderTop: `2px solid ${theme.colors.border}`, fontWeight: 'bold' }}>
-                    <td style={{ padding: theme.spacing.xs }} colSpan="2">TOTAL SERVICIOS BORDEREAUX</td>
-                    <td style={{ padding: theme.spacing.xs, textAlign: 'right' }}>
-                      {data.sales.onlineBordereauxServices.reduce((sum, s) => sum + s.quantity, 0) +
-                       data.sales.boleteriaBordereauxServices.reduce((sum, s) => sum + s.quantity, 0)}
-                    </td>
-                    <td style={{ padding: theme.spacing.xs, textAlign: 'right' }}>
-                      {formatCurrency(
-                        data.sales.onlineBordereauxServices.reduce((sum, s) => sum + s.total, 0) +
-                        data.sales.boleteriaBordereauxServices.reduce((sum, s) => sum + s.total, 0)
-                      )}
-                    </td>
-                  </tr>
-                </tbody>
-              </table>
-            </div>
-          )}
+                  </tbody>
+                </table>
+              </div>
+            );
+          })()}
 
           {/* NETO 2 */}
           {data.neto2 && (

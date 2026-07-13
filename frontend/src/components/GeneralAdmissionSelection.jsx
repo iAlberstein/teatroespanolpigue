@@ -30,6 +30,7 @@ export default function GeneralAdmissionSelection({
   disabled = false
 }) {
   const socketRef = useRef(null);
+  const socketSyncedRef = useRef(false); // true once socket has provided authoritative availability
   const [ticketCount, setTicketCount] = useState(0);
   const [availableTickets, setAvailableTickets] = useState(maxCapacity); // Initialize with maxCapacity like SeatSelection does
   const [soldCount, setSoldCount] = useState(0);
@@ -54,12 +55,18 @@ export default function GeneralAdmissionSelection({
       return;
     }
 
+    // Skip HTTP fetch if socket is already providing authoritative real-time data
+    if (socketSyncedRef.current) return;
+
     try {
       const res = await apiFetch(`/api/sessions/${sessionId}/general-admission-availability`);
       if (res.ok) {
-        const data = await res.json();
-        setAvailableTickets(data.available);
-        setSoldCount(data.sold);
+        // Only apply if socket hasn't synced yet (avoid race condition)
+        if (!socketSyncedRef.current) {
+          const data = await res.json();
+          setAvailableTickets(data.available);
+          setSoldCount(data.sold);
+        }
       }
     } catch (err) {
       console.error('[GeneralAdmission] Error loading availability:', err);
@@ -89,8 +96,8 @@ export default function GeneralAdmissionSelection({
     socket.on('connect', () => {
       console.log('[GeneralAdmission] Socket connected, joining session:', sessionId);
       socket.emit('join_session', { sessionId, userId }); // Changed to match backend event name
-      // Reload availability when socket connects
-      loadAvailability();
+      // Do NOT call loadAvailability() here - the backend sends pullman_updated immediately
+      // after join_session with the correct count from DB, avoiding HTTP race conditions
     });
 
     // Listen for pullman events (general admission uses pullman system)
@@ -103,6 +110,7 @@ export default function GeneralAdmissionSelection({
     socket.on('pullman_updated', ({ available, capacity }) => {
       console.log('[GeneralAdmission] Updated:', { available, capacity });
       console.log('[GeneralAdmission] Setting availableTickets to:', available);
+      socketSyncedRef.current = true; // Mark socket as authoritative source
       setAvailableTickets(available);
     });
 
@@ -124,6 +132,7 @@ export default function GeneralAdmissionSelection({
       if (socket) {
         console.log('[GeneralAdmission] Cleaning up socket');
         socket.disconnect();
+        socketSyncedRef.current = false; // Reset on cleanup so next mount refetches via HTTP
       }
     };
   }, [sessionId, userId, loadAvailability]);

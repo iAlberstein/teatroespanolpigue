@@ -7,25 +7,30 @@ const containerStyle = {
   boxShadow: '0 8px 20px rgba(15, 23, 42, 0.06)'
 };
 
-const innerWrapperStyle = (isWideLayout) => ({
-  display: 'flex',
-  flexDirection: isWideLayout ? 'row' : 'column',
-  gap: isWideLayout ? 0 : 12,
-  width: '100%',
-  alignItems: 'stretch'
+// Grid layout for sectors - each sector is a column
+const sectorsGridStyle = (isWideLayout) => ({
+  display: 'grid',
+  gridTemplateColumns: isWideLayout ? 'repeat(4, 1fr)' : '1fr',
+  gap: isWideLayout ? 16 : 12,
+  width: '100%'
 });
 
-const sectorItemStyle = (isWideLayout, idx, lastIdx) => ({
+// Individual sector column
+const sectorColumnStyle = {
+  display: 'flex',
+  flexDirection: 'column',
+  gap: 8
+};
+
+// Single item row within a sector column
+const sectorItemStyle = {
   display: 'flex',
   flexDirection: 'row',
   alignItems: 'center',
-  gap: isWideLayout ? 10 : 12,
-  borderLeft: isWideLayout && idx > 0 ? '1px solid #d1d5db' : 'none',
-  paddingLeft: isWideLayout && idx > 0 ? 16 : 0,
-  paddingRight: isWideLayout && idx < lastIdx ? 16 : 0,
-  flex: isWideLayout ? '1 1 0%' : '1 1 auto',
-  minWidth: 0
-});
+  gap: 10,
+  padding: '8px 0',
+  borderBottom: '1px solid #f3f4f6'
+};
 
 const badgeStyle = (badgeColor, badgeText, isWideLayout) => ({
   background: badgeColor,
@@ -103,39 +108,43 @@ const chipIconStyle = (color, textColor) => ({
   fontWeight: 600
 });
 
-const BoxOfficeReferences = ({ isWideLayout, pricing, formatCurrency }) => {
+const BoxOfficeReferences = ({ isWideLayout, pricing, formatCurrency, priceTiers = [] }) => {
   const sectorItems = [
     {
       id: 'platea_general',
       badge: 'Platea',
       badgeColor: '#a8d8a8',
       badgeText: '#1f2937',
-      title: 'Platea General',
-      info: 'Planta baja'
+      name: 'Platea General',
+      localidades: null,
+      location: 'Planta baja'
     },
     {
       id: 'palcos_bajos',
       badge: 'PB',
       badgeColor: '#8fbc8f',
       badgeText: '#1f2937',
-      title: 'Palcos Bajos\n4 localidades',
-      info: 'Planta baja'
+      name: 'Palcos Bajos',
+      localidades: '4 localidades',
+      location: 'Planta baja'
     },
     {
       id: 'palcos_altos',
       badge: 'PA',
       badgeColor: '#6b8e6b',
       badgeText: '#ffffff',
-      title: 'Palcos Altos\n2 localidades',
-      info: '1° piso por escalera'
+      name: 'Palcos Altos',
+      localidades: '2 localidades',
+      location: '1° piso por escalera'
     },
     {
       id: 'pullman',
       badge: 'Pullman',
       badgeColor: '#c0c0c0',
       badgeText: '#1f2937',
-      title: 'Pullman',
-      info: '2° piso por escalera\nSin ubicación fija'
+      name: 'Pullman',
+      localidades: null,
+      location: '2° piso por escalera\nSin ubicación fija'
     }
   ];
 
@@ -145,21 +154,93 @@ const BoxOfficeReferences = ({ isWideLayout, pricing, formatCurrency }) => {
     { label: 'Vendida', color: '#808080', textColor: '#ffffff' }
   ];
 
+  // Group price tiers by section
+  const tiersBySection = {
+    platea: [],
+    palcos_bajos: [],
+    palcos_altos: [],
+    pullman: []
+  };
+  
+  if (priceTiers && priceTiers.length > 0) {
+    priceTiers.forEach(tier => {
+      if (tiersBySection[tier.section]) {
+        tiersBySection[tier.section].push(tier);
+      }
+    });
+  }
+  
+  // Map section IDs to base sector config
+  const sectionToSectorId = {
+    platea: 'platea_general',
+    palcos_bajos: 'palcos_bajos',
+    palcos_altos: 'palcos_altos',
+    pullman: 'pullman'
+  };
+  
+  // Section display order
+  const sectionOrder = ['platea', 'palcos_bajos', 'palcos_altos', 'pullman'];
+
+  // Render a single sector item — always 3 lines: name, localidades, location
+  const renderSectorItem = (item) => (
+    <div key={item.id} style={sectorItemStyle}>
+      <span style={badgeStyle(item.badgeColor, item.badgeText, isWideLayout)}>{item.badge}</span>
+      <div style={{ flex: '1 1 auto' }}>
+        <div style={titleStyle}>{item.name}</div>
+        {item.localidades && <div style={infoStyle}>{item.localidades}</div>}
+        {item.location && item.location.split('\n').map((line, i) => (
+          <div key={i} style={infoStyle}>{line}</div>
+        ))}
+      </div>
+      <div style={priceStyle}>
+        {formatCurrency ? formatCurrency(item.price) : item.price}
+      </div>
+    </div>
+  );
+
   return (
     <div style={{ ...containerStyle, padding: isWideLayout ? 24 : 18 }}>
-      <div style={innerWrapperStyle(isWideLayout)}>
-        {sectorItems.map((sector, idx) => (
-          <div key={sector.id} style={sectorItemStyle(isWideLayout, idx, sectorItems.length - 1)}>
-            <span style={badgeStyle(sector.badgeColor, sector.badgeText, isWideLayout)}>{sector.badge}</span>
-            <div style={{ flex: '1 1 auto' }}>
-              <div style={titleStyle}>{sector.title}</div>
-              <div style={infoStyle}>{sector.info}</div>
+      {/* Sectors Grid - each column is a sector */}
+      <div style={sectorsGridStyle(isWideLayout)}>
+        {sectionOrder.map(section => {
+          const sectorId = sectionToSectorId[section];
+          const baseSector = sectorItems.find(s => s.id === sectorId);
+          const sectionTiers = tiersBySection[section] || [];
+          
+          // Skip if no data for this section
+          if (!baseSector && sectionTiers.length === 0) return null;
+          
+          return (
+            <div key={section} style={sectorColumnStyle}>
+              {/* Base price row — always shown with 3 lines */}
+              {baseSector && renderSectorItem({
+                ...baseSector,
+                price: pricing?.[baseSector.id]
+              })}
+              
+              {/* Tier rules — same 3-line format */}
+              {sectionTiers.map(tier => {
+                const sectionConfig = {
+                  platea: { badge: 'Platea', badgeColor: '#a8d8a8', badgeText: '#1f2937', localidades: null, location: 'Planta baja' },
+                  palcos_bajos: { badge: 'PB', badgeColor: '#8fbc8f', badgeText: '#1f2937', localidades: '4 localidades', location: 'Planta baja' },
+                  palcos_altos: { badge: 'PA', badgeColor: '#6b8e6b', badgeText: '#ffffff', localidades: '2 localidades', location: '1° piso por escalera' },
+                  pullman: { badge: 'Pullman', badgeColor: '#c0c0c0', badgeText: '#1f2937', localidades: null, location: '2° piso por escalera' }
+                };
+                const config = sectionConfig[section] || sectionConfig.platea;
+                return renderSectorItem({
+                  id: `${section}-${tier.label}`,
+                  badge: config.badge,
+                  badgeColor: tier.color || config.badgeColor,
+                  badgeText: config.badgeText,
+                  name: tier.label,
+                  localidades: config.localidades,
+                  location: config.location,
+                  price: tier.price
+                });
+              })}
             </div>
-            <div style={priceStyle}>
-              {formatCurrency ? formatCurrency(pricing?.[sector.id]) : pricing?.[sector.id]}
-            </div>
-          </div>
-        ))}
+          );
+        })}
       </div>
 
       <div style={seatStatusContainerStyle(isWideLayout)}>

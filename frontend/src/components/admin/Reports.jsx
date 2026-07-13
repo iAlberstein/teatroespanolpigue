@@ -6,6 +6,7 @@ import Card from '../ui/Card.jsx';
 import Button from '../ui/Button.jsx';
 import BordereauxModal from './BordereauxModal.jsx';
 import TicketViewModal from './TicketViewModal.jsx';
+import { formatDate, formatTime, formatDateTime, formatDateLong } from '../../lib/dateFormatter.js';
 
 // Helper para convertir YYYY-MM-DD a DD/MM/AAAA
 const formatDateDisplay = (isoDate) => {
@@ -89,6 +90,7 @@ export default function Reports({ shows }) {
   const isAdmin = user?.role === 'admin' || (user?.roles && user.roles.some(r => r.name === 'admin'));
   const [reportType, setReportType] = useState('general'); // 'general' | 'individual'
   const [selectedShowId, setSelectedShowId] = useState('');
+  const [selectedSessionId, setSelectedSessionId] = useState(''); // '' = consolidado, id = sesión específica
   const [status, setStatus] = useState('active'); // 'all' | 'active' | 'finished' - Default: active
   const [reportData, setReportData] = useState(null);
   const [loading, setLoading] = useState(false);
@@ -195,7 +197,7 @@ export default function Reports({ shows }) {
     }
   };
 
-  const loadShowReport = async (showId, isFilter = false) => {
+  const loadShowReport = async (showId, isFilter = false, sessionId = selectedSessionId) => {
     if (isFilter) {
       setIsRefreshing(true);
     } else {
@@ -208,6 +210,7 @@ export default function Reports({ shows }) {
       if (filterDate) params.append('date', filterDate);
       if (filterSeller) params.append('seller_id', filterSeller);
       if (filterChannel) params.append('channel', filterChannel);
+      if (sessionId) params.append('session_id', sessionId);
       
       const url = `/api/reports/show/${showId}${params.toString() ? '?' + params.toString() : ''}`;
       const res = await apiAuthFetch(url, { method: 'GET' }, token);
@@ -242,6 +245,9 @@ export default function Reports({ shows }) {
       
       if (reportType === 'individual' && selectedShowId) {
         params.append('show_id', selectedShowId);
+      }
+      if (reportType === 'individual' && selectedSessionId) {
+        params.append('session_id', selectedSessionId);
       }
       if (searchQuery) {
         params.append('search', searchQuery);
@@ -298,7 +304,7 @@ export default function Reports({ shows }) {
       }, 300);
       return () => clearTimeout(timer);
     }
-  }, [searchQuery, filterDate, filterSeller, filterChannel, status, reportData]);
+  }, [searchQuery, filterDate, filterSeller, filterChannel, status, reportData, selectedSessionId]);
 
   // Cargar ventas cuando cambia la página
   useEffect(() => {
@@ -342,6 +348,7 @@ export default function Reports({ shows }) {
     setReportData(null);
     setError('');
     setCurrentPage(1);
+    setSelectedSessionId('');
     
     if (type === 'general') {
       // Para reporte general, solo cargar ventas paginadas (sin totales)
@@ -353,6 +360,7 @@ export default function Reports({ shows }) {
 
   const handleShowSelect = (showId) => {
     setSelectedShowId(showId);
+    setSelectedSessionId(''); // reset session on show change
     setCurrentPage(1);
     if (showId) {
       // Solo cargar reporte con totales cuando se selecciona un show específico
@@ -362,6 +370,12 @@ export default function Reports({ shows }) {
       setReportData(null);
       loadSalesPaginated(1);
     }
+  };
+
+  const handleSessionSelect = (sessionId) => {
+    setSelectedSessionId(sessionId);
+    setCurrentPage(1);
+    loadShowReport(selectedShowId, false, sessionId);
   };
 
   const handleStatusChange = (newStatus) => {
@@ -395,20 +409,7 @@ export default function Reports({ shows }) {
     }).format(amount);
   };
 
-  const formatDateTime = (dateStr) => {
-    const date = new Date(dateStr);
-    const dateFormatted = date.toLocaleDateString('es-AR', {
-      day: '2-digit',
-      month: '2-digit',
-      year: 'numeric'
-    });
-    const timeFormatted = date.toLocaleTimeString('es-AR', {
-      hour: '2-digit',
-      minute: '2-digit',
-      hour12: false
-    });
-    return { date: dateFormatted, time: timeFormatted };
-  };
+  const formatDateTimeLocal = (dateStr) => formatDateTime(dateStr);
 
   const handleViewTickets = async (sale, options = {}) => {
     const { detailsOnly = false } = options;
@@ -631,7 +632,7 @@ export default function Reports({ shows }) {
       const downloadUrl = window.URL.createObjectURL(blob);
       const a = document.createElement('a');
       a.href = downloadUrl;
-      a.download = `ventas_${new Date().toISOString().split('T')[0]}.csv`;
+      a.download = `ventas_${formatDate(new Date())}.csv`;
       document.body.appendChild(a);
       a.click();
       document.body.removeChild(a);
@@ -953,6 +954,49 @@ export default function Reports({ shows }) {
             </div>
           </div>
 
+          {/* Selector de sesión - solo visible cuando hay un show con más de 1 sesión seleccionado */}
+          {reportType === 'individual' && selectedShowId && reportData && reportData.show?.sessions && reportData.show.sessions.length > 1 && (
+            <div style={{ flex: 1, minWidth: '220px' }}>
+              <label style={{
+                display: 'block',
+                marginBottom: theme.spacing.sm,
+                fontWeight: theme.typography.medium,
+                color: theme.colors.textPrimary
+              }}>
+                Sesión
+              </label>
+              <select
+                value={selectedSessionId}
+                onChange={(e) => handleSessionSelect(e.target.value)}
+                style={{
+                  width: '100%',
+                  padding: theme.spacing.sm,
+                  borderRadius: theme.borderRadius.md,
+                  border: `1px solid ${theme.colors.border}`,
+                  fontSize: theme.typography.body,
+                  fontFamily: theme.typography.fontFamily,
+                  background: selectedSessionId ? '#eff6ff' : theme.colors.surface
+                }}
+              >
+                <option value="">Todas las sesiones (consolidado)</option>
+                {reportData.show.sessions
+                  .slice()
+                  .sort((a, b) => new Date(a.starts_at) - new Date(b.starts_at))
+                  .map(s => {
+                    return (
+                      <option key={s.id} value={s.id}>
+                        {formatDate(s.starts_at)} {formatTime(s.starts_at)}hs
+                      </option>
+                    );
+                  })
+                }
+              </select>
+              <div style={{ marginTop: theme.spacing.xs, fontSize: theme.typography.tiny, color: theme.colors.textMuted }}>
+                {selectedSessionId ? 'Vista por sesión individual' : `${reportData.show.sessions.length} sesiones — suma consolidada`}
+              </div>
+            </div>
+          )}
+
           {/* Filtro de estado */}
           <div style={{ flex: 1, minWidth: '200px' }}>
             <label style={{ 
@@ -1111,7 +1155,14 @@ export default function Reports({ shows }) {
                   {reportData.show.title}
                 </h2>
                 <p style={{ fontSize: theme.typography.small, color: theme.colors.textMuted }}>
-                  {reportData.show.sessionsCount} funciones
+                  {selectedSessionId
+                    ? (() => {
+                        const sess = reportData.show.sessions?.find(s => String(s.id) === String(selectedSessionId));
+                        if (!sess) return 'Sesión individual';
+                        return `Sesión: ${formatDate(sess.starts_at)} ${formatTime(sess.starts_at)}hs`;
+                      })()
+                    : `${reportData.show.sessionsCount} función${reportData.show.sessionsCount !== 1 ? 'es' : ''} — consolidado`
+                  }
                 </p>
               </div>
               {!isBoleteria && (
@@ -1120,7 +1171,7 @@ export default function Reports({ shows }) {
                   onClick={() => setShowBordereauxModal(true)}
                   style={{ marginLeft: theme.spacing.md }}
                 >
-                  Ver Bordereaux
+                  {selectedSessionId ? 'Ver Bordereaux (Sesión)' : 'Ver Bordereaux'}
                 </Button>
               )}
             </div>
@@ -1237,15 +1288,48 @@ export default function Reports({ shows }) {
             </Card>
           )}
 
-          {/* Desglose por Servicios - Solo para admin */}
-          {isAdmin && reportData.serviceBreakdown && Object.keys(reportData.serviceBreakdown).length > 0 && (
+          {/* Desglose por Servicios - Admin ve todos, productor solo 'a bordereaux' */}
+          {(isAdmin || isProductor) && reportData.serviceBreakdown && (
+            (isAdmin && (Object.keys(reportData.serviceBreakdown.bordereaux || {}).length > 0 || Object.keys(reportData.serviceBreakdown.teatro || {}).length > 0)) ||
+            (isProductor && Object.keys(reportData.serviceBreakdown.bordereaux || {}).length > 0)
+          ) && (
             <Card variant="elevated" padding="lg" style={{ marginBottom: theme.spacing.lg }}>
               <h3 style={{ marginBottom: theme.spacing.md, color: theme.colors.textPrimary }}>
                 Desglose por Servicios
+                {isProductor && <span style={{ fontSize: theme.typography.small, color: theme.colors.textSecondary, marginLeft: theme.spacing.sm }}>(a bordereaux)</span>}
               </h3>
               <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: theme.spacing.md }}>
-                {Object.entries(reportData.serviceBreakdown).map(([serviceName, data]) => (
-                  <div key={serviceName}>
+                {/* Admin: mostrar servicios a bordereaux */}
+                {isAdmin && reportData.serviceBreakdown.bordereaux && Object.entries(reportData.serviceBreakdown.bordereaux).map(([serviceName, data]) => (
+                  <div key={`bordereaux-${serviceName}`}>
+                    <div style={{ fontSize: theme.typography.small, fontWeight: theme.typography.semibold, marginBottom: theme.spacing.xs }}>
+                      {serviceName}
+                    </div>
+                    <div style={{ fontSize: theme.typography.tiny, color: theme.colors.textSecondary }}>
+                      {data.quantity} venta{data.quantity > 1 ? 's' : ''}
+                    </div>
+                    <div style={{ fontSize: theme.typography.body, fontWeight: theme.typography.medium, color: theme.colors.primary }}>
+                      {formatCurrency(data.total)}
+                    </div>
+                  </div>
+                ))}
+                {/* Admin: mostrar servicios del teatro */}
+                {isAdmin && reportData.serviceBreakdown.teatro && Object.entries(reportData.serviceBreakdown.teatro).map(([serviceName, data]) => (
+                  <div key={`teatro-${serviceName}`} style={{ opacity: 0.7 }}>
+                    <div style={{ fontSize: theme.typography.small, fontWeight: theme.typography.semibold, marginBottom: theme.spacing.xs }}>
+                      {serviceName} <span style={{ fontSize: theme.typography.tiny, color: theme.colors.textMuted }}>(del teatro)</span>
+                    </div>
+                    <div style={{ fontSize: theme.typography.tiny, color: theme.colors.textSecondary }}>
+                      {data.quantity} venta{data.quantity > 1 ? 's' : ''}
+                    </div>
+                    <div style={{ fontSize: theme.typography.body, fontWeight: theme.typography.medium, color: theme.colors.primary }}>
+                      {formatCurrency(data.total)}
+                    </div>
+                  </div>
+                ))}
+                {/* Productor: mostrar solo servicios a bordereaux */}
+                {isProductor && reportData.serviceBreakdown.bordereaux && Object.entries(reportData.serviceBreakdown.bordereaux).map(([serviceName, data]) => (
+                  <div key={`prod-bordereaux-${serviceName}`}>
                     <div style={{ fontSize: theme.typography.small, fontWeight: theme.typography.semibold, marginBottom: theme.spacing.xs }}>
                       {serviceName}
                     </div>
@@ -1284,18 +1368,9 @@ export default function Reports({ shows }) {
                   {reportData.sessions.map((session) => (
                     <tr key={session.session_id} style={{ borderBottom: `1px solid ${theme.colors.borderLight}` }}>
                       <td style={{ padding: theme.spacing.sm }}>
-                        <div>{new Date(session.date).toLocaleDateString('es-AR', { 
-                          weekday: 'long', 
-                          day: '2-digit', 
-                          month: 'long',
-                          year: 'numeric'
-                        })}</div>
+                        <div>{formatDateLong(session.date)}</div>
                         <div style={{ fontSize: theme.typography.tiny, color: theme.colors.textMuted }}>
-                          {new Date(session.date).toLocaleTimeString('es-AR', {
-                            hour: '2-digit',
-                            minute: '2-digit',
-                            hour12: false
-                          })}
+                          {formatTime(session.date)}
                         </div>
                       </td>
                       <td style={{ padding: theme.spacing.sm, textAlign: 'right' }}>{session.ticketsSold}</td>
@@ -1471,8 +1546,8 @@ export default function Reports({ shows }) {
                   return (
                   <tr key={sale.sale_id} style={{ borderBottom: `1px solid ${theme.colors.borderLight}` }}>
                     <td style={{ padding: theme.spacing.xs }}>
-                      <div>{formatDateTime(sale.sale_date).date}</div>
-                      <div style={{ fontSize: theme.typography.tiny, color: theme.colors.textMuted }}>{formatDateTime(sale.sale_date).time}</div>
+                      <div>{formatDateTimeLocal(sale.sale_date).date}</div>
+                      <div style={{ fontSize: theme.typography.tiny, color: theme.colors.textMuted }}>{formatDateTimeLocal(sale.sale_date).time}</div>
                     </td>
                     <td style={{ padding: theme.spacing.xs }}>
                       <div style={{ fontWeight: theme.typography.medium }}>{sale.show_title}</div>
@@ -1545,8 +1620,8 @@ export default function Reports({ shows }) {
                       })()}
                     </td>
                     <td style={{ padding: theme.spacing.xs }}>
-                      <div>{formatDateTime(sale.session_date).date}</div>
-                      <div style={{ fontSize: theme.typography.tiny, color: theme.colors.textMuted }}>{formatDateTime(sale.session_date).time}</div>
+                      <div>{formatDateTimeLocal(sale.session_date).date}</div>
+                      <div style={{ fontSize: theme.typography.tiny, color: theme.colors.textMuted }}>{formatDateTimeLocal(sale.session_date).time}</div>
                     </td>
                     <td style={{ padding: theme.spacing.xs }}>
                       <div style={{ fontWeight: theme.typography.medium }}>{sale.customer_name}</div>
@@ -1621,6 +1696,7 @@ export default function Reports({ shows }) {
       {showBordereauxModal && selectedShowId && (
         <BordereauxModal
           showId={selectedShowId}
+          sessionId={selectedSessionId || undefined}
           onClose={() => setShowBordereauxModal(false)}
         />
       )}

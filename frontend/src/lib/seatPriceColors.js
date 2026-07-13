@@ -85,22 +85,27 @@ export function getSeatPriceTier(seatCode, priceTiers) {
     return { tierIndex: 0, totalTiers: 1, price: null, section: null };
   }
   
+  // Normalize palco codes with spaces (e.g. "PB 12" -> "PB12", "PA 7" -> "PA7")
+  const normalizedCode = typeof seatCode === 'string'
+    ? seatCode.replace(/^(PA|PB)\s+(\d+)$/i, '$1$2')
+    : seatCode;
+  
   // Determine section from seat code
   let section = 'platea';
   let rowLetter = null;
   let palcoNumber = null;
   let isPalcoAlto = false;
   
-  if (/^PB\d+$/i.test(seatCode)) {
+  if (/^PB\d+$/i.test(normalizedCode)) {
     section = 'palcos_bajos';
-    palcoNumber = parseInt(seatCode.substring(2));
-  } else if (/^PA\d+$/i.test(seatCode)) {
+    palcoNumber = parseInt(normalizedCode.substring(2));
+  } else if (/^PA\d+$/i.test(normalizedCode)) {
     section = 'palcos_altos';
-    palcoNumber = parseInt(seatCode.substring(2));
+    palcoNumber = parseInt(normalizedCode.substring(2));
     isPalcoAlto = true;
-  } else if (/^[A-M]\d+$/.test(seatCode)) {
+  } else if (/^[A-M]\d+$/.test(normalizedCode)) {
     section = 'platea';
-    rowLetter = seatCode[0];
+    rowLetter = normalizedCode[0];
   }
   
   // Filter tiers for this section
@@ -150,15 +155,14 @@ export function getSeatPriceTier(seatCode, priceTiers) {
     }
   }
   
-  // Default to last tier (lowest price) if no match
-  const lastTier = sortedTiers[sortedTiers.length - 1];
+  // No matching tier found - return null color so default section color is used
   return { 
-    tierIndex: sortedTiers.length - 1, 
-    totalTiers: sortedTiers.length, 
-    price: lastTier.price, 
+    tierIndex: sortedTiers.length, 
+    totalTiers: sortedTiers.length + 1, 
+    price: null, 
     section,
-    label: lastTier.label,
-    color: lastTier.color
+    label: null,
+    color: null
   };
 }
 
