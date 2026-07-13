@@ -6,6 +6,7 @@ import GeneralAdmissionSelection from '../components/GeneralAdmissionSelection.j
 import BoxOfficeReferences from '../components/BoxOfficeReferences.jsx';
 import GuestCheckoutModal from '../components/GuestCheckoutModal.jsx';
 import GuestCheckoutForm from '../components/GuestCheckoutForm.jsx';
+import PackCheckout from '../components/PackCheckout.jsx';
 import { apiFetch, apiAuthFetch } from '../lib/api';
 import { formatSeatLocation } from '../lib/seatFormatter';
 import { getShowImageUrl } from '../lib/media';
@@ -56,6 +57,9 @@ export default function Detalle(){
   const [showGuestForm, setShowGuestForm] = useState(false);
   const [guestData, setGuestData] = useState(null);
   const [emittingFreeTickets, setEmittingFreeTickets] = useState(false);
+
+  // Pack multi-function checkout state
+  const [showPackCheckout, setShowPackCheckout] = useState(false);
 
   // Mobile cart drawer state
   const [isMobileCartOpen, setIsMobileCartOpen] = useState(false);
@@ -1631,6 +1635,38 @@ export default function Detalle(){
         </div>
       )}
 
+      {/* Pack multi-function promo */}
+      {show?.pack_enabled && sessions.length >= 2 && (
+        <div style={{
+          marginBottom: 24,
+          padding: 20,
+          background: 'linear-gradient(135deg, #f0fdf4 0%, #dcfce7 100%)',
+          borderRadius: 12,
+          border: '2px solid #86efac',
+          textAlign: 'center'
+        }}>
+          <h3 style={{ margin: '0 0 8px 0', color: '#166534' }}>Pack Multi-Función</h3>
+          <p style={{ margin: '0 0 16px 0', color: '#166534', fontSize: 15 }}>
+            Comprá entradas para {Math.min(show.pack_max_sessions || 3, sessions.length)} funciones y accedé a precios especiales.
+          </p>
+          <button
+            onClick={() => setShowPackCheckout(true)}
+            style={{
+              padding: '12px 24px',
+              background: '#16a34a',
+              color: '#fff',
+              border: 'none',
+              borderRadius: 8,
+              fontSize: 15,
+              fontWeight: 600,
+              cursor: 'pointer'
+            }}
+          >
+            Ver opciones de pack
+          </button>
+        </div>
+      )}
+
       {/* Check if show is finished */}
       {show?.show_status === 'finalizado' ? (
         <section style={{
@@ -1820,6 +1856,41 @@ export default function Detalle(){
           loading={false}
           submitLabel={calculatePrices().total === 0 && appliedDiscount ? 'Emitir entradas' : 'Continuar al pago'}
         />
+      )}
+
+      {/* Pack Multi-Function Checkout */}
+      {showPackCheckout && (
+        <div style={{
+          position: 'fixed',
+          inset: 0,
+          background: 'rgba(0,0,0,0.5)',
+          backdropFilter: 'blur(4px)',
+          zIndex: 999,
+          overflowY: 'auto',
+          padding: '40px 16px'
+        }}>
+          <div style={{ maxWidth: 900, margin: '0 auto' }}>
+            <PackCheckout
+              show={show}
+              sessions={sessions}
+              user={user}
+              token={token}
+              isGuest={isGuest}
+              guestData={guestData}
+              onGuestCheckoutNeeded={(data) => {
+                if (data) {
+                  setGuestData(data);
+                  setIsGuest(true);
+                } else {
+                  setShowGuestModal(true);
+                }
+              }}
+              serviceFeePercent={serviceFeePercent}
+              showServices={showServices}
+              onClose={() => setShowPackCheckout(false)}
+            />
+          </div>
+        </div>
       )}
 
       {/* Mobile Cart Peek - Fixed bottom bar (for all venue types on mobile) */}

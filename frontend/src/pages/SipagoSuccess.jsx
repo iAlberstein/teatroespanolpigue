@@ -6,10 +6,13 @@ import { formatDateLong, formatTime, formatDateShort } from '../lib/dateFormatte
 export default function SipagoSuccess(){
   const [searchParams] = useSearchParams();
   const reservationIdParam = searchParams.get('reservation_id');
+  const packIdParam = searchParams.get('pack_id');
   const discountIdParam = searchParams.get('discount_id');
 
   const [reservation, setReservation] = useState(null);
   const [reservationId, setReservationId] = useState(reservationIdParam || '');
+  const [packId, setPackId] = useState(packIdParam || '');
+  const [packData, setPackData] = useState(null);
   const [email, setEmail] = useState('');
   const [whatsapp, setWhatsapp] = useState('');
   const [sendingEmail, setSendingEmail] = useState(false);
@@ -38,6 +41,18 @@ export default function SipagoSuccess(){
   }, [reservationId]);
 
   useEffect(() => {
+    // Read pack_id from URL or sessionStorage
+    let pid = packIdParam;
+    if (!pid) {
+      try {
+        pid = sessionStorage.getItem('sipago_pack_id');
+      } catch {}
+    }
+    if (pid) setPackId(pid);
+  }, [packIdParam]);
+
+  useEffect(() => {
+    if (packId) return;
     if (!reservationId) return;
     let attempts = 0;
     const maxAttempts = 15;
@@ -70,10 +85,41 @@ export default function SipagoSuccess(){
       }
     }, 1000);
     return () => clearInterval(interval);
-  }, [reservationId]);
+  }, [reservationId, packId]);
+
+  // Poll pack sale data
+  useEffect(() => {
+    if (!packId) return;
+    let attempts = 0;
+    const maxAttempts = 15;
+    const interval = setInterval(async () => {
+      attempts++;
+      try {
+        const res = await apiFetch(`/api/payments/pack-sale/${packId}`);
+        const data = await res.json();
+        if (data && data.pack_id) {
+          setPackData(data);
+          if (data.customer_email) {
+            setEmail(prev => prev || data.customer_email);
+            setAutoSentEmail(data.customer_email);
+            setEmailAutoSent(true);
+          }
+          if (data.payment_status === 'approved') {
+            clearInterval(interval);
+          } else if (attempts >= maxAttempts) {
+            clearInterval(interval);
+          }
+        }
+      } catch (err) {
+        if (attempts >= maxAttempts) clearInterval(interval);
+      }
+    }, 1000);
+    return () => clearInterval(interval);
+  }, [packId]);
 
   // Fallback confirm if webhook didn't process yet
   useEffect(() => {
+    if (packId) return;
     if (!reservationId || saleId) return;
     let aborted = false;
     const timer = setTimeout(async () => {
@@ -119,7 +165,42 @@ export default function SipagoSuccess(){
       } catch {}
     }, 2000);
     return () => { aborted = true; clearTimeout(timer); };
-  }, [reservationId, saleId]);
+  }, [reservationId, saleId, packId]);
+
+  // Fallback pack confirm if webhook didn't process yet
+  useEffect(() => {
+    if (!packId || (packData && packData.payment_status === 'approved')) return;
+    const timer = setTimeout(async () => {
+      try {
+        const storedOrderUuid = sessionStorage.getItem('sipago_order_uuid');
+        const storedDiscountId = sessionStorage.getItem('sipago_discount_id');
+        const storedGuestData = sessionStorage.getItem('sipago_guest_data');
+        let guestData = null;
+        try { if (storedGuestData) guestData = JSON.parse(storedGuestData); } catch {}
+        const payload = {
+          pack_id: packId,
+          order_uuid: storedOrderUuid || undefined,
+          discount_id: discountIdParam || storedDiscountId || undefined,
+          customer_name: guestData?.name || undefined,
+          customer_email: guestData?.email || undefined,
+          customer_phone: guestData?.phone || undefined,
+          customer_dni: guestData?.dni || undefined,
+          customer_provincia: guestData?.provincia || undefined,
+          customer_localidad: guestData?.localidad || undefined
+        };
+        await apiFetch('/api/payments/sipago-pack-confirm', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload)
+        });
+        sessionStorage.removeItem('sipago_order_uuid');
+        sessionStorage.removeItem('sipago_pack_id');
+        sessionStorage.removeItem('sipago_discount_id');
+        sessionStorage.removeItem('sipago_guest_data');
+      } catch {}
+    }, 2000);
+    return () => clearTimeout(timer);
+  }, [packId, packData]);
 
   const formatSeatLocation = (seatCode, type) => {
     if (!seatCode) return type === 'pullman' ? 'Pullman' : '';
@@ -140,6 +221,16 @@ export default function SipagoSuccess(){
   };
 
   const calculateTotals = () => {
+    // Use pack data if available (authoritative source)
+    if (packData && packData.total_amount !== undefined) {
+      return {
+        subtotal: packData.subtotal || 0,
+        discountAmount: packData.discount_amount || 0,
+        serviceCharge: packData.service_fee_amount || 0,
+        servicesSubtotal: packData.services_subtotal || 0,
+        total: packData.total_amount || 0
+      };
+    }
     // Use backend-computed breakdown if available (authoritative source)
     if (saleBreakdown && saleBreakdown.subtotal !== undefined) {
       return {
@@ -177,6 +268,7 @@ export default function SipagoSuccess(){
   const { subtotal, discountAmount, serviceCharge, servicesSubtotal: calcServicesSubtotal, total } = calculateTotals();
 
   const onSendEmail = async () => {
+    if (packId) return onSendPackEmail();
     if (!reservationId || !email) return;
     setSendingEmail(true);
     try {
@@ -199,18 +291,47 @@ export default function SipagoSuccess(){
     }
   };
 
+  const onSendPackEmail = async () => {
+    if (!packId || !packData || !email) return;
+    setSendingEmail(true);
+    let ok = true;
+    for (const sale of packData.sales || []) {
+      try {
+        const res = await apiFetch('/api/payments/email-sale', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ sale_id: sale.id, email })
+        });
+        if (!res.ok) ok = false;
+      } catch {
+        ok = false;
+      }
+    }
+    setEmailSent(ok);
+    setSendingEmail(false);
+    alert(ok ? '✅ Emails del pack enviados correctamente' : '❌ Hubo un error enviando algunos emails');
+  };
+
   const onSendWhatsapp = () => {
-    if (!whatsapp || !saleId) return;
+    if (!whatsapp) return;
     const cleanPhone = whatsapp.replace(/[\s\-()]/g, '');
-    const showName = reservation?.session?.show?.title || 'el espectáculo';
+    const showName = reservation?.session?.show?.title || packData?.sales?.[0]?.show_title || 'el espectáculo';
     const sessionDate = reservation?.session?.starts_at
       ? formatDateShort(reservation.session.starts_at)
       : '';
     const sessionTime = reservation?.session?.starts_at
       ? formatTime(reservation.session.starts_at)
       : '';
-    const shareUrl = `${window.location.origin}/api/share/sale/${saleId}`;
-    const message = `Hola! Te comparto tus entradas para el show ${showName}${sessionDate ? ` del día ${sessionDate}` : ''}${sessionTime ? ` a las ${sessionTime}` : ''}.\n\n Ver entradas: ${shareUrl}\n\nRecordá llegar al menos 30 minutos antes y mostrar el QR en el acceso. Una vez comenzada la función, la ubicación pierde validez (el personal de la sala te asignará un nuevo lugar).\n\nLas entradas no tienen cambio ni devolución, excepto en casos de cancelación/modificación del espectáculo.\n\n(Si no podés acceder al link, es porque no tenés agendado este número. Una vez que lo hagas, podrás acceder)\n\n¡Nos vemos!`;
+    let shareUrl;
+    let message;
+    if (packData?.sales?.length) {
+      const links = packData.sales.map((s, i) => `Función ${i + 1}: ${window.location.origin}/api/share/sale/${s.id}`).join('\n');
+      message = `Hola! Te comparto tus entradas del pack para ${showName}:\n\n${links}\n\nRecordá llegar al menos 30 minutos antes y mostrar el QR en el acceso. Una vez comenzada la función, la ubicación pierde validez.\n\nLas entradas no tienen cambio ni devolución, excepto en casos de cancelación/modificación del espectáculo.\n\n¡Nos vemos!`;
+    } else {
+      if (!saleId) return;
+      shareUrl = `${window.location.origin}/api/share/sale/${saleId}`;
+      message = `Hola! Te comparto tus entradas para el show ${showName}${sessionDate ? ` del día ${sessionDate}` : ''}${sessionTime ? ` a las ${sessionTime}` : ''}.\n\n Ver entradas: ${shareUrl}\n\nRecordá llegar al menos 30 minutos antes y mostrar el QR en el acceso. Una vez comenzada la función, la ubicación pierde validez (el personal de la sala te asignará un nuevo lugar).\n\nLas entradas no tienen cambio ni devolución, excepto en casos de cancelación/modificación del espectáculo.\n\n(Si no podés acceder al link, es porque no tenés agendado este número. Una vez que lo hagas, podrás acceder)\n\n¡Nos vemos!`;
+    }
     const waUrl = `https://wa.me/549${cleanPhone}?text=${encodeURIComponent(message)}`;
     window.open(waUrl, '_blank');
     setWhatsappSent(true);
@@ -232,81 +353,140 @@ export default function SipagoSuccess(){
       )}
 
       <div style={{ marginTop: 24, padding: 20, border: '1px solid #ddd', borderRadius: 8, background: '#fff' }}>
-        <h2 style={{ fontSize: 18, marginTop: 0, marginBottom: 16 }}> Detalle de tu compra</h2>
+        {packId ? (
+          <>
+            <h2 style={{ fontSize: 18, marginTop: 0, marginBottom: 16 }}>Detalle del Pack Multi-Función</h2>
+            {packData?.sales?.length > 0 && (
+              <div style={{ marginBottom: 16 }}>
+                <div style={{ fontWeight: 600, marginBottom: 12, fontSize: 15 }}>Funciones incluidas:</div>
+                <ul style={{ listStyle: 'none', padding: 0, margin: 0 }}>
+                  {packData.sales.map((sale, idx) => (
+                    <li key={sale.id} style={{ padding: '10px 0', borderBottom: idx < packData.sales.length - 1 ? '1px solid #eee' : 'none', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                      <span>Función {idx + 1}: {formatDateLong(sale.session_date)} - {formatTime(sale.session_date)}</span>
+                      <span style={{ fontWeight: 600 }}>${Number(sale.total_amount || 0).toLocaleString('es-AR')}</span>
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            )}
 
-        {reservation?.session?.show && (
-          <div style={{ background: '#f8fafc', borderLeft: '4px solid #3b82f6', padding: 16, marginBottom: 20, borderRadius: '0 8px 8px 0' }}>
-            <h3 style={{ margin: '0 0 8px 0', fontSize: 17, color: '#1e293b' }}>
-              {reservation.session.show.title}
-            </h3>
-            <p style={{ margin: 0, fontSize: 14, color: '#64748b' }}>
-              📅 Fecha: {formatDateLong(reservation.session.starts_at)}<br/>
-              🕐 Hora: {formatTime(reservation.session.starts_at)}
-            </p>
-          </div>
+            {packData?.service_items?.length > 0 && (
+              <div style={{ marginBottom: 16 }}>
+                <div style={{ fontWeight: 600, marginBottom: 12, fontSize: 15 }}>Servicios asociados:</div>
+                <ul style={{ listStyle: 'none', padding: 0, margin: 0 }}>
+                  {packData.service_items.map((svc, idx) => (
+                    <li key={idx} style={{ padding: '10px 0', borderBottom: idx < packData.service_items.length - 1 ? '1px solid #eee' : 'none' }}>
+                      <span>{svc.name} - {svc.quantity} persona{svc.quantity > 1 ? 's' : ''} - ${(Number(svc.price || 0) * Number(svc.quantity || 1)).toLocaleString('es-AR')}</span>
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            )}
+
+            <div style={{ marginTop: 12, paddingTop: 12, borderTop: '1px solid #ddd', display: 'flex', justifyContent: 'space-between', fontSize: 15 }}>
+              <span>Subtotal entradas:</span>
+              <span>${subtotal.toLocaleString('es-AR')}</span>
+            </div>
+            {discountAmount > 0 && (
+              <div style={{ marginTop: 6, display: 'flex', justifyContent: 'space-between', fontSize: 15, color: '#059669', fontWeight: 600 }}>
+                <span>Descuento:</span>
+                <span>-${discountAmount.toLocaleString('es-AR')}</span>
+              </div>
+            )}
+            {calcServicesSubtotal > 0 && (
+              <div style={{ marginTop: 6, display: 'flex', justifyContent: 'space-between', fontSize: 15, color: '#1e40af' }}>
+                <span>Subtotal servicios:</span>
+                <span>${calcServicesSubtotal.toLocaleString('es-AR')}</span>
+              </div>
+            )}
+            <div style={{ marginTop: 6, display: 'flex', justifyContent: 'space-between', fontSize: 15, color: '#666' }}>
+              <span>Cargo por servicio:</span>
+              <span>${serviceCharge.toLocaleString('es-AR')}</span>
+            </div>
+            <div style={{ marginTop: 12, paddingTop: 12, borderTop: '2px solid #333', display: 'flex', justifyContent: 'space-between', fontSize: 18, fontWeight: 700 }}>
+              <span>Total del pack:</span>
+              <span style={{ color: '#28a745' }}>${total.toLocaleString('es-AR')}</span>
+            </div>
+          </>
+        ) : (
+          <>
+            <h2 style={{ fontSize: 18, marginTop: 0, marginBottom: 16 }}> Detalle de tu compra</h2>
+
+            {reservation?.session?.show && (
+              <div style={{ background: '#f8fafc', borderLeft: '4px solid #3b82f6', padding: 16, marginBottom: 20, borderRadius: '0 8px 8px 0' }}>
+                <h3 style={{ margin: '0 0 8px 0', fontSize: 17, color: '#1e293b' }}>
+                  {reservation.session.show.title}
+                </h3>
+                <p style={{ margin: 0, fontSize: 14, color: '#64748b' }}>
+                  📅 Fecha: {formatDateLong(reservation.session.starts_at)}<br/>
+                  🕐 Hora: {formatTime(reservation.session.starts_at)}
+                </p>
+              </div>
+            )}
+
+            <div style={{ marginBottom: 16 }}>
+              <div style={{ fontWeight: 600, marginBottom: 12, fontSize: 15 }}>Entradas:</div>
+              <ul style={{ listStyle: 'none', padding: 0, margin: 0 }}>
+                {(reservation?.items || []).map((it, idx) => (
+                  <li key={idx} style={{ padding: '10px 0', borderBottom: idx < (reservation?.items?.length || 0) - 1 ? '1px solid #eee' : 'none', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                    <span style={{ flex: 1 }}>
+                      {it.type === 'butaca' && formatSeatLocation(it.seat_code, 'butaca')}
+                      {it.type === 'palco' && formatSeatLocation(it.seat_code, 'palco')}
+                      {it.type === 'pullman' && `Pullman x${it.quantity || 1}`}
+                      {it.type === 'general' && `Entrada General x${it.quantity || 1}`}
+                    </span>
+                    <span style={{ fontWeight: 600, fontSize: 15 }}>
+                      ${Number(it.price || it.unit_price || 0).toLocaleString('es-AR')}
+                      {(it.type === 'pullman' || it.type === 'general') && it.quantity > 1 && ' c/u'}
+                    </span>
+                  </li>
+                ))}
+              </ul>
+            </div>
+
+            {saleServiceItems.length > 0 && (
+              <div style={{ marginBottom: 16 }}>
+                <div style={{ fontWeight: 600, marginBottom: 12, fontSize: 15 }}>Servicios asociados:</div>
+                <ul style={{ listStyle: 'none', padding: 0, margin: 0 }}>
+                  {saleServiceItems.map((svc, idx) => (
+                    <li key={idx} style={{ padding: '10px 0', borderBottom: idx < saleServiceItems.length - 1 ? '1px solid #eee' : 'none' }}>
+                      <span>{svc.name} - {svc.quantity} persona{svc.quantity > 1 ? 's' : ''} - ${(Number(svc.price || 0) * Number(svc.quantity || 1)).toLocaleString('es-AR')}</span>
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            )}
+
+            <div style={{ marginTop: 12, paddingTop: 12, borderTop: '1px solid #ddd', display: 'flex', justifyContent: 'space-between', fontSize: 15 }}>
+              <span>Subtotal entradas:</span>
+              <span>${subtotal.toLocaleString('es-AR')}</span>
+            </div>
+
+            {discountAmount > 0 && appliedDiscount && (
+              <div style={{ marginTop: 6, display: 'flex', justifyContent: 'space-between', fontSize: 15, color: '#059669', fontWeight: 600 }}>
+                <span>Descuento ({appliedDiscount.alias || appliedDiscount.code}):</span>
+                <span>-${discountAmount.toLocaleString('es-AR')}</span>
+              </div>
+            )}
+
+            {calcServicesSubtotal > 0 && (
+              <div style={{ marginTop: 6, display: 'flex', justifyContent: 'space-between', fontSize: 15, color: '#1e40af' }}>
+                <span>Subtotal servicios:</span>
+                <span>${calcServicesSubtotal.toLocaleString('es-AR')}</span>
+              </div>
+            )}
+
+            <div style={{ marginTop: 6, display: 'flex', justifyContent: 'space-between', fontSize: 15, color: '#666' }}>
+              <span>Cargo por servicio:</span>
+              <span>${serviceCharge.toLocaleString('es-AR')}</span>
+            </div>
+
+            <div style={{ marginTop: 12, paddingTop: 12, borderTop: '2px solid #333', display: 'flex', justifyContent: 'space-between', fontSize: 18, fontWeight: 700 }}>
+              <span>Total:</span>
+              <span style={{ color: '#28a745' }}>${total.toLocaleString('es-AR')}</span>
+            </div>
+          </>
         )}
-
-        <div style={{ marginBottom: 16 }}>
-          <div style={{ fontWeight: 600, marginBottom: 12, fontSize: 15 }}>Entradas:</div>
-          <ul style={{ listStyle: 'none', padding: 0, margin: 0 }}>
-            {(reservation?.items || []).map((it, idx) => (
-              <li key={idx} style={{ padding: '10px 0', borderBottom: idx < (reservation?.items?.length || 0) - 1 ? '1px solid #eee' : 'none', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                <span style={{ flex: 1 }}>
-                  {it.type === 'butaca' && formatSeatLocation(it.seat_code, 'butaca')}
-                  {it.type === 'palco' && formatSeatLocation(it.seat_code, 'palco')}
-                  {it.type === 'pullman' && `Pullman x${it.quantity || 1}`}
-                  {it.type === 'general' && `Entrada General x${it.quantity || 1}`}
-                </span>
-                <span style={{ fontWeight: 600, fontSize: 15 }}>
-                  ${Number(it.price || it.unit_price || 0).toLocaleString('es-AR')}
-                  {(it.type === 'pullman' || it.type === 'general') && it.quantity > 1 && ' c/u'}
-                </span>
-              </li>
-            ))}
-          </ul>
-        </div>
-
-        {saleServiceItems.length > 0 && (
-          <div style={{ marginBottom: 16 }}>
-            <div style={{ fontWeight: 600, marginBottom: 12, fontSize: 15 }}>Servicios asociados:</div>
-            <ul style={{ listStyle: 'none', padding: 0, margin: 0 }}>
-              {saleServiceItems.map((svc, idx) => (
-                <li key={idx} style={{ padding: '10px 0', borderBottom: idx < saleServiceItems.length - 1 ? '1px solid #eee' : 'none' }}>
-                  <span>{svc.name} - {svc.quantity} persona{svc.quantity > 1 ? 's' : ''} - ${(Number(svc.price || 0) * Number(svc.quantity || 1)).toLocaleString('es-AR')}</span>
-                </li>
-              ))}
-            </ul>
-          </div>
-        )}
-
-        <div style={{ marginTop: 12, paddingTop: 12, borderTop: '1px solid #ddd', display: 'flex', justifyContent: 'space-between', fontSize: 15 }}>
-          <span>Subtotal entradas:</span>
-          <span>${subtotal.toLocaleString('es-AR')}</span>
-        </div>
-
-        {discountAmount > 0 && appliedDiscount && (
-          <div style={{ marginTop: 6, display: 'flex', justifyContent: 'space-between', fontSize: 15, color: '#059669', fontWeight: 600 }}>
-            <span>Descuento ({appliedDiscount.alias || appliedDiscount.code}):</span>
-            <span>-${discountAmount.toLocaleString('es-AR')}</span>
-          </div>
-        )}
-
-        {calcServicesSubtotal > 0 && (
-          <div style={{ marginTop: 6, display: 'flex', justifyContent: 'space-between', fontSize: 15, color: '#1e40af' }}>
-            <span>Subtotal servicios:</span>
-            <span>${calcServicesSubtotal.toLocaleString('es-AR')}</span>
-          </div>
-        )}
-
-        <div style={{ marginTop: 6, display: 'flex', justifyContent: 'space-between', fontSize: 15, color: '#666' }}>
-          <span>Cargo por servicio:</span>
-          <span>${serviceCharge.toLocaleString('es-AR')}</span>
-        </div>
-
-        <div style={{ marginTop: 12, paddingTop: 12, borderTop: '2px solid #333', display: 'flex', justifyContent: 'space-between', fontSize: 18, fontWeight: 700 }}>
-          <span>Total:</span>
-          <span style={{ color: '#28a745' }}>${total.toLocaleString('es-AR')}</span>
-        </div>
       </div>
 
       <div style={{ marginTop: 24, padding: 16, background: '#f8f9fa', borderRadius: 8 }}>

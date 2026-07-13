@@ -1057,6 +1057,56 @@ router.get('/sale/:reservation_id', async (req, res) => {
   }
 });
 
+// Get pack sale summary with child sales and sessions
+router.get('/pack-sale/:pack_id', async (req, res) => {
+  try {
+    const { pack_id } = req.params;
+    if (!pack_id) return res.status(400).json({ error: 'pack_id required' });
+
+    const { pack_sales: PackSale, sales: Sale, reservations: Reservation, sessions: Session, shows: Show } = sequelize.models;
+
+    const packSale = await PackSale.findByPk(pack_id);
+    if (!packSale) return res.status(404).json({ error: 'pack_not_found' });
+
+    const sales = await Sale.findAll({
+      where: { pack_sale_id: pack_id },
+      include: [{ model: Session, as: 'session', include: [{ model: Show, as: 'show' }] }]
+    });
+
+    const reservations = await Reservation.findAll({ where: { pack_id: pack_id } });
+
+    return res.json({
+      pack_id: packSale.id,
+      payment_status: packSale.payment_status,
+      subtotal: Number(packSale.subtotal || 0),
+      discount_amount: Number(packSale.discount_amount || 0),
+      service_fee_percent: Number(packSale.service_fee_percent || 0),
+      service_fee_amount: Number(packSale.service_fee_amount || 0),
+      services_subtotal: Number(packSale.services_subtotal || 0),
+      total_amount: Number(packSale.total_amount || 0),
+      service_items: parsePackServiceItems(packSale.service_items),
+      customer_email: packSale.customer_email,
+      sales: sales.map(s => ({
+        id: s.id,
+        session_id: s.session_id,
+        session_date: s.session?.starts_at,
+        show_title: s.session?.show?.title,
+        total_amount: Number(s.total_amount || 0),
+        payment_method: s.payment_method
+      })),
+      reservations: reservations.map(r => ({
+        id: r.id,
+        session_id: r.session_id,
+        status: r.status,
+        sale_id: r.sale_id
+      }))
+    });
+  } catch (error) {
+    console.error('[PACK_SALE] Error:', error);
+    return res.status(500).json({ error: 'server_error' });
+  }
+});
+
 // Send tickets by email
 // Body: { reservation_id: string, email: string }
 router.post('/email', async (req, res) => {
