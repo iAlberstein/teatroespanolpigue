@@ -54,7 +54,10 @@ export default function ShowForm({ show, onSave, onCancel }) {
     is_visible: true,
     external_sale: false,
     external_sale_link: '',
-    palcos_individual_seats: false
+    palcos_individual_seats: false,
+    pack_enabled: false,
+    pack_max_sessions: 3,
+    pack_pricing_json: {}
   });
 
   const [errors, setErrors] = useState({});
@@ -192,6 +195,10 @@ export default function ShowForm({ show, onSave, onCancel }) {
       const secundariaWeb = show.image_secundaria_web || '';
       const principalMobile = show.image_principal_mobile || principalWeb || '';
 
+      const packPricing = typeof show.pack_pricing_json === 'string'
+        ? (() => { try { return JSON.parse(show.pack_pricing_json); } catch { return {}; } })()
+        : show.pack_pricing_json || {};
+
       setFormData({
         title: show.title || '',
         description: show.description || '',
@@ -211,7 +218,10 @@ export default function ShowForm({ show, onSave, onCancel }) {
         is_visible: show.is_visible !== undefined ? show.is_visible : true,
         external_sale: show.external_sale || false,
         external_sale_link: show.external_sale_link || '',
-        palcos_individual_seats: show.palcos_individual_seats || false
+        palcos_individual_seats: show.palcos_individual_seats || false,
+        pack_enabled: show.pack_enabled || false,
+        pack_max_sessions: show.pack_max_sessions || 3,
+        pack_pricing_json: packPricing
       });
 
       setImagePreviews({
@@ -257,6 +267,89 @@ export default function ShowForm({ show, onSave, onCancel }) {
     if (errors[field]) {
       setErrors(prev => ({ ...prev, [field]: null }));
     }
+  };
+
+  const getPackSections = () => {
+    if (formData.venue_type === 'sala_principal') {
+      return ['platea_general', 'palcos_bajos', 'palcos_altos', 'pullman'];
+    }
+    return ['general'];
+  };
+
+  const getSectionLabel = (section) => {
+    const labels = {
+      platea_general: 'Platea General',
+      palcos_bajos: 'Palcos Bajos',
+      palcos_altos: 'Palcos Altos',
+      pullman: 'Pullman',
+      general: 'Entrada General'
+    };
+    return labels[section] || section;
+  };
+
+  const buildDefaultPackPricing = () => {
+    const sections = getPackSections();
+    const pricing = {};
+    const basePrices = {
+      platea_general: Number(formData.platea_general) || 0,
+      palcos_bajos: Number(formData.palcos_bajos) || 0,
+      palcos_altos: Number(formData.palcos_altos) || 0,
+      pullman: Number(formData.pullman) || 0,
+      general: Number(formData.general_price) || 0
+    };
+    for (let depth = 1; depth <= Number(formData.pack_max_sessions); depth++) {
+      const tier = {};
+      for (const section of sections) {
+        // Default: same as base price (no discount); admin can adjust
+        tier[section] = basePrices[section];
+      }
+      pricing[depth] = tier;
+    }
+    return pricing;
+  };
+
+  const handlePackToggle = (enabled) => {
+    setFormData(prev => {
+      const next = { ...prev, pack_enabled: enabled };
+      if (enabled && Object.keys(prev.pack_pricing_json || {}).length === 0) {
+        next.pack_pricing_json = buildDefaultPackPricing();
+      }
+      return next;
+    });
+  };
+
+  const handlePackMaxSessionsChange = (value) => {
+    const max = Math.max(2, Math.min(10, Number(value) || 2));
+    setFormData(prev => {
+      const current = prev.pack_pricing_json || {};
+      const nextPricing = {};
+      const sections = getPackSections();
+      const basePrices = {
+        platea_general: Number(formData.platea_general) || 0,
+        palcos_bajos: Number(formData.palcos_bajos) || 0,
+        palcos_altos: Number(formData.palcos_altos) || 0,
+        pullman: Number(formData.pullman) || 0,
+        general: Number(formData.general_price) || 0
+      };
+      for (let depth = 1; depth <= max; depth++) {
+        nextPricing[depth] = current[depth] || current[String(depth)] || {};
+        for (const section of sections) {
+          if (nextPricing[depth][section] === undefined || nextPricing[depth][section] === '') {
+            nextPricing[depth][section] = basePrices[section];
+          }
+        }
+      }
+      return { ...prev, pack_max_sessions: max, pack_pricing_json: nextPricing };
+    });
+  };
+
+  const handlePackPriceChange = (depth, section, value) => {
+    setFormData(prev => {
+      const pricing = { ...prev.pack_pricing_json };
+      if (!pricing[depth]) pricing[depth] = {};
+      pricing[depth] = { ...pricing[depth], [section]: value === '' ? '' : Number(value) };
+      return { ...prev, pack_pricing_json: pricing };
+    });
   };
 
   const getPreviewUrl = (value) => resolveMediaUrl(value) || '';
@@ -491,6 +584,44 @@ export default function ShowForm({ show, onSave, onCancel }) {
       }
     }
 
+    // Validaciones para pack multi-función
+    if (!formData.external_sale && formData.pack_enabled) {
+      const maxSessions = Number(formData.pack_max_sessions) || 3;
+      if (maxSessions < 2) {
+        newErrors.pack_max_sessions = 'El pack debe permitir al menos 2 funciones';
+      }
+      const sections = formData.venue_type === 'sala_principal'
+        ? ['platea_general', 'palcos_bajos', 'palcos_altos', 'pullman']
+        : ['general'];
+      const pricing = formData.pack_pricing_json || {};
+      for (let depth = 1; depth <= maxSessions; depth++) {
+        const tier = pricing[depth] || pricing[String(depth)];
+        if (!tier) {
+          newErrors[`pack_pricing_${depth}`] = `Faltan precios para el nivel ${depth}`;
+          continue;
+        }
+        for (const section of sections) {
+          const price = tier[section];
+          if (price === undefined || price === '' || Number(price) <= 0) {
+            newErrors[`pack_pricing_${depth}_${section}`] = `Precio inválido para ${getSectionLabel(section)} en nivel ${depth}`;
+          }
+        }
+      }
+      // Monotonía: comprar más funciones no debe aumentar el precio por entrada
+      for (const section of sections) {
+        let previous = null;
+        for (let depth = 1; depth <= maxSessions; depth++) {
+          const tier = pricing[depth] || pricing[String(depth)];
+          if (!tier) continue;
+          const price = Number(tier[section]);
+          if (previous !== null && price > previous) {
+            newErrors[`pack_pricing_monotonic_${section}`] = `El precio de ${getSectionLabel(section)} no puede aumentar al comprar más funciones`;
+          }
+          previous = price;
+        }
+      }
+    }
+
     setErrors(newErrors);
     return Object.keys(newErrors).length === 0;
   };
@@ -524,7 +655,10 @@ export default function ShowForm({ show, onSave, onCancel }) {
       is_visible: formData.is_visible,
       external_sale: formData.external_sale,
       external_sale_link: formData.external_sale ? formData.external_sale_link.trim() : null,
-      palcos_individual_seats: formData.palcos_individual_seats
+      palcos_individual_seats: formData.palcos_individual_seats,
+      pack_enabled: formData.pack_enabled,
+      pack_max_sessions: formData.pack_enabled ? Number(formData.pack_max_sessions) : 3,
+      pack_pricing_json: formData.pack_enabled ? formData.pack_pricing_json : null
     };
 
     console.log('Saving show with producers:', payload.producer_ids);
@@ -919,6 +1053,122 @@ export default function ShowForm({ show, onSave, onCancel }) {
           ) : null}
 
         </div>
+
+        {/* Pack Multi-Función */}
+        {!formData.external_sale && (
+          <div style={{ marginBottom: 24, padding: 16, background: '#f0fdf4', borderRadius: 8, border: '1px solid #bbf7d0' }}>
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 12 }}>
+              <div>
+                <h3 style={{ fontSize: 18, margin: 0 }}>Pack Multi-Función</h3>
+                <p style={{ margin: '4px 0 0 0', fontSize: 13, color: '#166534' }}>
+                  Permití que los espectadores compren entradas para varias funciones del mismo show con descuentos por volumen.
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => handlePackToggle(!formData.pack_enabled)}
+                style={{
+                  width: 56,
+                  height: 28,
+                  borderRadius: 14,
+                  border: 'none',
+                  background: formData.pack_enabled ? '#16a34a' : '#d1d5db',
+                  cursor: 'pointer',
+                  position: 'relative',
+                  transition: 'background 0.3s ease'
+                }}
+              >
+                <div style={{
+                  width: 22,
+                  height: 22,
+                  borderRadius: '50%',
+                  background: '#fff',
+                  position: 'absolute',
+                  top: 3,
+                  left: formData.pack_enabled ? 31 : 3,
+                  transition: 'left 0.3s ease',
+                  boxShadow: '0 1px 3px rgba(0,0,0,0.2)'
+                }} />
+              </button>
+            </div>
+
+            {formData.pack_enabled && (
+              <div style={{ marginTop: 16 }}>
+                <div style={{ marginBottom: 16 }}>
+                  <label style={{ display: 'block', marginBottom: 4, fontWeight: 600 }}>
+                    Máximo de funciones por pack *
+                  </label>
+                  <input
+                    type="number"
+                    min={2}
+                    max={10}
+                    value={formData.pack_max_sessions}
+                    onChange={(e) => handlePackMaxSessionsChange(e.target.value)}
+                    style={{
+                      width: '120px',
+                      padding: 8,
+                      borderRadius: 4,
+                      border: errors.pack_max_sessions ? '1px solid #dc3545' : '1px solid #ccc'
+                    }}
+                  />
+                  {errors.pack_max_sessions && <span style={{ color: '#dc3545', fontSize: 12, display: 'block' }}>{errors.pack_max_sessions}</span>}
+                  <p style={{ margin: '4px 0 0 0', fontSize: 12, color: '#166534' }}>
+                    Cantidad máxima de funciones que se pueden comprar juntas como pack.
+                  </p>
+                </div>
+
+                <div style={{ overflowX: 'auto' }}>
+                  <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 14 }}>
+                    <thead>
+                      <tr style={{ backgroundColor: '#dcfce7' }}>
+                        <th style={{ padding: 10, textAlign: 'left', borderBottom: '2px solid #86efac' }}>Funciones</th>
+                        {getPackSections().map(section => (
+                          <th key={section} style={{ padding: 10, textAlign: 'right', borderBottom: '2px solid #86efac' }}>
+                            {getSectionLabel(section)}
+                          </th>
+                        ))}
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {Array.from({ length: Number(formData.pack_max_sessions) }, (_, i) => i + 1).map(depth => (
+                        <tr key={depth} style={{ backgroundColor: depth % 2 === 0 ? '#f0fdf4' : '#fff' }}>
+                          <td style={{ padding: 10, fontWeight: 600 }}>{depth} función{depth > 1 ? 'es' : ''}</td>
+                          {getPackSections().map(section => (
+                            <td key={section} style={{ padding: 10, textAlign: 'right' }}>
+                              <input
+                                type="number"
+                                min={0}
+                                value={formData.pack_pricing_json?.[depth]?.[section] ?? ''}
+                                onChange={(e) => handlePackPriceChange(depth, section, e.target.value)}
+                                style={{
+                                  width: '90px',
+                                  padding: 6,
+                                  borderRadius: 4,
+                                  border: errors[`pack_pricing_${depth}_${section}`] || errors[`pack_pricing_monotonic_${section}`] ? '1px solid #dc3545' : '1px solid #ccc',
+                                  textAlign: 'right'
+                                }}
+                              />
+                            </td>
+                          ))}
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+
+                {Object.keys(errors).some(k => k.startsWith('pack_pricing')) && (
+                  <p style={{ color: '#dc3545', fontSize: 13, marginTop: 8 }}>
+                    Revisá los precios: todos deben ser mayores a 0 y no pueden aumentar al comprar más funciones.
+                  </p>
+                )}
+
+                <p style={{ margin: '12px 0 0 0', fontSize: 12, color: '#166534' }}>
+                  Los precios se aplican <strong>por entrada</strong> cuando el espectador compra exactamente esa cantidad de funciones.
+                </p>
+              </div>
+            )}
+          </div>
+        )}
 
         {/* Productores - solo si no es venta externa */}
         {!formData.external_sale && (
