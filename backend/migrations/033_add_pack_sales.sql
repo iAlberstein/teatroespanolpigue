@@ -42,4 +42,4 @@ CREATE TABLE IF NOT EXISTS `pack_sales` (
   INDEX `idx_pack_sales_payment_status` (`payment_status`),
   CONSTRAINT `fk_pack_sales_user_id` FOREIGN KEY (`user_id`) REFERENCES `users`(`id`) ON DELETE SET NULL ON UPDATE CASCADE,
   CONSTRAINT `fk_pack_sales_discount_id` FOREIGN KEY (`discount_id`) REFERENCES `discounts`(`id`) ON DELETE SET NULL ON UPDATE CASCADE
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_bin;
