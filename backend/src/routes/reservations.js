@@ -7,15 +7,30 @@ import { getSeatPrice } from '../lib/seatPricing.js';
 
 const router = Router();
 
+async function extendPackExpiration(packId, minutes = 10) {
+  if (!packId) return;
+  const Reservation = sequelize.models.reservations;
+  const newExpiresAt = dayjs().add(minutes, 'minute').toDate();
+  try {
+    await Reservation.update(
+      { expires_at: newExpiresAt },
+      { where: { pack_id: packId, status: 'active' } }
+    );
+  } catch (err) {
+    console.error('[RESERVATIONS] Error extending pack expiration:', err);
+  }
+}
+
 // GET /api/reservations - List reservations with filters
 router.get('/', async (req, res) => {
-  const { user_id, session_id, status } = req.query;
+  const { user_id, session_id, status, pack_id } = req.query;
   const Reservation = sequelize.models.reservations;
 
   const where = {};
   if (user_id) where.user_id = user_id;
   if (session_id) where.session_id = session_id;
   if (status) where.status = status;
+  if (pack_id) where.pack_id = pack_id;
   // Only return non-expired active reservations
   if (status === 'active') {
     where.expires_at = { [Op.gt]: new Date() };
@@ -106,7 +121,7 @@ async function enrichItemsWithPrices(items, session_id) {
 }
 
 router.post('/', optionalAuth, async (req, res) => {
-  const { session_id, user_id: bodyUserId, items } = req.body;
+  const { session_id, user_id: bodyUserId, items, pack_id, service_items } = req.body;
   // Prefer user_id from JWT, fallback to body
   const user_id = req.user?.userId || bodyUserId;
   if (!session_id || !items?.length) return res.status(400).json({ error: 'session_id and items required' });
@@ -191,9 +206,16 @@ router.post('/', optionalAuth, async (req, res) => {
     session_id,
     user_id: uid,
     items: itemsWithPrices,
+    service_items: service_items || null,
+    pack_id: pack_id || null,
     expires_at: dayjs().add(10, 'minute').toDate(),
     status: 'active'
   });
+
+  // Coordinate pack expiration: extend all reservations in the same pack
+  if (pack_id) {
+    await extendPackExpiration(pack_id, 10);
+  }
   try {
     const io = req.app.get('io');
     io.to(`session:${session_id}`).emit('reservation_created', { reservation_id: reservation.id, items: itemsWithPrices });
@@ -291,7 +313,7 @@ router.get('/:id', async (req, res) => {
 });
 
 router.put('/:id', async (req, res) => {
-  const { items } = req.body;
+  const { items, pack_id, service_items } = req.body;
   if (!Array.isArray(items)) return res.status(400).json({ error: 'items array required' });
   const Reservation = sequelize.models.reservations;
   const reservation = await Reservation.findByPk(req.params.id);
@@ -368,7 +390,17 @@ router.put('/:id', async (req, res) => {
   console.log('[RESERVATION PUT] Items received:', JSON.stringify(items, null, 2));
   console.log('[RESERVATION PUT] Items with prices:', JSON.stringify(itemsWithPrices2, null, 2));
   console.log('[RESERVATION PUT] Items count:', itemsWithPrices2.length);
-  await reservation.update({ items: itemsWithPrices2 }); // keep expires_at unchanged
+
+  const updateFields = { items: itemsWithPrices2 };
+  if (service_items !== undefined) updateFields.service_items = service_items || null;
+  if (pack_id !== undefined) updateFields.pack_id = pack_id || null;
+  await reservation.update(updateFields); // keep expires_at unchanged
+
+  // Coordinate pack expiration: if this reservation belongs to a pack, extend all of them
+  const effectivePackId = pack_id !== undefined ? pack_id : reservation.pack_id;
+  if (effectivePackId) {
+    await extendPackExpiration(effectivePackId, 10);
+  }
   
   // Verify what was saved
   const updated = await Reservation.findByPk(reservation.id);

@@ -4,6 +4,7 @@ import { Op } from 'sequelize';
 import { optionalAuth, authenticateToken } from '../middleware/auth.js';
 import dayjs from 'dayjs';
 import crypto from 'crypto';
+import { computePackTicketPrices, calculatePackTotals, parseServiceItems as parsePackServiceItems } from '../lib/packPricing.js';
 
 const router = express.Router();
 import { createSipagoOrder, getSipagoOrder } from '../lib/sipago.js';
@@ -96,6 +97,131 @@ function computeDiscountAmount(items, discount) {
   if (discountAmount > baseSubtotal) discountAmount = baseSubtotal;
   return { discountAmount, discountedTicketCount, baseSubtotal };
 }
+
+// Helper: compute discount amount for pack priced slots.
+// Each priced slot counts as one discounted unit (butaca=1, palco=1 box, pullman/general=1 person).
+function computePackDiscountAmount(pricedSlots, discount) {
+  const dtype = String(discount.type || '').toLowerCase();
+  const dval = Number(discount.value || 0);
+  const effectivePercent = dtype === 'internal' ? 100 : dval;
+  const usageLimit = discount.usage_limit != null ? Number(discount.usage_limit) : null;
+  const usedCount = Number(discount.used_count || 0);
+  const remainingUses = usageLimit != null ? Math.max(0, usageLimit - usedCount) : null;
+  const minSeats = discount.min_seats != null ? Number(discount.min_seats) : null;
+  const maxSeats = discount.max_seats != null ? Number(discount.max_seats) : null;
+
+  const totalSlots = pricedSlots.length;
+  if (minSeats != null && totalSlots < minSeats) return { discountAmount: 0, discountedTicketCount: 0 };
+
+  let discountAmount = 0;
+  let discountedTicketCount = 0;
+
+  if (dtype === 'fixed') {
+    discountAmount = Math.round(dval);
+    discountedTicketCount = 1;
+  } else if (dtype === 'percentage' || dtype === 'internal') {
+    const sortedPrices = [...pricedSlots].map(s => Number(s.finalPrice || 0)).sort((a, b) => b - a);
+    const eligibleCount = remainingUses != null ? Math.min(sortedPrices.length, remainingUses) : sortedPrices.length;
+    const cappedCount = maxSeats != null ? Math.min(eligibleCount, maxSeats) : eligibleCount;
+    const discountableSubtotal = sortedPrices.slice(0, cappedCount).reduce((s, p) => s + p, 0);
+    discountAmount = Math.round(discountableSubtotal * (effectivePercent / 100));
+    discountedTicketCount = cappedCount;
+  }
+
+  const baseSubtotal = pricedSlots.reduce((s, slot) => s + Number(slot.finalPrice || 0), 0);
+  if (discountAmount > baseSubtotal) discountAmount = baseSubtotal;
+  return { discountAmount, discountedTicketCount, baseSubtotal };
+}
+
+// POST /api/payments/pack-preview
+// Returns the authoritative pack breakdown without creating a pack sale or payment order.
+router.post('/pack-preview', optionalAuth, async (req, res) => {
+  try {
+    const { reservation_ids, discount_id } = req.body || {};
+    if (!Array.isArray(reservation_ids) || reservation_ids.length < 2) {
+      return res.status(400).json({ error: 'At least 2 reservations are required for a pack' });
+    }
+    const { reservations: Reservation, sessions: Session, shows: Show, discounts: Discount } = sequelize.models;
+
+    const reservations = await Reservation.findAll({
+      where: { id: { [Op.in]: reservation_ids } },
+      include: [{ model: Session, as: 'session', include: [{ model: Show, as: 'show' }] }]
+    });
+
+    if (reservations.length !== reservation_ids.length) {
+      return res.status(404).json({ error: 'One or more reservations not found' });
+    }
+
+    const now = dayjs();
+    for (const r of reservations) {
+      if (r.status !== 'active' || dayjs(r.expires_at).isBefore(now)) {
+        return res.status(409).json({ error: 'reservation_not_active', reservation_id: r.id });
+      }
+    }
+
+    const showId = reservations[0].session?.show_id;
+    if (!showId || reservations.some(r => r.session?.show_id !== showId)) {
+      return res.status(400).json({ error: 'All reservations must belong to the same show' });
+    }
+
+    const show = reservations[0].session?.show;
+    if (!show?.pack_enabled || !show?.pack_pricing_json) {
+      return res.status(400).json({ error: 'Pack not enabled for this show' });
+    }
+
+    if (reservations.length > show.pack_max_sessions) {
+      return res.status(400).json({ error: 'pack_max_sessions_exceeded', max: show.pack_max_sessions });
+    }
+
+    const itemsBySession = {};
+    const serviceItemsByReservation = [];
+    for (const r of reservations) {
+      const items = Array.isArray(r.items) ? r.items : [];
+      itemsBySession[r.session_id] = items;
+      serviceItemsByReservation.push({ reservation_id: r.id, service_items: parsePackServiceItems(r.service_items) });
+    }
+
+    const packPricing = show.pack_pricing_json;
+    const pricedSlots = computePackTicketPrices(itemsBySession, packPricing, show.pack_max_sessions);
+
+    let discountAmount = 0;
+    let discountedTicketCount = 0;
+    let discount = null;
+    if (discount_id) {
+      discount = await Discount.findByPk(discount_id);
+      if (discount && discount.active !== false) {
+        const result = computePackDiscountAmount(pricedSlots, discount);
+        discountAmount = result.discountAmount;
+        discountedTicketCount = result.discountedTicketCount;
+      }
+    }
+
+    const allServiceItems = serviceItemsByReservation.flatMap(r => r.service_items);
+    const serviceFeePercent = await getServiceFeePercent();
+    const totals = calculatePackTotals(pricedSlots, serviceFeePercent, allServiceItems, discountAmount);
+
+    const slotsBySession = {};
+    for (const slot of pricedSlots) {
+      if (!slotsBySession[slot.session_id]) slotsBySession[slot.session_id] = [];
+      slotsBySession[slot.session_id].push(slot);
+    }
+
+    return res.json({
+      pack_id: null,
+      show_id: showId,
+      pack_size: reservations.length,
+      max_pack_size: show.pack_max_sessions,
+      priced_slots: pricedSlots,
+      slots_by_session: slotsBySession,
+      service_items_by_reservation: serviceItemsByReservation,
+      discount: discount ? { id: discount.id, code: discount.code, amount: discountAmount, discounted_ticket_count: discountedTicketCount } : null,
+      ...totals
+    });
+  } catch (e) {
+    console.error('[PACK_PREVIEW] error', e);
+    return res.status(500).json({ error: 'internal_error', message: e.message });
+  }
+});
 
 // Crear intención de pago Sipago
 // Body: { reservation_id: string, discount_id?: string, customer_name?, customer_email?, customer_phone?, customer_dni?, customer_provincia?, customer_localidad? }

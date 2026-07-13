@@ -160,6 +160,52 @@ const sanitizeImagePath = (value) => {
   return value.startsWith('/media/showsimg/') ? value : null;
 };
 
+const VALID_PACK_SECTIONS = {
+  sala_principal: ['platea_general', 'palcos_bajos', 'palcos_altos', 'pullman'],
+  el_tablado: ['general'],
+  las_gemelas: ['general']
+};
+
+function validatePackPricing(packEnabled, packPricingJson, packMaxSessions, venueType) {
+  if (!packEnabled) return null;
+
+  const maxSessions = Math.max(1, Math.min(10, Number(packMaxSessions) || 3));
+
+  if (!packPricingJson || typeof packPricingJson !== 'object' || Array.isArray(packPricingJson)) {
+    return { error: 'pack_pricing_required', message: 'Si el pack está habilitado debe enviar pack_pricing_json' };
+  }
+
+  const allowedSections = VALID_PACK_SECTIONS[venueType || 'sala_principal'];
+
+  for (let depth = 1; depth <= maxSessions; depth++) {
+    const tier = packPricingJson[depth] || packPricingJson[String(depth)];
+    if (!tier || typeof tier !== 'object') {
+      return { error: 'pack_pricing_missing_depth', message: `Falta el nivel ${depth} en pack_pricing_json` };
+    }
+    for (const section of allowedSections) {
+      const price = tier[section];
+      if (price === undefined || price === null || isNaN(Number(price)) || Number(price) <= 0) {
+        return { error: 'pack_pricing_invalid', message: `Precio inválido para ${section} en nivel ${depth}` };
+      }
+    }
+  }
+
+  // Monotonía descendente: comprar más funciones no debe ser más caro por entrada
+  for (const section of allowedSections) {
+    let previous = null;
+    for (let depth = 1; depth <= maxSessions; depth++) {
+      const tier = packPricingJson[depth] || packPricingJson[String(depth)];
+      const price = Number(tier[section]);
+      if (previous !== null && price > previous) {
+        return { error: 'pack_pricing_not_monotonic', message: `El precio de ${section} no puede aumentar al comprar más funciones` };
+      }
+      previous = price;
+    }
+  }
+
+  return null;
+}
+
 // Upload image for show
 router.post('/upload-image', authenticateToken, requireRole('admin', 'productor'), (req, res) => {
   console.log('[SHOWS] Upload image request received, user:', req.user);
@@ -317,10 +363,13 @@ router.post('/', authenticateToken, requireRole('admin'), async (req, res) => {
       is_visible,
       external_sale,
       external_sale_link,
-      palcos_individual_seats
+      palcos_individual_seats,
+      pack_enabled,
+      pack_pricing_json,
+      pack_max_sessions
     } = req.body;
     
-    console.log('[SHOWS] Creating show with data:', { title, venue_type, general_capacity, pricing_json, producer_ids, is_visible, external_sale, palcos_individual_seats });
+    console.log('[SHOWS] Creating show with data:', { title, venue_type, general_capacity, pricing_json, producer_ids, is_visible, external_sale, palcos_individual_seats, pack_enabled, pack_max_sessions });
     
     if (!title || !title.trim()) {
       return res.status(400).json({ error: 'title_required', message: 'El título es obligatorio' });
@@ -333,6 +382,9 @@ router.post('/', authenticateToken, requireRole('admin'), async (req, res) => {
         message: 'Los precios son obligatorios' 
       });
     }
+
+    const packValidation = validatePackPricing(pack_enabled, pack_pricing_json, pack_max_sessions, venue_type);
+    if (packValidation) return res.status(400).json(packValidation);
     
     // Validate external_sale_link if external_sale is true
     if (external_sale && (!external_sale_link || !external_sale_link.trim())) {
@@ -360,6 +412,9 @@ router.post('/', authenticateToken, requireRole('admin'), async (req, res) => {
       external_sale: external_sale || false,
       external_sale_link: external_sale ? external_sale_link?.trim() : null,
       palcos_individual_seats: palcos_individual_seats || false,
+      pack_enabled: pack_enabled === true,
+      pack_pricing_json: pack_enabled ? pack_pricing_json : null,
+      pack_max_sessions: pack_enabled ? (Math.max(1, Math.min(10, Number(pack_max_sessions) || 3))) : 3,
       ...sanitizedImages
     });
     
@@ -426,7 +481,10 @@ router.put('/:id', authenticateToken, requireRole('admin'), async (req, res) => 
       is_visible,
       external_sale,
       external_sale_link,
-      palcos_individual_seats
+      palcos_individual_seats,
+      pack_enabled,
+      pack_pricing_json,
+      pack_max_sessions
     } = req.body;
     
     if (!title || !title.trim()) {
@@ -440,6 +498,10 @@ router.put('/:id', authenticateToken, requireRole('admin'), async (req, res) => 
         message: 'El link de venta externa es obligatorio cuando se usa venta por terceros' 
       });
     }
+
+    const finalVenueType = venue_type || show.venue_type;
+    const packValidation = validatePackPricing(pack_enabled, pack_pricing_json, pack_max_sessions, finalVenueType);
+    if (packValidation) return res.status(400).json(packValidation);
     
     const sanitizedImages = {
       image_url: sanitizeImagePath(image_url?.trim()) ?? show.image_url,
@@ -470,6 +532,11 @@ router.put('/:id', authenticateToken, requireRole('admin'), async (req, res) => 
       external_sale: external_sale !== undefined ? external_sale : show.external_sale,
       external_sale_link: external_sale ? external_sale_link?.trim() : null,
       palcos_individual_seats: palcos_individual_seats !== undefined ? palcos_individual_seats : show.palcos_individual_seats,
+      pack_enabled: pack_enabled !== undefined ? pack_enabled === true : show.pack_enabled,
+      pack_pricing_json: pack_enabled === true ? pack_pricing_json : (pack_enabled === false ? null : show.pack_pricing_json),
+      pack_max_sessions: pack_enabled !== undefined && pack_enabled === true
+        ? Math.max(1, Math.min(10, Number(pack_max_sessions) || 3))
+        : (pack_enabled === false ? 3 : show.pack_max_sessions),
       ...sanitizedImages
     });
     

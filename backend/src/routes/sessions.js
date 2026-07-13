@@ -88,6 +88,16 @@ router.get('/:id/availability', async (req, res) => {
       if (!pricing && session.show) {
         pricing = parsePricing(session.show.pricing_json);
       }
+
+      // Pack pricing preview: if pack_size is requested and show has pack enabled
+      const packSize = req.query.pack_size;
+      if (packSize && session.show?.pack_enabled && session.show?.pack_pricing_json) {
+        const packPricing = parsePricing(session.show.pack_pricing_json);
+        const tier = packPricing?.[packSize] || packPricing?.[String(packSize)];
+        if (tier) {
+          pricing = { ...pricing, ...tier, _pack_preview: true, _pack_size: Number(packSize) };
+        }
+      }
     }
     
     if (!pricing) {
