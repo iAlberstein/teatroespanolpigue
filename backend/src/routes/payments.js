@@ -2211,4 +2211,405 @@ router.post('/free-emission', optionalAuth, async (req, res) => {
   }
 });
 
+// Webhook Sipago para packs de funciones
+router.post('/sipago-pack-webhook', async (req, res) => {
+  console.log('[SIPAGO_PACK_WEBHOOK] 🔔 Received webhook call');
+  try {
+    const secret = req.query?.secret || req.body?.secret;
+    if (process.env.SIPAGO_WEBHOOK_SECRET && secret !== process.env.SIPAGO_WEBHOOK_SECRET) {
+      console.warn('[SIPAGO_PACK_WEBHOOK] invalid secret');
+      return res.status(200).json({ ignored: true });
+    }
+
+    const packId = req.query?.pack_id || req.body?.pack_id;
+    if (!packId) {
+      console.warn('[SIPAGO_PACK_WEBHOOK] missing pack_id');
+      return res.status(200).json({ ignored: true });
+    }
+
+    const result = await finalizePackPayment({ packId, paymentStatusSource: req.body, reqBody: req.body, io: req.app.get('io') });
+    return res.status(200).json(result);
+  } catch (e) {
+    console.error('[SIPAGO_PACK_WEBHOOK] unexpected error', e);
+    return res.status(200).json({ ok: false, error: e.message });
+  }
+});
+
+// Confirm purchase fallback for packs (called from frontend success page)
+router.post('/sipago-pack-confirm', optionalAuth, async (req, res) => {
+  console.log('[SIPAGO_PACK_CONFIRM] 📋 Confirm endpoint called for pack');
+  try {
+    const { pack_id, order_uuid } = req.body || {};
+    if (!pack_id) return res.status(400).json({ error: 'pack_id required' });
+
+    const { pack_sales: PackSale } = sequelize.models;
+    const packSale = await PackSale.findByPk(pack_id);
+    if (!packSale) return res.status(404).json({ error: 'pack_not_found' });
+
+    // If we have order_uuid, verify with Sipago that it's SUCCESS
+    if (order_uuid) {
+      try {
+        const order = await getSipagoOrder(order_uuid);
+        const status = (order?.data?.order?.status || '').toString().toUpperCase();
+        if (status !== 'SUCCESS') {
+          return res.status(409).json({ error: 'order_not_success', status });
+        }
+      } catch (err) {
+        console.warn('[SIPAGO_PACK_CONFIRM] Could not verify order status:', err?.message || err);
+      }
+    }
+
+    const result = await finalizePackPayment({ packId: pack_id, paymentStatusSource: {}, reqBody: req.body, io: req.app.get('io') });
+    return res.json(result);
+  } catch (e) {
+    console.error('[SIPAGO_PACK_CONFIRM] ❌ ERROR:', e);
+    return res.status(500).json({ error: 'internal_error', message: e.message });
+  }
+});
+
+// Free pack emission: emit pack tickets when total is $0 (courtesy via 100% discount)
+router.post('/free-pack-emission', optionalAuth, async (req, res) => {
+  console.log('[FREE_PACK_EMISSION] 🎫 Free pack emission endpoint called');
+  try {
+    const { pack_id } = req.body || {};
+    if (!pack_id) return res.status(400).json({ error: 'pack_id required' });
+
+    const { pack_sales: PackSale } = sequelize.models;
+    const packSale = await PackSale.findByPk(pack_id);
+    if (!packSale) return res.status(404).json({ error: 'pack_not_found' });
+    if (Number(packSale.total_amount || 0) !== 0) {
+      return res.status(400).json({ error: 'total_not_zero', message: 'El total del pack debe ser $0 para emisión gratuita', total: packSale.total_amount });
+    }
+
+    const result = await finalizePackPayment({ packId: pack_id, paymentStatusSource: {}, reqBody: req.body, io: req.app.get('io') });
+    return res.json(result);
+  } catch (e) {
+    console.error('[FREE_PACK_EMISSION] ❌ ERROR:', e);
+    return res.status(500).json({ error: 'internal_error', message: e.message });
+  }
+});
+
+// =====================================================
+// PACK HELPERS
+// =====================================================
+
+async function emitPackPurchaseEvents(io, reservations, itemsByReservation) {
+  io.soldSeats = io.soldSeats || new Map();
+  io.soldPalcos = io.soldPalcos || new Map();
+  io.pullmanSold = io.pullmanSold || new Map();
+
+  for (const reservation of reservations) {
+    const items = itemsByReservation[reservation.id] || [];
+    const sessionId = reservation.session_id;
+    const seatSet = io.soldSeats.get(sessionId) || new Set();
+    const palcoSet = io.soldPalcos.get(sessionId) || new Set();
+    let pullmanCount = io.pullmanSold.get(sessionId) || 0;
+    let generalCount = 0;
+
+    for (const it of items) {
+      if (it.type === 'butaca' && it.seat_code) seatSet.add(it.seat_code);
+      if (it.type === 'palco' && it.seat_code) palcoSet.add(it.seat_code);
+      if (it.type === 'pullman' && it.quantity > 0) pullmanCount += Number(it.quantity) || 0;
+      if (it.type === 'general' && it.quantity > 0) generalCount += Number(it.quantity) || 0;
+    }
+    io.soldSeats.set(sessionId, seatSet);
+    io.soldPalcos.set(sessionId, palcoSet);
+    io.pullmanSold.set(sessionId, pullmanCount);
+
+    for (const it of items) {
+      if (it.type === 'butaca' && it.seat_code) io.to(`session:${sessionId}`).emit('seat_sold', { seatId: it.seat_code });
+      if (it.type === 'palco' && it.seat_code) io.to(`session:${sessionId}`).emit('palco_sold', { palco: it.seat_code });
+      if (it.type === 'pullman' && it.quantity > 0) io.to(`session:${sessionId}`).emit('pullman_sold', { sold: Number(it.quantity) || 0 });
+    }
+
+    if (generalCount > 0) {
+      const { sessions: Session, shows: Show, tickets: Ticket } = sequelize.models;
+      const session = await Session.findByPk(sessionId, { include: [{ model: Show, as: 'show' }] });
+      if (session && session.show) {
+        const capacity = session.capacity_override || session.show.general_capacity;
+        const soldCount = await Ticket.count({ where: { session_id: sessionId, type: 'general', status: { [Op.in]: ['sold', 'validated'] } } });
+        const available = Math.max(0, capacity - soldCount);
+        io.to(`session:${sessionId}`).emit('general-admission-update', { sessionId, sold: soldCount, available });
+      }
+    }
+    io.to(`session:${sessionId}`).emit('purchase_confirmed', { reservation_id: reservation.id });
+  }
+}
+
+async function createTicketsFromPricedSlots(pricedSlots, { sessionId, saleId, userId, transaction }) {
+  const { generateIndividualQR } = await import('../lib/qrGenerator.js');
+  const createdTickets = [];
+  for (const slot of pricedSlots) {
+    const t = await sequelize.models.tickets.create({
+      session_id: sessionId,
+      sale_id: saleId,
+      user_id: userId,
+      seat_code: slot.seat_code || null,
+      section: slot.section,
+      type: slot.type,
+      price: Number(slot.finalPrice || 0),
+      qr_code: null,
+      status: 'sold',
+      capacity: slot.capacity || 1,
+      capacity_validated: 0
+    });
+    const { qr_code, qr_data } = await generateIndividualQR(t.id, slot.seat_code || null, slot.type);
+    await t.update({ qr_code, qr_data }, { transaction });
+    createdTickets.push(t);
+  }
+  return createdTickets;
+}
+
+async function createServiceTickets(serviceItems, { sessionId, saleId, userId, transaction }) {
+  if (!serviceItems?.length) return [];
+  const { generateIndividualQR } = await import('../lib/qrGenerator.js');
+  const createdTickets = [];
+  for (const svc of serviceItems) {
+    const svcT = await sequelize.models.tickets.create({
+      session_id: sessionId,
+      sale_id: saleId,
+      user_id: userId,
+      seat_code: svc.name,
+      section: 'service',
+      type: 'service',
+      price: Number(svc.price || 0),
+      qr_code: null,
+      status: 'sold',
+      capacity: Number(svc.quantity || 1),
+      capacity_validated: 0
+    });
+    const { qr_code: sQr, qr_data: sQd } = await generateIndividualQR(svcT.id, svc.name, 'service');
+    await svcT.update({ qr_code: sQr, qr_data: sQd }, { transaction });
+    createdTickets.push(svcT);
+  }
+  return createdTickets;
+}
+
+function getServiceItemsForReservation(reservation, packSaleServiceItems, reservationSubtotal, packSubtotal) {
+  const reservationServices = parsePackServiceItems(reservation.service_items);
+  if (reservationServices.length > 0) return reservationServices;
+  if (!packSaleServiceItems?.length || !packSubtotal) return [];
+  // Distribute pack services proportionally by ticket subtotal
+  return packSaleServiceItems.map(s => ({
+    ...s,
+    quantity: Math.round(Number(s.quantity || 1) * (reservationSubtotal / packSubtotal)),
+    price: Number(s.price || 0)
+  })).filter(s => s.quantity > 0);
+}
+
+async function sendPackConfirmationEmail({ reservation, sale, tickets, customerEmail, customerName, discountCode, discountAmount, serviceFeeAmount, servicesSubtotal, serviceItems }) {
+  try {
+    const { formatDateLong, formatTime } = await import('../lib/dateFormatter.js');
+    const { sendPurchaseConfirmation } = await import('../lib/emailService.js');
+    const { formatSeatLocation } = await import('../lib/seatFormatter.js');
+    const { sessions: Session, shows: Show, discounts: Discount } = sequelize.models;
+
+    const session = await Session.findByPk(reservation.session_id, { include: [{ model: Show, as: 'show' }] });
+    if (!session || !customerEmail) return;
+
+    const serviceFeePercent = await getServiceFeePercent();
+    const regularTickets = tickets.filter(t => t.type !== 'service');
+    const ticketsSubtotal = regularTickets.reduce((sum, t) => sum + Number(t.price || 0), 0);
+
+    const formattedTickets = tickets.map(t => ({
+      ...(t.get ? t.get({ plain: true }) : t),
+      location: formatSeatLocation(t.type, t.section, t.seat_code, t.capacity || 1)
+    }));
+
+    await sendPurchaseConfirmation({
+      customerEmail,
+      customerName: customerName || sale.customer_name || 'Cliente',
+      showTitle: session.show.title,
+      sessionDate: formatDateLong(session.starts_at),
+      sessionTime: formatTime(session.starts_at),
+      tickets: formattedTickets,
+      saleId: sale.id,
+      totalAmount: sale.total_amount,
+      paymentMethod: sale.payment_method || 'card',
+      subtotal: ticketsSubtotal,
+      discountCode,
+      discountAmount: discountAmount > 0 ? discountAmount : null,
+      serviceFeePercent,
+      serviceFeeAmount,
+      serviceItems,
+      servicesSubtotal
+    });
+    console.log('[PACK_EMAIL] Sent confirmation for sale:', sale.id);
+  } catch (emailErr) {
+    console.error('[PACK_EMAIL] Error:', emailErr);
+  }
+}
+
+async function finalizePackPayment({ packId, paymentStatusSource, reqBody, io }) {
+  const { reservations: Reservation, pack_sales: PackSale, sales: Sale, discounts: Discount, users: User } = sequelize.models;
+
+  const packSale = await PackSale.findByPk(packId);
+  if (!packSale) throw new Error('pack_sale_not_found');
+
+  const orderStatus = (paymentStatusSource?.data?.order?.status || '').toString().toUpperCase();
+  if (orderStatus && orderStatus !== 'SUCCESS') {
+    return { ok: true, status: orderStatus };
+  }
+
+  // Idempotency: if pack already approved, return success
+  if (packSale.payment_status === 'approved') {
+    const existingSales = await Sale.findAll({ where: { pack_sale_id: packId } });
+    return { ok: true, already_confirmed: true, sales: existingSales.map(s => s.id) };
+  }
+
+  const reservations = await Reservation.findAll({
+    where: { pack_id: packId },
+    include: [{ model: sequelize.models.sessions, as: 'session', include: [{ model: sequelize.models.shows, as: 'show' }] }]
+  });
+
+  if (!reservations.length) throw new Error('no_reservations_for_pack');
+
+  // Pre-validate reservations are still active
+  const now = dayjs();
+  for (const r of reservations) {
+    if (r.status === 'confirmed' && r.sale_id) continue;
+    if (r.status !== 'active' || dayjs(r.expires_at).isBefore(now)) {
+      throw new Error(`reservation_not_active:${r.id}`);
+    }
+  }
+
+  // Compute priced slots
+  const itemsBySession = {};
+  const itemsByReservation = {};
+  for (const r of reservations) {
+    itemsBySession[r.session_id] = Array.isArray(r.items) ? r.items : [];
+    itemsByReservation[r.id] = Array.isArray(r.items) ? r.items : [];
+  }
+  const show = reservations[0].session?.show;
+  const pricedSlots = computePackTicketPrices(itemsBySession, show.pack_pricing_json, show.pack_max_sessions);
+
+  const packSubtotal = pricedSlots.reduce((s, slot) => s + Number(slot.finalPrice || 0), 0);
+  const packDiscountAmount = Number(packSale.discount_amount || 0);
+  const packServiceFeePercent = Number(packSale.service_fee_percent || 0);
+  const packServiceItems = parsePackServiceItems(packSale.service_items);
+
+  // Determine final user
+  let finalUserId = packSale.user_id || reservations[0].user_id || null;
+  if (finalUserId) {
+    const exists = await User.findByPk(finalUserId);
+    if (!exists) finalUserId = null;
+  }
+  if (!finalUserId && packSale.customer_dni) {
+    const existingUser = await User.findOne({ where: { dni: packSale.customer_dni } });
+    if (existingUser) {
+      finalUserId = existingUser.id;
+      await packSale.update({ user_id: finalUserId });
+    }
+  }
+
+  const createdSales = [];
+  const allCreatedTickets = [];
+
+  await sequelize.transaction(async (t) => {
+    for (const reservation of reservations) {
+      // Idempotency per reservation within transaction
+      const freshReservation = await Reservation.findByPk(reservation.id, { transaction: t, lock: t.LOCK.UPDATE });
+      if (freshReservation.status === 'confirmed' && freshReservation.sale_id) {
+        continue;
+      }
+
+      const slots = pricedSlots.filter(s => s.session_id === reservation.session_id);
+      const reservationSubtotal = slots.reduce((s, slot) => s + Number(slot.finalPrice || 0), 0);
+      if (reservationSubtotal === 0 && !slots.length) continue;
+
+      // Proportional discount
+      let reservationDiscount = 0;
+      if (packSubtotal > 0 && packDiscountAmount > 0) {
+        reservationDiscount = Math.round(packDiscountAmount * (reservationSubtotal / packSubtotal));
+      }
+
+      // Service items for this function
+      const reservationServiceItems = getServiceItemsForReservation(reservation, packServiceItems, reservationSubtotal, packSubtotal);
+      const servicesSubtotal = reservationServiceItems.reduce((sum, s) => sum + (Number(s.price || 0) * Number(s.quantity || 1)), 0);
+
+      // Service fee per function (Option A)
+      const serviceFeeAmount = Math.round((reservationSubtotal - reservationDiscount + servicesSubtotal) * (packServiceFeePercent / 100));
+      const totalAmount = reservationSubtotal - reservationDiscount + serviceFeeAmount + servicesSubtotal;
+
+      const saleId = crypto.randomUUID();
+      const { generateContainerQR } = await import('../lib/qrGenerator.js');
+      const containerQR = await generateContainerQR(saleId, itemsByReservation[reservation.id]);
+
+      const sale = await Sale.create({
+        id: saleId,
+        session_id: reservation.session_id,
+        pack_sale_id: packId,
+        user_id: finalUserId,
+        cashier_id: null,
+        payment_method: 'card',
+        discount_id: packSale.discount_id || null,
+        total_amount: totalAmount,
+        customer_name: packSale.customer_name,
+        customer_email: packSale.customer_email,
+        customer_phone: packSale.customer_phone,
+        customer_dni: packSale.customer_dni,
+        customer_provincia: packSale.customer_provincia,
+        customer_localidad: packSale.customer_localidad,
+        container_qr_code: containerQR.qr_code,
+        container_qr_data: containerQR.qr_data,
+        validated_count: 0,
+        total_capacity: containerQR.total_capacity,
+        service_items: reservationServiceItems.length > 0 ? reservationServiceItems : null
+      }, { transaction: t });
+
+      const tickets = await createTicketsFromPricedSlots(slots, { sessionId: reservation.session_id, saleId: sale.id, userId: finalUserId, transaction: t });
+      const serviceTickets = await createServiceTickets(reservationServiceItems, { sessionId: reservation.session_id, saleId: sale.id, userId: finalUserId, transaction: t });
+
+      await reservation.update({ status: 'confirmed', sale_id: sale.id }, { transaction: t });
+
+      createdSales.push({ sale, tickets: [...tickets, ...serviceTickets], reservationDiscount, serviceFeeAmount, servicesSubtotal, reservationServiceItems });
+      allCreatedTickets.push(...tickets, ...serviceTickets);
+    }
+
+    await packSale.update({ payment_status: 'approved' }, { transaction: t });
+  });
+
+  // Increment discount used_count once per pack
+  if (packSale.discount_id) {
+    try {
+      const discount = await Discount.findByPk(packSale.discount_id);
+      if (discount) await discount.increment('used_count', { by: packSale.metadata?.discounted_ticket_count || 1 });
+    } catch {}
+  }
+
+  // Update user_id on pack_sale if resolved
+  if (finalUserId && !packSale.user_id) {
+    try { await packSale.update({ user_id: finalUserId }); } catch {}
+  }
+
+  // Socket events
+  try {
+    if (io) await emitPackPurchaseEvents(io, reservations, itemsByReservation);
+  } catch (ioErr) {
+    console.warn('[PACK_WEBHOOK] Socket error (non-critical):', ioErr.message);
+  }
+
+  // Emails
+  const emailToSend = packSale.customer_email || (finalUserId ? (await User.findByPk(finalUserId))?.email : null);
+  const nameToSend = packSale.customer_name || (finalUserId ? (await User.findByPk(finalUserId))?.name : null);
+  const discountCode = packSale.discount_id ? (await Discount.findByPk(packSale.discount_id))?.alias || (await Discount.findByPk(packSale.discount_id))?.code : null;
+
+  for (const created of createdSales) {
+    await sendPackConfirmationEmail({
+      reservation: created.sale.pack_sale_id ? reservations.find(r => r.session_id === created.sale.session_id) : reservations[0],
+      sale: created.sale,
+      tickets: created.tickets,
+      customerEmail: emailToSend,
+      customerName: nameToSend,
+      discountCode,
+      discountAmount: created.reservationDiscount,
+      serviceFeeAmount: created.serviceFeeAmount,
+      servicesSubtotal: created.servicesSubtotal,
+      serviceItems: created.reservationServiceItems
+    });
+  }
+
+  return { ok: true, sales: createdSales.map(c => c.sale.id) };
+}
+
 export default router;
