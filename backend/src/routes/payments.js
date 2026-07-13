@@ -327,6 +327,178 @@ router.post('/sipago-intent', optionalAuth, async (req, res) => {
   }
 });
 
+// Crear intención de pago Sipago para un pack de funciones
+// Body: { reservation_ids: string[], discount_id?: string, service_items?: array, customer_name?, customer_email?, customer_phone?, customer_dni?, customer_provincia?, customer_localidad? }
+router.post('/sipago-pack-intent', optionalAuth, async (req, res) => {
+  try {
+    const {
+      reservation_ids,
+      discount_id,
+      customer_name,
+      customer_email,
+      customer_phone,
+      customer_dni,
+      customer_provincia,
+      customer_localidad,
+      service_items
+    } = req.body || {};
+
+    if (!Array.isArray(reservation_ids) || reservation_ids.length < 2) {
+      return res.status(400).json({ error: 'At least 2 reservations are required for a pack' });
+    }
+
+    const { reservations: Reservation, sessions: Session, shows: Show, discounts: Discount, pack_sales: PackSale } = sequelize.models;
+
+    const reservations = await Reservation.findAll({
+      where: { id: { [Op.in]: reservation_ids } },
+      include: [{ model: Session, as: 'session', include: [{ model: Show, as: 'show' }] }]
+    });
+
+    if (reservations.length !== reservation_ids.length) {
+      return res.status(404).json({ error: 'One or more reservations not found' });
+    }
+
+    const now = dayjs();
+    for (const r of reservations) {
+      if (r.status !== 'active' || dayjs(r.expires_at).isBefore(now)) {
+        return res.status(409).json({ error: 'reservation_not_active', reservation_id: r.id });
+      }
+    }
+
+    const showId = reservations[0].session?.show_id;
+    if (!showId || reservations.some(r => r.session?.show_id !== showId)) {
+      return res.status(400).json({ error: 'All reservations must belong to the same show' });
+    }
+
+    const show = reservations[0].session?.show;
+    if (!show?.pack_enabled || !show?.pack_pricing_json) {
+      return res.status(400).json({ error: 'Pack not enabled for this show' });
+    }
+
+    if (reservations.length > show.pack_max_sessions) {
+      return res.status(400).json({ error: 'pack_max_sessions_exceeded', max: show.pack_max_sessions });
+    }
+
+    // Generate pack_id and assign to all reservations
+    const packId = crypto.randomUUID();
+    await Reservation.update(
+      { pack_id: packId },
+      { where: { id: { [Op.in]: reservation_ids } } }
+    );
+
+    // Recalculate expiration for all reservations in the pack
+    const newExpiresAt = dayjs().add(15, 'minute').toDate();
+    await Reservation.update(
+      { expires_at: newExpiresAt },
+      { where: { pack_id: packId, status: 'active' } }
+    );
+
+    // Compute pack pricing
+    const itemsBySession = {};
+    const serviceItemsByReservation = [];
+    for (const r of reservations) {
+      itemsBySession[r.session_id] = Array.isArray(r.items) ? r.items : [];
+      serviceItemsByReservation.push({ reservation_id: r.id, service_items: parsePackServiceItems(r.service_items) });
+    }
+
+    const packPricing = show.pack_pricing_json;
+    const pricedSlots = computePackTicketPrices(itemsBySession, packPricing, show.pack_max_sessions);
+
+    let discountAmount = 0;
+    let discountedTicketCount = 0;
+    let discount = null;
+    if (discount_id) {
+      discount = await Discount.findByPk(discount_id);
+      if (discount && discount.active !== false) {
+        const result = computePackDiscountAmount(pricedSlots, discount);
+        discountAmount = result.discountAmount;
+        discountedTicketCount = result.discountedTicketCount;
+      }
+    }
+
+    const validServiceItems = Array.isArray(service_items)
+      ? service_items.filter(s => s && s.service_id && Number(s.quantity) > 0)
+      : serviceItemsByReservation.flatMap(r => r.service_items);
+    const servicesSubtotal = validServiceItems.reduce((sum, s) => sum + (Number(s.price || 0) * Number(s.quantity || 1)), 0);
+    const serviceFeePercent = await getServiceFeePercent();
+    const subtotalAfterDiscount = pricedSlots.reduce((s, slot) => s + Number(slot.finalPrice || 0), 0) - discountAmount;
+    const serviceFeeAmount = Math.round((subtotalAfterDiscount + servicesSubtotal) * (serviceFeePercent / 100));
+    const total = subtotalAfterDiscount + serviceFeeAmount + servicesSubtotal;
+
+    if (!total || total <= 0) {
+      return res.status(400).json({ error: 'invalid_total' });
+    }
+
+    // Save pack sale record
+    const packSale = await PackSale.create({
+      id: packId,
+      user_id: req.user?.userId || reservations[0].user_id || null,
+      discount_id: discount_id || null,
+      payment_method: 'card',
+      payment_status: 'pending',
+      subtotal: pricedSlots.reduce((s, slot) => s + Number(slot.finalPrice || 0), 0),
+      discount_amount: discountAmount,
+      service_fee_percent: serviceFeePercent,
+      service_fee_amount: serviceFeeAmount,
+      services_subtotal: servicesSubtotal,
+      total_amount: total,
+      service_items: validServiceItems.length > 0 ? validServiceItems : null,
+      customer_name: customer_name || null,
+      customer_email: customer_email || null,
+      customer_phone: customer_phone || null,
+      customer_dni: customer_dni || null,
+      customer_provincia: customer_provincia || null,
+      customer_localidad: customer_localidad || null,
+      metadata: { reservation_ids, discounted_ticket_count: discountedTicketCount }
+    });
+
+    // Build Sipago order
+    const totalCentavos = Math.round(total * 100);
+    const sipagoItems = [{
+      id: `pack_${packId}`,
+      name: `${show.title || 'Teatro'} - Pack ${reservations.length} funciones`,
+      unitPrice: { currency: '032', amount: totalCentavos },
+      quantity: 1
+    }];
+
+    const FRONTEND_URL = process.env.FRONTEND_URL || 'http://localhost:5173';
+    const BASE_URL = process.env.BASE_URL || 'http://localhost:4000';
+    const reqOrigin = req.headers.origin || '';
+    const APP_URL = process.env.APP_URL || reqOrigin || FRONTEND_URL;
+    const redirectBaseSuccess = new URL(`${APP_URL}/sipago/success`);
+    redirectBaseSuccess.searchParams.set('pack_id', packId);
+    if (discount_id) redirectBaseSuccess.searchParams.set('discount_id', String(discount_id));
+    const redirectBaseFailure = new URL(`${APP_URL}/sipago/failure`);
+    redirectBaseFailure.searchParams.set('pack_id', packId);
+    if (discount_id) redirectBaseFailure.searchParams.set('discount_id', String(discount_id));
+    const redirect_urls = {
+      success: redirectBaseSuccess.toString(),
+      failed: redirectBaseFailure.toString()
+    };
+
+    const hookParams = new URLSearchParams({ pack_id: packId });
+    if (process.env.SIPAGO_WEBHOOK_SECRET) hookParams.set('secret', process.env.SIPAGO_WEBHOOK_SECRET);
+    const webhookUrl = `${BASE_URL}/api/payments/sipago-pack-webhook?${hookParams.toString()}`;
+    console.log('[SIPAGO_PACK_INTENT] Webhook URL:', webhookUrl);
+
+    const order = await createSipagoOrder({ total: totalCentavos, redirect_urls, items: sipagoItems, webhookUrl });
+    const checkoutUrl = order?.data?.attributes?.links?.checkout || order?.data?.links?.checkout;
+    if (!checkoutUrl) {
+      await packSale.update({ payment_status: 'rejected' });
+      return res.status(500).json({ error: 'sipago_checkout_missing', debug: order });
+    }
+
+    // Store Sipago order id if available
+    const sipagoOrderId = order?.data?.id || order?.data?.attributes?.id || null;
+    if (sipagoOrderId) await packSale.update({ sipago_order_id: String(sipagoOrderId) });
+
+    return res.json({ checkout_url: checkoutUrl, pack_id: packId, order });
+  } catch (e) {
+    console.error('[SIPAGO_PACK_INTENT] error', e);
+    return res.status(500).json({ error: 'internal_error', message: e.message });
+  }
+});
+
 
 // Webhook Sipago: recibe notificaciones del estado de la orden
 router.post('/sipago-webhook', async (req, res) => {
