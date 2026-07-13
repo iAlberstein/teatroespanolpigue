@@ -1,5 +1,7 @@
 # Propuesta de Implementación: Venta Pack Multi-Función
 
+> **Estado de snapshot Git**: Antes de modificar este documento se realizó un commit con el mensaje `Foto previa a refactor de propuesta de pack de funciones`. Cualquier refactor posterior puede revertirse a ese punto.
+
 ## 1. Resumen ejecutivo
 
 Permitir que un espectador compre entradas para **1, 2 o 3 funciones** de un mismo show en una sola compra, con un **precio por entrada que depende de cuántas funciones la incluyan** y con **un solo cargo por servicio** para todo el pack.
@@ -55,7 +57,7 @@ La arquitectura actual es **sesión-centric**:
 | Palcos | Precio **por palco** (no por persona) | Consistente con `Ticket.price` y `Ticket.capacity` actuales. |
 | Cargo por servicio | **Una vez** sobre `(subtotal tickets - descuento cupón + servicios)` | Requisito explícito. |
 | Cupones de descuento | Aplican **después** del precio pack, sobre el total del pack | Mantiene separados los conceptos de precio pack y descuento promocional. |
-| Servicios adicionales | **A nivel pack** (opcional) | Simplifica la lógica. Se pueden agregar por sesión en una versión futura. |
+| Servicios adicionales | **Por función** | Decisión del cliente: los servicios se eligen y facturan por cada función del pack. |
 | Emails | **Un email por función** con resumen del pack en cada uno | Cada función tiene su QR. El cliente ve el total pack y el subtotal de esa función. |
 | Pagos | **Una única orden Sipago** por el total del pack | No se cobra por sesión. |
 
@@ -95,11 +97,15 @@ ALTER TABLE shows ADD COLUMN pack_max_sessions INT NOT NULL DEFAULT 3;
 }
 ```
 
+> **Convención de AGENTE.md**: Todos los campos JSON deben tener un getter en `registerModels.js` que parsee strings si Sequelize devuelve string.
+
 ### Nuevas columnas en `reservations`
 ```sql
-ALTER TABLE reservations ADD COLUMN pack_id VARCHAR(36) NULL;
+ALTER TABLE reservations ADD COLUMN pack_id UUID NULL;
 ```
 `pack_id` es un UUID generado por el frontend o backend para agrupar las reservas de cada sesión. Se setea en el momento del checkout (`sipago-pack-intent`).
+
+> **Índice recomendado**: `CREATE INDEX reservations_pack_id_idx ON reservations(pack_id);`
 
 ### Nuevas columnas en `sales`
 ```sql
@@ -110,7 +116,7 @@ Permite vincular cada venta hija (por función) con la venta pack padre.
 ### Nueva tabla `pack_sales`
 ```sql
 CREATE TABLE pack_sales (
-  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  id UUID PRIMARY KEY DEFAULT (UUID()),
   user_id UUID NULL REFERENCES users(id),
   discount_id UUID NULL REFERENCES discounts(id),
   payment_method VARCHAR(50) NOT NULL,
@@ -131,9 +137,13 @@ CREATE TABLE pack_sales (
   sipago_order_id VARCHAR(255) NULL,
   metadata JSON NULL,
   created_at TIMESTAMP NOT NULL DEFAULT NOW(),
-  updated_at TIMESTAMP NOT NULL DEFAULT NOW()
+  updated_at TIMESTAMP NOT NULL DEFAULT NOW() ON UPDATE NOW()
 );
+
+CREATE INDEX sales_pack_sale_id_idx ON sales(pack_sale_id);
 ```
+
+> **Corrección crítica**: Se usaba `gen_random_uuid()` (PostgreSQL). MySQL requiere `UUID()`. Además, todos los campos JSON (`service_items`, `metadata`) deben tener getter en el modelo Sequelize.
 
 ## 6. Algoritmo de precios por profundidad de stack
 
@@ -200,6 +210,10 @@ Resultado:
 - Función B: 2 a `$16.000`, 1 a `$18.000`.
 - Función C: 2 a `$16.000`.
 
+### Precisión y redondeo
+- Todos los precios del pack se manejan como centavos en el backend (`Math.round`) y como enteros en el frontend. No usar floats para operaciones críticas de pago.
+- `finalPrice` de cada slot se guarda en el item de reserva como entero.
+
 ### Tratamiento de tipos de ticket
 
 | Tipo | Slot de emparejamiento | `Ticket.price` |
@@ -249,12 +263,33 @@ Si `pack_size` está presente:
 
 - `POST /api/reservations` y `PUT /api/reservations/:id` aceptar `pack_id` opcional (se setea en el intent).
 - `GET /api/reservations?pack_id=:packId` para obtener todas las reservas de un pack.
+- **Expiración coordinada**: cada vez que se actualiza cualquier reserva que pertenezca a un `pack_id`, extender `expires_at` de **todas** las reservas del pack al menos 10 minutos más. Esto evita que la primera función expire mientras el usuario elige la tercera.
+- `PUT /api/reservations/:id/keepalive` opcional: endpoint para que el frontend extienda la expiración del pack mientras el usuario está en la UI sin avanzar al pago.
 
 ### 7.5. Payments (`backend/src/routes/payments.js`)
 
 #### Nueva función `computePackTicketPrices(itemsBySession, packPricing, packMaxSessions)`
+- Extraer a `backend/src/lib/packPricing.js` para poder importarla en tests y rutas.
 - Implementa el algoritmo de stack-depth.
 - Devuelve un array de tickets con `session_id`, `finalPrice`, `section`, `seat_code`, `type`, `capacity`, `quantity`.
+
+#### `POST /api/payments/pack-preview`
+- Recibe `{ reservation_ids: [...] }`.
+- Devuelve el desglose exacto del pack sin crear `pack_sales` ni orden de pago.
+- El frontend lo usa para mostrar el total en tiempo real sin reimplementar el algoritmo.
+- Respuesta:
+  ```json
+  {
+    "pack_id": null,
+    "priced_tickets": [...],
+    "subtotal": 200000,
+    "discount_amount": 0,
+    "services_subtotal": 0,
+    "service_fee_amount": 20000,
+    "service_fee_percent": 10,
+    "total_amount": 220000
+  }
+  ```
 
 #### `POST /api/payments/sipago-pack-intent`
 ```json
@@ -271,19 +306,22 @@ Si `pack_size` está presente:
 }
 ```
 
+> **Nota sobre `service_items`**: por decisión del cliente, los servicios se venden **por función**. Cada reserva del pack puede tener su propio `service_items`. En el intent se recibe `service_items` por reserva o se agrupan desde las reservas existentes. `pack_sales` guarda el `services_subtotal` total, y cada venta hija recibe la parte que le corresponde.
+
 Pasos:
 1. Validar que todas las reservas existan, estén `active` y no vencidas.
-2. Generar `pack_id` si no se envió.
-3. Asignar `pack_id` a cada reserva.
-4. Calcular `computePackTicketPrices` para todas las sesiones.
-5. Calcular `subtotal` = suma de `finalPrice`.
-6. Si hay `discount_id`, aplicar `computeDiscountAmount` sobre los tickets con `finalPrice`.
-7. Calcular `servicesSubtotal`.
-8. `serviceFeeAmount = round((subtotal - discountAmount + servicesSubtotal) * fee / 100)`.
-9. `total = subtotal - discountAmount + serviceFeeAmount + servicesSubtotal`.
-10. Guardar `pack_sales` con `payment_status: 'pending'`.
-11. Extender `expires_at` de todas las reservas del pack.
-12. Crear orden Sipago con `total` en centavos y `webhookUrl` que incluya `pack_id`.
+2. Validar que el `pack_size` (cantidad de reservas) sea <= `show.pack_max_sessions`.
+3. Generar `pack_id` si no se envió.
+4. Asignar `pack_id` a cada reserva.
+5. Calcular `computePackTicketPrices` para todas las sesiones.
+6. Calcular `subtotal` = suma de `finalPrice`.
+7. Calcular `servicesSubtotal` sumando `service_items` de todas las reservas del pack.
+8. Si hay `discount_id`, aplicar `computeDiscountAmount` sobre los tickets con `finalPrice`.
+9. `serviceFeeAmount = round((subtotal - discountAmount + servicesSubtotal) * fee / 100)`.
+10. `total = subtotal - discountAmount + serviceFeeAmount + servicesSubtotal`.
+11. Guardar `pack_sales` con `payment_status: 'pending'`, incluyendo `customer_*`, `service_items` (resumen consolidado), `discount_id` y `metadata`.
+12. Extender `expires_at` de todas las reservas del pack.
+13. Crear orden Sipago con `total` en centavos y `webhookUrl` que incluya solo `pack_id` y el secret de webhook. **NO incluir `customer_*`, `service_items` ni `discount_id` en la URL.** Sipago ya demostró que puede strippear o truncar query params.
 
 Respuesta:
 ```json
@@ -298,26 +336,38 @@ Respuesta:
 - Busca `pack_sales` y todas las reservas con ese `pack_id`.
 - Si el estado no es `SUCCESS`, responde 200.
 - Verifica `pack_sales.payment_status !== 'approved'`.
+- Ejecutar dentro de una transacción Sequelize para evitar ventas parciales.
 - Para cada reserva:
-  1. Verificar que no haya doble venta (butacas/palcos no vendidos, reserva no confirmada).
-  2. Crear `Sale` hija con `session_id`, `pack_sale_id`, `user_id`, `payment_method`, `total_amount` = subtotal de la función, `discount_id` (del pack), `service_items` (null o vacío).
-  3. Crear `Ticket` por cada entrada usando `finalPrice`.
-  4. Generar `container_qr` y QR individual por ticket.
-  5. Marcar `reservation.status = 'confirmed'` y `reservation.sale_id`.
-  6. Emitir eventos WebSocket para la sesión.
+  1. Si `reservation.status === 'confirmed'` y `reservation.sale_id` existe, saltar (idempotencia por reserva).
+  2. Verificar que no haya doble venta (butacas/palcos no vendidos, reserva no confirmada).
+  3. Crear `Sale` hija con `session_id`, `pack_sale_id`, `user_id`, `payment_method`.
+     - `subtotal` = suma de `Ticket.price` de la función.
+     - `service_items` = los servicios que correspondan a esa función (tomados de `reservation.service_items`).
+     - `services_subtotal` = suma de los servicios de esa función.
+     - `discount_amount` = parte proporcional del descuento del pack asignada a esta función (basado en `subtotal / packSubtotal`).
+     - `service_fee_amount` = `round((subtotal - discount_amount + services_subtotal) * fee / 100)`.
+     - `total_amount` = `subtotal - discount_amount + service_fee_amount + services_subtotal`. Esto mantiene la coherencia con el requisito de que cada email de función cierre por sí solo, y es compatible con `bordereaux.js` siempre que los tickets tengan `ticket.price` correcto.
+     - `discount_id` = id del descuento del pack.
+  4. Crear `Ticket` por cada entrada usando `finalPrice`.
+  5. Generar QR individual por ticket.
+  6. Marcar `reservation.status = 'confirmed'` y `reservation.sale_id`.
+  7. Emitir eventos WebSocket para la sesión.
 - Actualizar `discount.used_count` una sola vez con el total de tickets descontados.
 - Actualizar `pack_sales.payment_status = 'approved'`.
 - Enviar **un email por función** usando `sendPurchaseConfirmation` con `packInfo`.
+- Si ocurre un error inesperado, hacer rollback de la transacción.
 
 #### `POST /api/payments/sipago-pack-confirm`
 - Endpoint de fallback para el frontend.
 - Lógica idéntica al webhook, pero llamado por `SipagoSuccess`.
 - Debe ser idempotente.
+- Extraer la lógica compartida del webhook y el confirm a un helper interno (`processPackPayment`) para evitar duplicar código.
 
 #### `POST /api/payments/free-pack-emission`
 - Para packs con `total === 0` (cortesía 100% o similar).
 - Similar al webhook, crea `pack_sales` con `payment_method = 'courtesy'`, ventas hijas y tickets.
 - No llama a Sipago.
+- Requiere `discount_id` que haga el total cero, o validar que `total_amount === 0` por precios pack y permitir la emisión igual.
 
 ## 8. Cambios en el frontend
 
@@ -333,6 +383,8 @@ Agregar sección **"Pack multi-función"**:
 
 ### 8.2. Detalle.jsx (`frontend/src/pages/Detalle.jsx`)
 
+> **Advertencia técnica**: `Detalle.jsx` actualmente maneja un único `selectedSession` y `reservation`. Antes de agregar la lógica de packs se recomienda refactorizar el estado y la lógica de pago a un custom hook (`useCheckout`) para evitar duplicar código y reducir la complejidad del componente.
+
 Nuevo estado:
 ```js
 const [packEnabled, setPackEnabled] = useState(false);
@@ -340,14 +392,17 @@ const [packSize, setPackSize] = useState(null); // 1, 2, 3
 const [packStep, setPackStep] = useState(0);
 const [packSelections, setPackSelections] = useState({}); // { sessionId: selection }
 const [packReservations, setPackReservations] = useState({}); // { sessionId: reservationId }
+const [packBreakdown, setPackBreakdown] = useState(null); // resultado de /pack-preview
 ```
 
 Flujo UI:
 1. Si `show.pack_enabled` es `true`, mostrar botones: `1 función`, `2 funciones`, `3 funciones`.
 2. Para cada paso, mostrar selector de sesión y luego `SeatSelection`.
 3. El carrito acumula todas las funciones.
-4. `calculatePrices` debe recalcular usando `computePackTicketPrices` en el frontend.
-5. Botón "Pagar" al finalizar todas las funciones.
+4. **No reimplementar `computePackTicketPrices` en el frontend.** Cada vez que cambia `packSelections`, llamar a `POST /api/payments/pack-preview` y mostrar el desglose devuelto.
+5. Botón "Pagar" al finalizar todas las funciones. Al pagar se llama a `sipago-pack-intent` con los `reservation_ids` ya sincronizados.
+
+> **Nota**: si se decide finalmente mantener un cálculo local en el frontend por UX, debe venir de un módulo JS puro (`frontend/src/lib/packPricing.js`) que sea copia exacta del helper del backend, incluyendo tests comparativos. La versión autoritativa es `/pack-preview`.
 
 ### 8.3. SeatSelection (`frontend/src/components/SeatSelection.jsx`)
 
@@ -364,15 +419,20 @@ Ajustes:
 ### 8.4. Cálculo de precios en el frontend
 
 ```js
-function calculatePackPrices(packSelections, packPricing, packMaxSessions) {
-  const itemsBySession = buildItemsBySession(packSelections);
-  const pricedTickets = computePackTicketPrices(itemsBySession, packPricing, packMaxSessions);
-  const subtotal = pricedTickets.reduce((sum, t) => sum + t.finalPrice, 0);
-  // aplicar descuento, servicios, cargo por servicio
+async function fetchPackPreview(reservationIds, discountId) {
+  const res = await apiFetch('/api/payments/pack-preview', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ reservation_ids: reservationIds, discount_id: discountId })
+  });
+  return await res.json();
 }
 ```
 
-**Nota:** el frontend debe reimplementar la lógica de stack-depth para mostrar el total correcto antes de pagar. El backend la recalcula al crear el intent.
+- `packBreakdown` se actualiza desde el endpoint `/pack-preview`.
+- El total mostrado, el descuento y el cargo por servicio siempre vienen del backend.
+- Los `service_items` se manejan por reserva (por función), por lo que el preview ya los lee de las reservas.
+- **Opcional**: tener un helper local `computePackTicketPrices` en `frontend/src/lib/packPricing.js` para actualizaciones inmediatas, pero nunca usarlo para el monto final de pago.
 
 ### 8.5. Página de éxito Sipago
 
@@ -404,12 +464,14 @@ Extender `sendPurchaseConfirmation` con el parámetro opcional `packInfo`:
 Para cada `Sale` hija:
 - `sendPurchaseConfirmation` recibe los tickets de esa función.
 - `subtotal` = suma de `Ticket.price` de la función.
-- `totalAmount` = subtotal (sin servicio pack) o subtotal + proporción del servicio.
+- `serviceFeeAmount` = proporción del cargo por servicio correspondiente a esa función, calculada en la venta hija.
+- `totalAmount` = subtotal de la función - descuento proporcional + service fee de la función + servicios de la función.
 - Sección "Resumen de tu pack" en el email con `packInfo`.
 - Un email por función permite un QR por función.
 
-### Alternativa a evaluar
-Se puede evaluar si conviene asignar `serviceFeeAmount` proporcionalmente a cada función para que cada email cierre por sí solo, o dejar el `serviceFeeAmount` en 0 en el email de la función y mostrar el `packTotalAmount` en el resumen.
+### Decisión sobre el cargo por servicio en emails
+- **Opción A (elegida)**: cada email de función muestra su proporción del cargo por servicio y el total del email cierra. El cliente confirmó esta opción.
+- **Opción B (descartada)**: el cargo por servicio aparece solo en el resumen del pack. Se descarta porque el cliente quiere ver el cargo por servicio por función.
 
 ## 10. Bordereaux
 
@@ -423,9 +485,12 @@ Se puede evaluar si conviene asignar `serviceFeeAmount` proporcionalmente a cada
 
 ### Si se aplica un cupón adicional
 - `bordereaux.js` calcula `discountMultiplier = netPaid / saleSubtotal`.
-- Multiplica `ticket.price` por ese factor.
-- Las variantes siguen separadas (`$20.000 * 0.9` y `$18.000 * 0.9` son `$18.000` y `$16.200`, por ejemplo).
+- `netPaid` para ventas `card` es `sale.total_amount` directamente (no se divide por `serviceFeeDivisor`, a diferencia de `mp`).
+- Dado que las ventas hijas `card` incluirán el service fee proporcional (Opción A elegida), `netPaid` será `saleSubtotal - descuento + service_fee_proporcional + servicios`. Por lo tanto `discountMultiplier` será ligeramente mayor que el factor de descuento puro. Esto es aceptable porque el bordereaux muestra precio efectivo realmente pagado.
+- Las variantes pack siguen separadas (`$20.000 * 0.9` y `$18.000 * 0.9` son `$18.000` y `$16.200`, por ejemplo).
 - Si se quiere mostrar el **precio de lista** y el **precio con descuento** como columnas separadas, habría que agregar `list_price` al ticket o al bordereaux.
+
+> **Nota**: si en el futuro se decide que las ventas hijas `card` no incluyan service fee (para ajustarse estrictamente a `AGENTE.md:89`), el bordereaux seguirá siendo correcto porque usa `ticket.price`. Solo cambiaría el `discountMultiplier` mostrado.
 
 ### Diagrama de agrupación
 ```
@@ -449,14 +514,15 @@ platea_general | $18.000 | online | none -> 2 entradas
 2. Actualizar `registerModels.js`.
 
 ### Fase 2: Backend
-1. `shows.js`: aceptar y validar `pack_enabled`, `pack_pricing_json`, `pack_max_sessions`.
+1. `shows.js`: aceptar y validar `pack_enabled`, `pack_pricing_json`, `pack_max_sessions`. Validar monotonía descendente de precios (`precio[1] >= precio[2] >= precio[3]`).
 2. `sessions.js`: soportar `pack_size` en availability.
-3. `reservations.js`: aceptar `pack_id` y consulta por pack.
+3. `reservations.js`: aceptar `pack_id`, consulta por pack, y expiración coordinada.
 4. `payments.js`:
-   - `computePackTicketPrices`.
+   - Crear `backend/src/lib/packPricing.js` con `computePackTicketPrices` y tests.
+   - `pack-preview`.
    - `sipago-pack-intent`.
-   - `sipago-pack-webhook`.
-   - `sipago-pack-confirm`.
+   - `sipago-pack-webhook` con transacción e idempotencia por reserva.
+   - `sipago-pack-confirm` reutilizando helper.
    - `free-pack-emission`.
 5. `emailService.js`: extender `sendPurchaseConfirmation` con `packInfo`.
 
@@ -468,14 +534,17 @@ platea_general | $18.000 | online | none -> 2 entradas
 
 ### Fase 4: Pruebas
 1. Compra simple sigue funcionando.
-2. Pack de 1 función con precios pack.
-3. Pack de 2 funciones con cantidades iguales.
-4. Pack de 2 funciones con 2 y 4 entradas.
-5. Pack de 3 funciones con cantidades desiguales.
-6. Bordereaux muestra variantes de precio.
-7. Cupón de descuento aplicado sobre pack.
-8. Emisión gratuita de pack.
-9. Webhook duplicado (idempotencia).
+2. Pack de 2 funciones con cantidades iguales.
+3. Pack de 2 funciones con 2 y 4 entradas.
+4. Pack de 3 funciones con cantidades desiguales.
+5. Bordereaux muestra variantes de precio.
+6. Cupón de descuento aplicado sobre pack.
+7. Emisión gratuita de pack con cupón 100%.
+8. Webhook duplicado (idempotencia).
+9. Confirm duplicado desde `SipagoSuccess`.
+10. Fallo parcial del webhook y reintento (simular crash a mitad de transacción).
+11. Servicios por función en pack.
+12. Salas sin numerar (`general`) en pack.
 
 ### Fase 5: Despliegue
 1. Ejecutar migraciones en staging.
@@ -489,15 +558,18 @@ platea_general | $18.000 | online | none -> 2 entradas
 | Caso | Tratamiento |
 |------|-------------|
 | El usuario cambia de pack de 2 a 3 funciones | Cancelar reservas anteriores y reiniciar selección. |
-| Una reserva del pack expira | Mostrar error y pedir reselección de esa función. |
+| Una reserva del pack expira | Extender expiración de todas las reservas del pack al actualizar cualquiera. Si ya expiró, pedir reselección. |
 | El usuario selecciona la misma sesión dos veces | Bloquear en el frontend. |
 | Una butaca se vende mientras el usuario elige otra función | WebSocket actualiza la grilla; se invalida la selección. |
-| `pack_pricing_json` no tiene clave para una profundidad | Fallback a `pack_pricing_json[1]` o al máximo disponible. |
-| Cupón con `usage_limit` menor que el total de tickets | Aplicar descuento solo a las entradas más caras (lógica existente). |
-| Pack total `$0` | Usar `free-pack-emission`. |
-| Webhook y confirm duplicados | Verificar `pack_sales.payment_status` y `reservation.status`. |
+| `pack_pricing_json` no tiene clave para una profundidad | Fallback a `pack_pricing_json[min(depth, maxDisponible)]`. Nunca dejar `finalPrice` en undefined. |
+| Cupón con `usage_limit` menor que el total de tickets | Aplicar descuento solo a las entradas más caras (lógica existente). El descuento se aplica sobre `finalPrice` del pack. |
+| Pack total `$0` | Usar `free-pack-emission`. Si no hay cupón, permitir creación igual (la razón del total cero es precio pack o cortesía). |
+| Webhook y confirm duplicados | Verificar `pack_sales.payment_status` y `reservation.status` antes de crear ventas/tickets. |
 | `pack_sales` pendiente abandonado | Cron de limpieza opcional; `reservations` expiran automáticamente. |
 | Palcos mixtos (PB y PA) en el pack | Emparejar por sección (`palcos_bajos` vs `palcos_altos`) por separado. |
+| Venta parcial del pack (webhook cae a mitad) | Usar transacción Sequelize; el reintento debe saltar reservas ya confirmadas. |
+| Salas sin numerar (`el_tablado`/`las_gemelas`) | Aplicar `section: 'general'`. La cantidad de slots es la cantidad de entradas generales seleccionadas por función. |
+| `palcos_individual_seats = true` | Si el show/sesión vende palcos por butaca individual, el slot de emparejamiento es cada butaca, no el palco completo. |
 
 ## 14. Alternativas a evaluar
 
@@ -509,11 +581,10 @@ finalPrice = baseSeatPrice * (packPricing[depth][section] / packPricing[1][secti
 Esto mantiene el diferencial por fila y aplica el descuento multi-función proporcionalmente.
 
 ### 14.2. Servicios por función
-En lugar de servicios a nivel pack, permitir elegir servicios por cada función. Implica cambiar `reservations` para guardar `service_items` por sesión y repartir el `servicesSubtotal` en cada `Sale` hija.
+**Elegida.** Los servicios se venden por función. Cada reserva del pack lleva su `service_items`, y cada venta hija se factura con su parte. `pack_sales.service_items` puede ser un resumen consolidado.
 
 ### 14.3. Asignación del cargo por servicio en emails
-- **Opción A**: Cada email de función muestra su proporción del cargo por servicio. El total del email cierra.
-- **Opción B**: El cargo por servicio aparece solo en el resumen del pack, y cada email de función muestra solo el subtotal de esa función.
+**Opción A elegida.** Cada email de función muestra su proporción del cargo por servicio y el total del email cierra.
 
 ### 14.4. Tabla `pack_sales` vs extender `sales`
 Opción descartada: reutilizar `sales` con `session_id` null como venta padre. Se descartó porque `session_id` es `NOT NULL` y muchas consultas asumen que toda `Sale` tiene sesión. Una tabla separada es más limpia.
@@ -521,16 +592,33 @@ Opción descartada: reutilizar `sales` con `session_id` null como venta padre. S
 ### 14.5. Emparejamiento por asiento exacto
 Actualmente el emparejamiento es por cantidad y sección. Otra opción sería emparejar por código de asiento idéntico entre funciones (ej. A5 en función 1 con A5 en función 2). Esto requiere que el usuario elija el mismo asiento en cada función, lo cual es más restrictivo pero más explícito.
 
-## 15. Preguntas abiertas
+## 15. Decisiones del negocio ya resueltas
 
-1. ¿El pack pricing es por sección o necesita respetar reglas de `seat_pricing` por fila/asiento?
-2. ¿Los servicios adicionales se venden por pack o por función?
-3. ¿Cómo se quiere mostrar el cargo por servicio en los emails de cada función?
-4. ¿Se permite que un pack incluya funciones de diferentes shows? (Se asume que no.)
-5. ¿El pack de 1 función reemplaza a la compra simple o es solo una opción más dentro del pack?
-6. ¿Se quiere que el usuario elija exactamente el mismo asiento para todas las funciones o puede elegir asientos diferentes?
+| # | Pregunta | Decisión |
+|---|----------|----------|
+| 1 | ¿Pack pricing por sección o por `seat_pricing` por fila/asiento? | Por sección en primera instancia. |
+| 2 | ¿Servicios por pack o por función? | **Por función.** Cada reserva del pack puede tener `service_items`. |
+| 3 | ¿Cargo por servicio en emails? | **Por función.** Cada email muestra su proporción y el total cierra. |
+| 4 | ¿Funciones de diferentes shows en un pack? | **No.** Todas del mismo `show_id`. |
+| 5 | ¿Pack de 1 función reemplaza a compra simple? | **No.** Si se compra 1 sola función se usa el flujo regular. |
+| 6 | ¿Asiento idéntico en todas las funciones? | **No.** El usuario elige asientos/ubicaciones diferentes. | 
 
-## 16. Referencias de código
+## 16. Notas críticas para la IA implementadora
+
+1. **MySQL, no PostgreSQL**: usar `UUID()` en lugar de `gen_random_uuid()`. Los campos `pack_id` y `pack_sale_id` deben ser `UUID`.
+2. **JSON getters**: en `registerModels.js`, agregar getter para `pack_pricing_json`, `service_items` y `metadata` de `pack_sales`, igual que `pricing_json`.
+3. **No reimplementar el algoritmo en frontend**: usar `POST /api/payments/pack-preview` como fuente autoritativa del desglose.
+4. **Transacciones**: el webhook y el confirm del pack deben ejecutarse dentro de `sequelize.transaction()`.
+5. **Idempotencia por reserva**: verificar `reservation.status === 'confirmed'` y `reservation.sale_id` antes de crear cada venta hija, no solo `pack_sales.payment_status`.
+6. **Service fee por función (Opción A)**: cada venta hija debe calcular su proporción de descuento y service fee. `total_amount` de cada hija cierra por sí solo.
+7. **Servicios por función**: `service_items` se guardan en cada `Reservation` (o se reciben por reserva en el intent), y cada `Sale` hija recibe su parte.
+8. **URL del webhook**: incluir solo `pack_id` y secret. Los datos del cliente y servicios deben leerse de `pack_sales`.
+9. **Expiración coordinada**: tocar una reserva del pack extiende todas las demás.
+10. **Tests del algoritmo**: agregar tests unitarios para los ejemplos de las secciones 6.1 y 6.2.
+11. **Despliegue**: ejecutar migración, reiniciar PM2, y limpiar `frontend/dist` antes de build (ver `DESPLIEGUE.md`).
+12. **Palcos individuales**: si `show.palcos_individual_seats` o `session.palcos_individual_seats` es `true`, cada butaca de palco es un slot, no el palco completo.
+
+## 17. Referencias de código
 
 - `backend/src/routes/payments.js` (webhook e intent actuales)
 - `backend/src/routes/reservations.js` (CRUD de reservas)
