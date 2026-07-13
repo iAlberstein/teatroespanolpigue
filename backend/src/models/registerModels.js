@@ -63,6 +63,34 @@ export default function registerModels(sequelize) {
       defaultValue: false,
       comment: 'Si es true, los palcos se venden con butacas individuales (no muestra xN localidades)'
     },
+    pack_enabled: {
+      type: DataTypes.BOOLEAN,
+      allowNull: false,
+      defaultValue: false,
+      comment: 'Si es true, el show permite compra pack de multiples funciones'
+    },
+    pack_pricing_json: {
+      type: DataTypes.JSON,
+      allowNull: true,
+      comment: 'Precios pack por profundidad: { "1": { platea_general, palcos_bajos, ... }, "2": {...}, "3": {...} }',
+      get() {
+        const rawValue = this.getDataValue('pack_pricing_json');
+        if (typeof rawValue === 'string') {
+          try {
+            return JSON.parse(rawValue);
+          } catch (e) {
+            return null;
+          }
+        }
+        return rawValue || null;
+      }
+    },
+    pack_max_sessions: {
+      type: DataTypes.INTEGER,
+      allowNull: false,
+      defaultValue: 3,
+      comment: 'Maximo de funciones permitidas en un pack (default 3)'
+    },
     pricing_json: { 
       type: DataTypes.JSON, 
       allowNull: false, 
@@ -143,7 +171,8 @@ export default function registerModels(sequelize) {
     },
     expires_at: { type: DataTypes.DATE, allowNull: false },
     status: { type: DataTypes.ENUM('active','expired','confirmed','canceled'), defaultValue: 'active' },
-    service_items: { type: DataTypes.TEXT, allowNull: true }
+    service_items: { type: DataTypes.TEXT, allowNull: true },
+    pack_id: { type: DataTypes.UUID, allowNull: true }
   });
 
   const Ticket = sequelize.define('tickets', {
@@ -193,6 +222,7 @@ export default function registerModels(sequelize) {
     payment_status: { type: DataTypes.ENUM('pending','approved','rejected'), defaultValue: 'approved' },
     discount_id: { type: DataTypes.UUID, allowNull: true },
     total_amount: { type: DataTypes.DECIMAL(10,2), allowNull: false },
+    pack_sale_id: { type: DataTypes.UUID, allowNull: true },
     customer_name: { type: DataTypes.STRING, allowNull: true },
     customer_email: { type: DataTypes.STRING, allowNull: true },
     customer_phone: { type: DataTypes.STRING, allowNull: true },
@@ -840,6 +870,74 @@ export default function registerModels(sequelize) {
   ShowService.belongsTo(Show, { foreignKey: 'show_id', as: 'show' });
 
   // =====================================================
+  // PACK SALES
+  // =====================================================
+
+  const PackSale = sequelize.define('pack_sales', {
+    id: { type: DataTypes.UUID, defaultValue: DataTypes.UUIDV4, primaryKey: true },
+    user_id: { type: DataTypes.UUID, allowNull: true },
+    discount_id: { type: DataTypes.UUID, allowNull: true },
+    payment_method: { type: DataTypes.STRING(50), allowNull: false },
+    payment_status: { type: DataTypes.STRING(50), allowNull: false, defaultValue: 'pending' },
+    subtotal: { type: DataTypes.DECIMAL(10,2), allowNull: false, defaultValue: 0 },
+    discount_amount: { type: DataTypes.DECIMAL(10,2), allowNull: false, defaultValue: 0 },
+    service_fee_percent: { type: DataTypes.DECIMAL(5,2), allowNull: false, defaultValue: 0 },
+    service_fee_amount: { type: DataTypes.DECIMAL(10,2), allowNull: false, defaultValue: 0 },
+    services_subtotal: { type: DataTypes.DECIMAL(10,2), allowNull: false, defaultValue: 0 },
+    total_amount: { type: DataTypes.DECIMAL(10,2), allowNull: false, defaultValue: 0 },
+    service_items: {
+      type: DataTypes.JSON,
+      allowNull: true,
+      get() {
+        const rawValue = this.getDataValue('service_items');
+        if (typeof rawValue === 'string') {
+          try {
+            return JSON.parse(rawValue);
+          } catch (e) {
+            return null;
+          }
+        }
+        return rawValue || null;
+      }
+    },
+    customer_name: { type: DataTypes.STRING(255), allowNull: true },
+    customer_email: { type: DataTypes.STRING(255), allowNull: true },
+    customer_phone: { type: DataTypes.STRING(255), allowNull: true },
+    customer_dni: { type: DataTypes.STRING(255), allowNull: true },
+    customer_provincia: { type: DataTypes.STRING(255), allowNull: true },
+    customer_localidad: { type: DataTypes.STRING(255), allowNull: true },
+    sipago_order_id: { type: DataTypes.STRING(255), allowNull: true },
+    metadata: {
+      type: DataTypes.JSON,
+      allowNull: true,
+      get() {
+        const rawValue = this.getDataValue('metadata');
+        if (typeof rawValue === 'string') {
+          try {
+            return JSON.parse(rawValue);
+          } catch (e) {
+            return null;
+          }
+        }
+        return rawValue || null;
+      }
+    }
+  }, {
+    timestamps: true,
+    createdAt: 'created_at',
+    updatedAt: 'updated_at'
+  });
+
+  User.hasMany(PackSale, { foreignKey: 'user_id', as: 'pack_sales' });
+  PackSale.belongsTo(User, { foreignKey: 'user_id', as: 'user' });
+
+  Discount.hasMany(PackSale, { foreignKey: 'discount_id', as: 'pack_sales' });
+  PackSale.belongsTo(Discount, { foreignKey: 'discount_id', as: 'discount' });
+
+  PackSale.hasMany(Sale, { foreignKey: 'pack_sale_id', as: 'sales' });
+  Sale.belongsTo(PackSale, { foreignKey: 'pack_sale_id', as: 'pack_sale' });
+
+  // =====================================================
   // MUESTRAS FIN DE AÑO 2026
   // =====================================================
 
@@ -871,6 +969,8 @@ export default function registerModels(sequelize) {
     // Show services
     ShowService,
     // Muestras 2026
-    Muestras2026Inscripcion
+    Muestras2026Inscripcion,
+    // Pack sales
+    PackSale
   };
 }
