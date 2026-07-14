@@ -25,6 +25,7 @@ export default function PackCheckout({
   const [selectionsBySession, setSelectionsBySession] = useState({});
   const [reservationsBySession, setReservationsBySession] = useState({});
   const [currentSelection, setCurrentSelection] = useState(null);
+  const [currentSocketRef, setCurrentSocketRef] = useState(null);
   const [discountCode, setDiscountCode] = useState('');
   const [appliedDiscount, setAppliedDiscount] = useState(null);
   const [discountError, setDiscountError] = useState('');
@@ -130,7 +131,10 @@ export default function PackCheckout({
     setCurrentSelection(null);
   };
 
-  const handleSelectionChange = (selection) => setCurrentSelection(selection);
+  const handleSelectionChange = (selection) => {
+    setCurrentSelection(selection);
+    if (selection?.socketRef) setCurrentSocketRef(selection.socketRef);
+  };
 
   const handleServiceChange = (serviceId, quantity) => {
     setSelectedServices(prev => {
@@ -320,6 +324,8 @@ export default function PackCheckout({
     const newReservations = {};
     const headers = { 'Content-Type': 'application/json' };
     if (token) headers['Authorization'] = `Bearer ${token}`;
+    const socketId = currentSocketRef?.current?.id;
+    if (socketId) headers['x-socket-id'] = socketId;
 
     for (const sessionId of selectedSessionIds) {
       const items = buildReservationItems(allSelections[sessionId]);
@@ -359,8 +365,10 @@ export default function PackCheckout({
           const err = await res.json().catch(() => ({}));
           if (res.status === 409) {
             const reason = err.error || 'items_conflict';
-            const message = err.message || 'butacas no disponibles';
-            throw new Error(`Conflicto de reserva para la función ${sessionId}: ${reason} - ${message}`);
+            const detail = err.conflicts && Array.isArray(err.conflicts)
+              ? err.conflicts.map(c => `${c.type === 'butaca' ? 'Butaca' : c.type === 'palco' ? 'Palco' : c.type} ${c.seat_code || ''}`).join(', ')
+              : (err.message || 'butacas no disponibles');
+            throw new Error(`Conflicto de reserva para la función ${sessionId}: ${reason} - ${detail}`);
           }
           throw new Error(err.message || `Error creando reserva para ${sessionId}`);
         }
@@ -499,13 +507,29 @@ export default function PackCheckout({
     const items = buildReservationItems(selection);
     if (items.length === 0) return <p style={{ color: '#6b7280', fontSize: 13, margin: 0 }}>Sin selección</p>;
     const slots = slotsBySession[sessionId] || [];
-    let slotIdx = 0;
+
+    // Build pools keyed by item identity so prices map to the correct items
+    const slotPools = {};
+    for (const slot of slots) {
+      const key = slot.type === 'butaca' || slot.type === 'palco'
+        ? `${slot.type}|${slot.seat_code}`
+        : `${slot.type}|${slot.section}`;
+      if (!slotPools[key]) slotPools[key] = [];
+      slotPools[key].push(slot);
+    }
+
     return (
       <ul style={{ listStyle: 'none', padding: 0, margin: 0 }}>
         {items.map((item, idx) => {
           const qty = item.quantity || 1;
-          const itemSlots = slots.slice(slotIdx, slotIdx + qty);
-          slotIdx += qty;
+          const key = item.type === 'butaca' || item.type === 'palco'
+            ? `${item.type}|${item.seat_code}`
+            : `${item.type}|${getPackSection(item)}`;
+          const pool = slotPools[key] || [];
+          const itemSlots = [];
+          for (let i = 0; i < qty; i++) {
+            if (pool.length > 0) itemSlots.push(pool.shift());
+          }
           const totalPrice = itemSlots.reduce((sum, s) => sum + (s?.finalPrice || 0), 0);
           const originalTotal = itemSlots.reduce((sum, s) => sum + (s?.originalPrice || 0), 0);
           const hasDiscount = totalPrice < originalTotal;
@@ -517,7 +541,7 @@ export default function PackCheckout({
                 {(item.type === 'pullman' || item.type === 'general') && (item.type === 'general' ? 'Entrada General' : 'Pullman')}
                 {qty > 1 ? ` x${qty}` : ''}
               </span>
-              <span style={{ display: 'flex', alignItems: 'center', gap: 6, fontWeight: 600, color: '#111827' }}>
+              <span style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end', fontWeight: 600, color: '#111827', lineHeight: 1.2 }}>
                 {hasDiscount && (
                   <span style={{ fontSize: 11, color: '#dc2626', textDecoration: 'line-through', fontWeight: 400 }}>
                     {formatCurrency(originalTotal)}
