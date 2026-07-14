@@ -1865,9 +1865,9 @@ export default function Detalle(){
           inset: 0,
           background: 'rgba(0,0,0,0.5)',
           backdropFilter: 'blur(4px)',
-          zIndex: 999,
+          zIndex: 10000,
           overflowY: 'auto',
-          padding: '40px 16px'
+          padding: '90px 16px 40px 16px'
         }}>
           <div style={{ maxWidth: 900, margin: '0 auto' }}>
             <PackCheckout

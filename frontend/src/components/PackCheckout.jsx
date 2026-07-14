@@ -1,8 +1,8 @@
 import { useState, useEffect, useCallback } from 'react';
 import SeatSelection from './SeatSelection.jsx';
 import GeneralAdmissionSelection from './GeneralAdmissionSelection.jsx';
-import { apiFetch, apiAuthFetch } from '../lib/api';
-import { formatDateLong, formatTime } from '../lib/dateFormatter.js';
+import { apiFetch } from '../lib/api';
+import { formatDateLong, formatTime, formatDateShort } from '../lib/dateFormatter.js';
 import GuestCheckoutForm from './GuestCheckoutForm.jsx';
 
 export default function PackCheckout({
@@ -17,16 +17,18 @@ export default function PackCheckout({
   showServices,
   onClose
 }) {
+  const [step, setStep] = useState('intro');
   const [selectedSessionIds, setSelectedSessionIds] = useState([]);
+  const [currentSessionIndex, setCurrentSessionIndex] = useState(0);
   const [selectionsBySession, setSelectionsBySession] = useState({});
   const [reservationsBySession, setReservationsBySession] = useState({});
+  const [currentSelection, setCurrentSelection] = useState(null);
   const [discountCode, setDiscountCode] = useState('');
   const [appliedDiscount, setAppliedDiscount] = useState(null);
   const [discountError, setDiscountError] = useState('');
   const [selectedServices, setSelectedServices] = useState({});
   const [preview, setPreview] = useState(null);
   const [loading, setLoading] = useState(false);
-  const [step, setStep] = useState('select');
   const [error, setError] = useState('');
 
   const venueLabelMap = {
@@ -72,19 +74,28 @@ export default function PackCheckout({
     return items;
   };
 
-  const toggleSession = (sessionId) => {
+  const countTickets = (selection) => buildItems(selection).reduce((sum, it) => sum + (it.quantity || 1), 0);
+
+  const currentSession = selectedSessionIds[currentSessionIndex]
+    ? sessions.find(s => s.id === selectedSessionIds[currentSessionIndex])
+    : null;
+
+  const isCurrentSelectionValid = () => {
+    const items = buildItems(currentSelection);
+    return items.length > 0;
+  };
+
+  const handleSessionToggle = (sessionId) => {
     setSelectedSessionIds(prev => {
       const next = prev.includes(sessionId) ? prev.filter(id => id !== sessionId) : [...prev, sessionId];
       return next;
     });
-    setPreview(null);
-    setReservationsBySession({});
+    setSelectionsBySession({});
+    setCurrentSelection(null);
   };
 
-  const handleSelectionChange = (sessionId, selection) => {
-    setSelectionsBySession(prev => ({ ...prev, [sessionId]: selection }));
-    setPreview(null);
-    setReservationsBySession({});
+  const handleSelectionChange = (selection) => {
+    setCurrentSelection(selection);
   };
 
   const handleServiceChange = (serviceId, quantity) => {
@@ -102,10 +113,7 @@ export default function PackCheckout({
 
   const validateDiscount = async () => {
     if (!discountCode.trim()) return;
-    const totalSeats = selectedSessionIds.reduce((sum, sid) => {
-      const items = buildItems(selectionsBySession[sid]);
-      return sum + items.reduce((s, it) => s + (it.quantity || 1), 0);
-    }, 0);
+    const totalSeats = Object.values(selectionsBySession).reduce((sum, sel) => sum + countTickets(sel), 0) + countTickets(currentSelection);
     setDiscountError('');
     try {
       const res = await apiFetch('/api/discounts/validate', {
@@ -129,9 +137,13 @@ export default function PackCheckout({
   };
 
   const createReservations = async () => {
+    const allSelections = { ...selectionsBySession };
+    if (currentSession && currentSelection) {
+      allSelections[currentSession.id] = currentSelection;
+    }
     const newReservations = {};
     for (const sessionId of selectedSessionIds) {
-      const items = buildItems(selectionsBySession[sessionId]);
+      const items = buildItems(allSelections[sessionId]);
       if (items.length === 0) continue;
       const headers = { 'Content-Type': 'application/json' };
       if (token) headers['Authorization'] = `Bearer ${token}`;
@@ -175,7 +187,6 @@ export default function PackCheckout({
       }
       const data = await res.json();
       setPreview(data);
-      setStep('preview');
     } catch (e) {
       setError(e.message);
     } finally {
@@ -183,15 +194,20 @@ export default function PackCheckout({
     }
   };
 
-  const canProceedToPreview = () => {
-    if (selectedSessionIds.length < 2) return false;
-    return selectedSessionIds.every(sid => {
-      const items = buildItems(selectionsBySession[sid]);
-      return items.length > 0;
-    });
+  const handleNextFunction = () => {
+    if (!isCurrentSelectionValid()) return;
+    if (!currentSession) return;
+    setSelectionsBySession(prev => ({ ...prev, [currentSession.id]: currentSelection }));
+    setCurrentSelection(null);
+    if (currentSessionIndex < selectedSessionIds.length - 1) {
+      setCurrentSessionIndex(prev => prev + 1);
+    } else {
+      setLoading(true);
+      fetchPreview().then(() => setStep('summary'));
+    }
   };
-
-  const payWithSipago = async () => {
+  
+  const handleConfirmAndPay = async () => {
     if (!isGuest && !user) {
       onGuestCheckoutNeeded?.();
       return;
@@ -260,13 +276,74 @@ export default function PackCheckout({
   };
 
   const handleGuestFormSubmit = (data) => {
-    // Pass guest data to parent so Detalle can manage it, then continue
     onGuestCheckoutNeeded?.(data);
+  };
+
+  const resetFlow = () => {
+    setStep('intro');
+    setSelectedSessionIds([]);
+    setCurrentSessionIndex(0);
+    setSelectionsBySession({});
+    setReservationsBySession({});
+    setCurrentSelection(null);
+    setAppliedDiscount(null);
+    setDiscountCode('');
+    setSelectedServices({});
+    setPreview(null);
+    setError('');
+  };
+
+  const CartSummary = () => {
+    const totalTickets = selectedSessionIds.reduce((sum, sid) => sum + countTickets(selectionsBySession[sid]), 0) + countTickets(currentSelection);
+    const completedSessions = selectedSessionIds.slice(0, currentSessionIndex);
+    return (
+      <div style={{
+        position: 'fixed',
+        right: 24,
+        top: 120,
+        width: 280,
+        maxHeight: 'calc(100vh - 140px)',
+        overflowY: 'auto',
+        background: '#fff',
+        border: '1px solid #e5e7eb',
+        borderRadius: 12,
+        padding: 16,
+        boxShadow: '0 10px 25px rgba(0,0,0,0.1)',
+        zIndex: 10001
+      }}>
+        <h4 style={{ margin: '0 0 12px 0', fontSize: 16 }}>Tu pack</h4>
+        {completedSessions.length === 0 && !currentSession && (
+          <p style={{ color: '#6b7280', fontSize: 14 }}>Aún no seleccionaste funciones.</p>
+        )}
+        {completedSessions.map((sid, idx) => {
+          const session = sessions.find(s => s.id === sid);
+          const items = buildItems(selectionsBySession[sid]);
+          return (
+            <div key={sid} style={{ marginBottom: 12, paddingBottom: 12, borderBottom: '1px solid #f3f4f6' }}>
+              <div style={{ fontWeight: 600, fontSize: 14 }}>Función {idx + 1}</div>
+              <div style={{ fontSize: 12, color: '#6b7280' }}>{formatDateShort(session?.starts_at)} {formatTime(session?.starts_at)}</div>
+              <div style={{ fontSize: 13 }}>{items.reduce((sum, it) => sum + (it.quantity || 1), 0)} entradas</div>
+            </div>
+          );
+        })}
+        {currentSession && (
+          <div style={{ marginBottom: 12, paddingBottom: 12, borderBottom: '1px solid #f3f4f6' }}>
+            <div style={{ fontWeight: 600, fontSize: 14 }}>Función actual</div>
+            <div style={{ fontSize: 12, color: '#6b7280' }}>{formatDateShort(currentSession?.starts_at)} {formatTime(currentSession?.starts_at)}</div>
+            <div style={{ fontSize: 13 }}>{countTickets(currentSelection)} entradas seleccionadas</div>
+          </div>
+        )}
+        <div style={{ marginTop: 12, paddingTop: 12, borderTop: '2px solid #333', display: 'flex', justifyContent: 'space-between', fontWeight: 700 }}>
+          <span>Total entradas:</span>
+          <span>{totalTickets}</span>
+        </div>
+      </div>
+    );
   };
 
   if (!isGuest && !user) {
     return (
-      <div style={{ padding: 24, background: '#fff', borderRadius: 12, border: '1px solid #ddd' }}>
+      <div style={{ padding: 24, background: '#fff', borderRadius: 12, border: '1px solid #ddd', maxWidth: 600, margin: '0 auto' }}>
         <h3 style={{ marginTop: 0 }}>Pack Multi-Función</h3>
         <p>Para comprar un pack de funciones, primero tenés que iniciar sesión o continuar como invitado.</p>
         <button onClick={() => onGuestCheckoutNeeded?.()} style={{ padding: '10px 20px', background: '#3b82f6', color: '#fff', border: 'none', borderRadius: 6, cursor: 'pointer' }}>
@@ -281,7 +358,7 @@ export default function PackCheckout({
 
   if (isGuest && !guestData) {
     return (
-      <div style={{ padding: 24, background: '#fff', borderRadius: 12, border: '1px solid #ddd' }}>
+      <div style={{ padding: 24, background: '#fff', borderRadius: 12, border: '1px solid #ddd', maxWidth: 600, margin: '0 auto' }}>
         <h3 style={{ marginTop: 0 }}>Datos para el Pack</h3>
         <GuestCheckoutForm onSubmit={handleGuestFormSubmit} onCancel={onClose} />
       </div>
@@ -289,161 +366,207 @@ export default function PackCheckout({
   }
 
   return (
-    <div style={{ padding: 24, background: '#fff', borderRadius: 12, border: '1px solid #ddd' }}>
+    <div style={{ padding: 24, background: '#fff', borderRadius: 12, border: '1px solid #ddd', maxWidth: 900, margin: '0 auto', position: 'relative' }}>
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 }}>
         <h3 style={{ margin: 0 }}>Pack Multi-Función</h3>
         <button onClick={onClose} style={{ background: 'transparent', border: 'none', fontSize: 24, cursor: 'pointer' }}>×</button>
       </div>
 
-      {step === 'select' && (
+      {step === 'intro' && (
+        <div style={{ textAlign: 'center', padding: '40px 20px' }}>
+          <div style={{ fontSize: 48, marginBottom: 16 }}>🎭</div>
+          <h2 style={{ marginBottom: 12, color: '#166534' }}>Comprando para más de una función tus entradas tienen descuento</h2>
+          <p style={{ color: '#4b5563', marginBottom: 32, maxWidth: 500, margin: '0 auto 32px' }}>
+            Seleccioná las funciones que querés disfrutar y armá tu pack con precios especiales.
+          </p>
+          <button
+            onClick={() => setStep('selectSessions')}
+            style={{ padding: '14px 32px', background: '#16a34a', color: '#fff', border: 'none', borderRadius: 8, fontSize: 16, fontWeight: 600, cursor: 'pointer' }}
+          >
+            Elegir funciones
+          </button>
+        </div>
+      )}
+
+      {step === 'selectSessions' && (
         <>
-          <p style={{ color: '#4b5563', marginBottom: 16 }}>Seleccioná al menos 2 funciones y tus ubicaciones para cada una.</p>
-          <div style={{ marginBottom: 24 }}>
-            <h4 style={{ marginBottom: 8 }}>Funciones disponibles</h4>
-            {sessions.length === 0 && <p>No hay funciones disponibles.</p>}
-            <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-              {sessions.map(session => (
-                <label key={session.id} style={{ display: 'flex', alignItems: 'center', gap: 10, padding: 10, border: '1px solid #e5e7eb', borderRadius: 6, cursor: 'pointer', background: selectedSessionIds.includes(session.id) ? '#eff6ff' : '#fff' }}>
-                  <input
-                    type="checkbox"
-                    checked={selectedSessionIds.includes(session.id)}
-                    onChange={() => toggleSession(session.id)}
-                  />
-                  <div>
-                    <div style={{ fontWeight: 600 }}>{formatDateLong(session.starts_at)} - {formatTime(session.starts_at)}</div>
-                    <div style={{ fontSize: 13, color: '#6b7280' }}>{session.sala || venueLabelMap[show?.venue_type] || 'Sala'}</div>
-                  </div>
-                </label>
-              ))}
-            </div>
+          <h4 style={{ marginBottom: 8 }}>¿Para qué funciones querés entradas?</h4>
+          <p style={{ color: '#6b7280', marginBottom: 16, fontSize: 14 }}>Seleccioná al menos 2 funciones.</p>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 8, marginBottom: 24 }}>
+            {sessions.map(session => (
+              <label key={session.id} style={{ display: 'flex', alignItems: 'center', gap: 10, padding: 12, border: '1px solid #e5e7eb', borderRadius: 6, cursor: 'pointer', background: selectedSessionIds.includes(session.id) ? '#eff6ff' : '#fff' }}>
+                <input
+                  type="checkbox"
+                  checked={selectedSessionIds.includes(session.id)}
+                  onChange={() => handleSessionToggle(session.id)}
+                />
+                <div style={{ flex: 1 }}>
+                  <div style={{ fontWeight: 600 }}>{formatDateLong(session.starts_at)} - {formatTime(session.starts_at)}</div>
+                  <div style={{ fontSize: 13, color: '#6b7280' }}>{session.sala || venueLabelMap[show?.venue_type] || 'Sala'}</div>
+                </div>
+              </label>
+            ))}
           </div>
 
-          {selectedSessionIds.length > 0 && (
-            <div style={{ marginBottom: 24 }}>
-              <h4 style={{ marginBottom: 8 }}>Seleccioná tus ubicaciones</h4>
-              {selectedSessionIds.map(sessionId => {
-                const session = sessions.find(s => s.id === sessionId);
-                return (
-                  <div key={sessionId} style={{ marginBottom: 16, padding: 12, border: '1px solid #e5e7eb', borderRadius: 8 }}>
-                    <div style={{ fontWeight: 600, marginBottom: 8 }}>{formatDateLong(session.starts_at)} - {formatTime(session.starts_at)}</div>
-                    {isSalaPrincipal ? (
-                      <SeatSelection
-                        showId={show.id}
-                        sessionId={sessionId}
-                        userId={user?.id || null}
-                        mode="spectator"
-                        onSelectionChange={(sel) => handleSelectionChange(sessionId, sel)}
-                      />
-                    ) : (
-                      <GeneralAdmissionSelection
-                        showId={show.id}
-                        sessionId={sessionId}
-                        userId={user?.id || null}
-                        mode="spectator"
-                        maxCapacity={session.capacity_override || show.general_capacity}
-                        ticketPrice={getBasePrice()}
-                        onSelectionChange={(sel) => handleSelectionChange(sessionId, sel)}
-                      />
-                    )}
-                  </div>
-                );
-              })}
-            </div>
+          {selectedSessionIds.length < 2 && (
+            <p style={{ color: '#dc3545', fontSize: 14, marginBottom: 16 }}>Tenés que elegir al menos 2 funciones para acceder al pack.</p>
           )}
 
-          {showServices.length > 0 && (
-            <div style={{ marginBottom: 24 }}>
-              <h4 style={{ marginBottom: 8 }}>Servicios adicionales</h4>
-              <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-                {showServices.map(svc => (
-                  <div key={svc.id} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: 10, border: '1px solid #e5e7eb', borderRadius: 6 }}>
-                    <div>
-                      <div style={{ fontWeight: 600 }}>{svc.name}</div>
-                      <div style={{ fontSize: 13, color: '#6b7280' }}>{formatCurrency(svc.price)} c/u</div>
-                    </div>
-                    <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                      <button onClick={() => handleServiceChange(svc.id, (selectedServices[svc.id] || 0) - 1)} style={{ width: 28, height: 28, borderRadius: '50%', border: '1px solid #ccc', cursor: 'pointer' }}>-</button>
-                      <span style={{ minWidth: 24, textAlign: 'center' }}>{selectedServices[svc.id] || 0}</span>
-                      <button onClick={() => handleServiceChange(svc.id, (selectedServices[svc.id] || 0) + 1)} style={{ width: 28, height: 28, borderRadius: '50%', border: '1px solid #ccc', cursor: 'pointer' }}>+</button>
-                    </div>
-                  </div>
-                ))}
-              </div>
-            </div>
-          )}
-
-          <div style={{ marginBottom: 24, padding: 12, background: '#f9fafb', borderRadius: 8 }}>
-            <label style={{ fontWeight: 600, display: 'block', marginBottom: 6 }}>Código de descuento</label>
-            <div style={{ display: 'flex', gap: 8 }}>
-              <input
-                type="text"
-                value={discountCode}
-                onChange={(e) => setDiscountCode(e.target.value)}
-                placeholder="Ingresá tu cupón"
-                style={{ flex: 1, padding: 8, borderRadius: 4, border: '1px solid #ccc' }}
-              />
-              <button onClick={validateDiscount} style={{ padding: '8px 16px', background: '#3b82f6', color: '#fff', border: 'none', borderRadius: 4, cursor: 'pointer' }}>Aplicar</button>
-            </div>
-            {appliedDiscount && <p style={{ color: '#16a34a', fontSize: 13, marginTop: 4 }}>Descuento aplicado: {appliedDiscount.alias || appliedDiscount.code}</p>}
-            {discountError && <p style={{ color: '#dc3545', fontSize: 13, marginTop: 4 }}>{discountError}</p>}
-          </div>
-
-          {error && <p style={{ color: '#dc3545', marginBottom: 16 }}>{error}</p>}
-
-          <div style={{ display: 'flex', justifyContent: 'flex-end' }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between' }}>
+            <button onClick={resetFlow} style={{ padding: '10px 20px', background: '#6b7280', color: '#fff', border: 'none', borderRadius: 6, cursor: 'pointer' }}>Cancelar</button>
             <button
-              onClick={fetchPreview}
-              disabled={!canProceedToPreview() || loading}
-              style={{
-                padding: '12px 24px',
-                background: canProceedToPreview() ? '#16a34a' : '#9ca3af',
-                color: '#fff',
-                border: 'none',
-                borderRadius: 6,
-                cursor: canProceedToPreview() ? 'pointer' : 'not-allowed',
-                fontWeight: 600
-              }}
+              onClick={() => { setCurrentSessionIndex(0); setStep('selectSeats'); }}
+              disabled={selectedSessionIds.length < 2}
+              style={{ padding: '12px 24px', background: selectedSessionIds.length >= 2 ? '#16a34a' : '#9ca3af', color: '#fff', border: 'none', borderRadius: 6, cursor: selectedSessionIds.length >= 2 ? 'pointer' : 'not-allowed', fontWeight: 600 }}
             >
-              {loading ? 'Procesando...' : 'Ver desglose del pack'}
+              Seleccionar mis butacas
             </button>
           </div>
         </>
       )}
 
-      {step === 'preview' && preview && (
+      {step === 'selectSeats' && currentSession && (
         <>
-          <h4 style={{ marginBottom: 12 }}>Desglose del Pack</h4>
-          <div style={{ marginBottom: 16 }}>
-            {preview.slotsBySession && Object.entries(preview.slotsBySession).map(([sessionId, slots]) => {
-              const session = sessions.find(s => s.id === sessionId);
-              const subtotal = slots.reduce((sum, s) => sum + Number(s.finalPrice || 0), 0);
-              return (
-                <div key={sessionId} style={{ marginBottom: 12, padding: 12, background: '#f9fafb', borderRadius: 8 }}>
-                  <div style={{ fontWeight: 600 }}>{formatDateLong(session?.starts_at)} - {formatTime(session?.starts_at)}</div>
-                  <div style={{ fontSize: 14, color: '#4b5563' }}>{slots.length} entradas · {formatCurrency(subtotal)}</div>
-                </div>
-              );
-            })}
-          </div>
+          <CartSummary />
+          <div style={{ paddingRight: 320 }}>
+            <div style={{ marginBottom: 16, padding: 16, background: '#f0fdf4', borderRadius: 8, border: '1px solid #86efac' }}>
+              <div style={{ fontSize: 12, color: '#166534', fontWeight: 600, textTransform: 'uppercase', letterSpacing: 0.5 }}>Función {currentSessionIndex + 1} de {selectedSessionIds.length}</div>
+              <div style={{ fontSize: 18, fontWeight: 700, color: '#166534' }}>{formatDateLong(currentSession.starts_at)} - {formatTime(currentSession.starts_at)}</div>
+              <div style={{ fontSize: 14, color: '#166534' }}>{venueLabelMap[show?.venue_type] || currentSession.sala || 'Sala'}</div>
+            </div>
 
-          <div style={{ marginBottom: 16, padding: 12, background: '#f0fdf4', borderRadius: 8 }}>
-            <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 4 }}><span>Subtotal entradas</span><span>{formatCurrency(preview.subtotal)}</span></div>
-            {preview.servicesSubtotal > 0 && <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 4 }}><span>Servicios</span><span>{formatCurrency(preview.servicesSubtotal)}</span></div>}
-            {preview.discountAmount > 0 && <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 4 }}><span>Descuento</span><span>-{formatCurrency(preview.discountAmount)}</span></div>}
-            <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 4 }}><span>Cargo por servicio ({serviceFeePercent}%)</span><span>{formatCurrency(preview.serviceFeeAmount)}</span></div>
-            <div style={{ display: 'flex', justifyContent: 'space-between', fontWeight: 700, fontSize: 18, marginTop: 8, paddingTop: 8, borderTop: '1px solid #bbf7d0' }}>
-              <span>TOTAL</span>
-              <span>{formatCurrency(preview.total)}</span>
+            {isSalaPrincipal ? (
+              <SeatSelection
+                showId={show.id}
+                sessionId={currentSession.id}
+                userId={user?.id || null}
+                mode="spectator"
+                onSelectionChange={handleSelectionChange}
+              />
+            ) : (
+              <GeneralAdmissionSelection
+                showId={show.id}
+                sessionId={currentSession.id}
+                userId={user?.id || null}
+                mode="spectator"
+                maxCapacity={currentSession.capacity_override || show.general_capacity}
+                ticketPrice={getBasePrice()}
+                onSelectionChange={handleSelectionChange}
+              />
+            )}
+
+            {error && <p style={{ color: '#dc3545', marginTop: 16 }}>{error}</p>}
+
+            <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: 24 }}>
+              <button
+                onClick={() => {
+                  if (currentSessionIndex === 0) {
+                    setStep('selectSessions');
+                  } else {
+                    setSelectionsBySession(prev => ({ ...prev, [currentSession.id]: currentSelection }));
+                    setCurrentSessionIndex(prev => prev - 1);
+                    setCurrentSelection(selectionsBySession[selectedSessionIds[currentSessionIndex - 1]] || null);
+                  }
+                }}
+                style={{ padding: '10px 20px', background: '#6b7280', color: '#fff', border: 'none', borderRadius: 6, cursor: 'pointer' }}
+              >
+                {currentSessionIndex === 0 ? 'Volver a funciones' : 'Función anterior'}
+              </button>
+              <button
+                onClick={handleNextFunction}
+                disabled={!isCurrentSelectionValid() || loading}
+                style={{
+                  padding: '12px 24px',
+                  background: isCurrentSelectionValid() ? '#16a34a' : '#9ca3af',
+                  color: '#fff',
+                  border: 'none',
+                  borderRadius: 6,
+                  cursor: isCurrentSelectionValid() ? 'pointer' : 'not-allowed',
+                  fontWeight: 600,
+                  fontSize: 15
+                }}
+              >
+                {loading ? 'Procesando...' : currentSessionIndex < selectedSessionIds.length - 1 ? 'Siguiente función →' : 'Ver resumen y pagar'}
+              </button>
             </div>
           </div>
+        </>
+      )}
 
-          {error && <p style={{ color: '#dc3545', marginBottom: 16 }}>{error}</p>}
+      {step === 'summary' && preview && (
+        <>
+          <CartSummary />
+          <div style={{ paddingRight: 320 }}>
+            <h4 style={{ marginBottom: 12 }}>Resumen del Pack</h4>
+            <div style={{ marginBottom: 16 }}>
+              {preview.slotsBySession && Object.entries(preview.slotsBySession).map(([sessionId, slots]) => {
+                const session = sessions.find(s => s.id === sessionId);
+                const subtotal = slots.reduce((sum, s) => sum + Number(s.finalPrice || 0), 0);
+                return (
+                  <div key={sessionId} style={{ marginBottom: 12, padding: 12, background: '#f9fafb', borderRadius: 8 }}>
+                    <div style={{ fontWeight: 600 }}>{formatDateLong(session?.starts_at)} - {formatTime(session?.starts_at)}</div>
+                    <div style={{ fontSize: 14, color: '#4b5563' }}>{slots.length} entradas · {formatCurrency(subtotal)}</div>
+                  </div>
+                );
+              })}
+            </div>
 
-          <div style={{ display: 'flex', justifyContent: 'space-between' }}>
-            <button onClick={() => setStep('select')} style={{ padding: '10px 20px', background: '#6b7280', color: '#fff', border: 'none', borderRadius: 6, cursor: 'pointer' }}>Volver</button>
-            <button onClick={payWithSipago} disabled={loading} style={{ padding: '10px 24px', background: '#16a34a', color: '#fff', border: 'none', borderRadius: 6, cursor: 'pointer', fontWeight: 600 }}>
-              {loading ? 'Procesando...' : 'Pagar pack'}
-            </button>
+            {showServices.length > 0 && (
+              <div style={{ marginBottom: 24, padding: 12, background: '#f9fafb', borderRadius: 8 }}>
+                <div style={{ fontWeight: 600, marginBottom: 8 }}>Servicios adicionales</div>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+                  {showServices.map(svc => (
+                    <div key={svc.id} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+                      <div>
+                        <div style={{ fontSize: 14 }}>{svc.name}</div>
+                        <div style={{ fontSize: 12, color: '#6b7280' }}>{formatCurrency(svc.price)} c/u</div>
+                      </div>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                        <button onClick={() => handleServiceChange(svc.id, (selectedServices[svc.id] || 0) - 1)} style={{ width: 28, height: 28, borderRadius: '50%', border: '1px solid #ccc', cursor: 'pointer' }}>-</button>
+                        <span style={{ minWidth: 24, textAlign: 'center' }}>{selectedServices[svc.id] || 0}</span>
+                        <button onClick={() => handleServiceChange(svc.id, (selectedServices[svc.id] || 0) + 1)} style={{ width: 28, height: 28, borderRadius: '50%', border: '1px solid #ccc', cursor: 'pointer' }}>+</button>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            <div style={{ marginBottom: 24, padding: 12, background: '#f9fafb', borderRadius: 8 }}>
+              <label style={{ fontWeight: 600, display: 'block', marginBottom: 6 }}>Código de descuento</label>
+              <div style={{ display: 'flex', gap: 8 }}>
+                <input
+                  type="text"
+                  value={discountCode}
+                  onChange={(e) => setDiscountCode(e.target.value)}
+                  placeholder="Ingresá tu cupón"
+                  style={{ flex: 1, padding: 8, borderRadius: 4, border: '1px solid #ccc' }}
+                />
+                <button onClick={validateDiscount} style={{ padding: '8px 16px', background: '#3b82f6', color: '#fff', border: 'none', borderRadius: 4, cursor: 'pointer' }}>Aplicar</button>
+              </div>
+              {appliedDiscount && <p style={{ color: '#16a34a', fontSize: 13, marginTop: 4 }}>Descuento aplicado: {appliedDiscount.alias || appliedDiscount.code}</p>}
+              {discountError && <p style={{ color: '#dc3545', fontSize: 13, marginTop: 4 }}>{discountError}</p>}
+            </div>
+
+            <div style={{ marginBottom: 24, padding: 16, background: '#f0fdf4', borderRadius: 8 }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 4 }}><span>Subtotal entradas</span><span>{formatCurrency(preview.subtotal)}</span></div>
+              {preview.servicesSubtotal > 0 && <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 4 }}><span>Servicios</span><span>{formatCurrency(preview.servicesSubtotal)}</span></div>}
+              {preview.discountAmount > 0 && <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 4 }}><span>Descuento</span><span>-{formatCurrency(preview.discountAmount)}</span></div>}
+              <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 4 }}><span>Cargo por servicio ({serviceFeePercent}%)</span><span>{formatCurrency(preview.serviceFeeAmount)}</span></div>
+              <div style={{ display: 'flex', justifyContent: 'space-between', fontWeight: 700, fontSize: 20, marginTop: 8, paddingTop: 8, borderTop: '1px solid #bbf7d0' }}>
+                <span>TOTAL</span>
+                <span>{formatCurrency(preview.total)}</span>
+              </div>
+            </div>
+
+            {error && <p style={{ color: '#dc3545', marginBottom: 16 }}>{error}</p>}
+
+            <div style={{ display: 'flex', justifyContent: 'space-between' }}>
+              <button onClick={() => { setCurrentSessionIndex(selectedSessionIds.length - 1); setStep('selectSeats'); }} style={{ padding: '10px 20px', background: '#6b7280', color: '#fff', border: 'none', borderRadius: 6, cursor: 'pointer' }}>Volver</button>
+              <button onClick={handleConfirmAndPay} disabled={loading} style={{ padding: '14px 28px', background: '#16a34a', color: '#fff', border: 'none', borderRadius: 6, cursor: 'pointer', fontWeight: 700, fontSize: 16 }}>
+                {loading ? 'Procesando...' : `Pagar ${formatCurrency(preview.total)}`}
+              </button>
+            </div>
           </div>
         </>
       )}
