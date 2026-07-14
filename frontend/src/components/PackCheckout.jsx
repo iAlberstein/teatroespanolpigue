@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useMemo } from 'react';
 import SeatSelection from './SeatSelection.jsx';
 import GeneralAdmissionSelection from './GeneralAdmissionSelection.jsx';
 import { apiFetch } from '../lib/api';
@@ -42,10 +42,8 @@ export default function PackCheckout({
       }
     };
     window.addEventListener('popstate', onPopState);
-
     const onResize = () => setIsMobile(window.innerWidth < 1024);
     window.addEventListener('resize', onResize);
-
     return () => {
       window.removeEventListener('popstate', onPopState);
       window.removeEventListener('resize', onResize);
@@ -59,6 +57,8 @@ export default function PackCheckout({
   };
 
   const isSalaPrincipal = show?.venue_type === 'sala_principal';
+  const packPricing = show?.pack_pricing_json || {};
+  const packMaxSessions = show?.pack_max_sessions || 3;
 
   const formatCurrency = (amount) =>
     new Intl.NumberFormat('es-AR', { style: 'currency', currency: 'ARS', minimumFractionDigits: 0 }).format(Number(amount || 0));
@@ -66,72 +66,52 @@ export default function PackCheckout({
   const getPricing = (selection) => selection?.pricing || show?.pricing_json || {};
   const getPriceTiers = (selection) => selection?.priceTiers || [];
 
-  const calculateSelectionItems = (selection) => {
-    const pricing = getPricing(selection);
-    const priceTiers = getPriceTiers(selection);
-    const items = [];
-    let subtotal = 0;
-
-    Array.from(selection?.selectedSeatIds || []).forEach(sid => {
-      const tierInfo = priceTiers.length > 0 ? getSeatPriceTier(sid, priceTiers) : null;
-      const price = tierInfo?.price ? Number(tierInfo.price) : Number(pricing.platea_general || 0);
-      items.push({ type: 'butaca', label: formatSeatLocation(sid, 'butaca'), price, quantity: 1 });
-      subtotal += price;
-    });
-
-    Array.from(selection?.selectedPalcosLabels || []).forEach(label => {
-      const isPB = /^PB/i.test(label);
-      const tierInfo = priceTiers.length > 0 ? getSeatPriceTier(label, priceTiers) : null;
-      const price = tierInfo?.price ? Number(tierInfo.price) : Number(isPB ? pricing.palcos_bajos || 0 : pricing.palcos_altos || 0);
-      const seats = isPB ? 4 : 2;
-      items.push({ type: 'palco', label: formatSeatLocation(label, 'palco'), price, quantity: 1, seats });
-      subtotal += price;
-    });
-
-    const pullmanCount = selection?.pullmanSelected || 0;
-    const generalCount = selection?.generalAdmissionCount || 0;
-
-    if (isSalaPrincipal && pullmanCount > 0) {
-      const price = Number(pricing.pullman || 0);
-      items.push({ type: 'pullman', label: 'Pullman', price, quantity: pullmanCount });
-      subtotal += price * pullmanCount;
-    } else if (!isSalaPrincipal && (generalCount > 0 || pullmanCount > 0)) {
-      const qty = generalCount > 0 ? generalCount : pullmanCount;
-      const price = Number(pricing.general || pricing.pullman || 0);
-      items.push({ type: 'general', label: 'Entrada General', price, quantity: qty });
-      subtotal += price * qty;
-    } else if (!isSalaPrincipal && pullmanCount > 0) {
-      const price = Number(pricing.pullman || 0);
-      items.push({ type: 'pullman', label: 'Pullman', price, quantity: pullmanCount });
-      subtotal += price * pullmanCount;
-    }
-
-    return { items, subtotal };
-  };
-
+  // Build reservation-style items from a selection
   const buildReservationItems = (selection) => {
     const items = [];
     if (!selection) return items;
     for (const sid of Array.from(selection.selectedSeatIds || new Set())) {
-      items.push({ type: 'butaca', section: 'Platea General', seat_code: sid });
+      items.push({ type: 'butaca', section: 'Platea General', seat_code: sid, price: getBasePrice(selection, { type: 'butaca', seat_code: sid }) });
     }
     for (const label of Array.from(selection.selectedPalcosLabels || new Set())) {
       const isPB = /^PB/i.test(label);
-      const pack = isPB ? 4 : 2;
-      items.push({ type: 'palco', section: label.startsWith('PB') ? 'Palcos Bajos' : 'Palcos Altos', seat_code: label, quantity: pack });
+      items.push({
+        type: 'palco',
+        section: isPB ? 'Palcos Bajos' : 'Palcos Altos',
+        seat_code: label,
+        quantity: isPB ? 4 : 2,
+        price: getBasePrice(selection, { type: 'palco', section: isPB ? 'Palcos Bajos' : 'Palcos Altos', seat_code: label })
+      });
     }
     const pullmanCount = selection.pullmanSelected || 0;
     const generalCount = selection.generalAdmissionCount || 0;
     const qty = isSalaPrincipal ? pullmanCount : (generalCount || pullmanCount);
     if (qty > 0) {
-      if (isSalaPrincipal) {
-        items.push({ type: 'pullman', section: 'Pullman', quantity: qty });
-      } else {
-        items.push({ type: 'general', section: 'General', quantity: qty });
-      }
+      const isGeneral = !isSalaPrincipal;
+      items.push({
+        type: isGeneral ? 'general' : 'pullman',
+        section: isGeneral ? 'General' : 'Pullman',
+        quantity: qty,
+        unit_price: isGeneral ? Number(getPricing(selection).general || 0) : Number(getPricing(selection).pullman || 0)
+      });
     }
     return items;
   };
+
+  function getBasePrice(selection, item) {
+    const pricing = getPricing(selection);
+    const priceTiers = getPriceTiers(selection);
+    if (item.type === 'butaca') {
+      const tierInfo = priceTiers.length > 0 ? getSeatPriceTier(item.seat_code, priceTiers) : null;
+      return tierInfo?.price ? Number(tierInfo.price) : Number(pricing.platea_general || 0);
+    }
+    if (item.type === 'palco') {
+      const isPB = /^PB/i.test(item.seat_code || item.section);
+      const tierInfo = priceTiers.length > 0 ? getSeatPriceTier(item.seat_code || item.section, priceTiers) : null;
+      return tierInfo?.price ? Number(tierInfo.price) : Number(isPB ? pricing.palcos_bajos || 0 : pricing.palcos_altos || 0);
+    }
+    return 0;
+  }
 
   const countTickets = (selection) => buildReservationItems(selection).reduce((sum, it) => sum + (it.quantity || 1), 0);
 
@@ -139,10 +119,7 @@ export default function PackCheckout({
     ? sessions.find(s => s.id === selectedSessionIds[currentSessionIndex])
     : null;
 
-  const isCurrentSelectionValid = () => {
-    const items = buildReservationItems(currentSelection);
-    return items.length > 0;
-  };
+  const isCurrentSelectionValid = () => buildReservationItems(currentSelection).length > 0;
 
   const handleSessionToggle = (sessionId) => {
     setSelectedSessionIds(prev => {
@@ -153,9 +130,7 @@ export default function PackCheckout({
     setCurrentSelection(null);
   };
 
-  const handleSelectionChange = (selection) => {
-    setCurrentSelection(selection);
-  };
+  const handleSelectionChange = (selection) => setCurrentSelection(selection);
 
   const handleServiceChange = (serviceId, quantity) => {
     setSelectedServices(prev => {
@@ -166,13 +141,137 @@ export default function PackCheckout({
     });
   };
 
-  const cartServiceItems = showServices
-    .filter(s => selectedServices[s.id] > 0)
-    .map(s => ({ service_id: s.id, name: s.name, price: Number(s.price), quantity: selectedServices[s.id] }));
+  const cartServiceItems = useMemo(() => {
+    return showServices
+      .filter(s => selectedServices[s.id] > 0)
+      .map(s => ({ service_id: s.id, name: s.name, price: Number(s.price), quantity: selectedServices[s.id] }));
+  }, [showServices, selectedServices]);
+
+  const serviceSubtotal = cartServiceItems.reduce((sum, s) => sum + s.price * s.quantity, 0);
+
+  // Frontend pack price calculation (mirrors backend packPricing.js)
+  const computePackPrices = () => {
+    const itemsBySession = {};
+    for (const sessionId of selectedSessionIds) {
+      const sel = sessionId === currentSession?.id ? currentSelection : selectionsBySession[sessionId];
+      const items = buildReservationItems(sel);
+      if (items.length > 0) itemsBySession[sessionId] = items;
+    }
+    if (!packPricing || !Object.keys(packPricing).length) return { slots: [], totals: { subtotal: 0, servicesSubtotal: 0, discountAmount: 0, serviceFeeAmount: 0, total: 0 } };
+
+    const slotsBySectionBySession = {};
+    for (const [sessionId, items] of Object.entries(itemsBySession)) {
+      for (const item of items) {
+        const section = getPackSection(item);
+        if (!slotsBySectionBySession[section]) slotsBySectionBySession[section] = {};
+        if (!slotsBySectionBySession[section][sessionId]) slotsBySectionBySession[section][sessionId] = [];
+        slotsBySectionBySession[section][sessionId].push(...expandItemToSlots(item, sessionId));
+      }
+    }
+
+    const result = [];
+    for (const [section, sessionSlots] of Object.entries(slotsBySectionBySession)) {
+      const sessionIds = Object.keys(sessionSlots);
+      for (const sessionId of sessionIds) {
+        sessionSlots[sessionId].sort((a, b) => b.originalPrice - a.originalPrice);
+      }
+      const maxCount = Math.max(0, ...sessionIds.map(id => sessionSlots[id].length));
+      for (let k = 0; k < maxCount; k++) {
+        let depth = 0;
+        for (const sessionId of sessionIds) {
+          if (sessionSlots[sessionId].length > k) depth++;
+        }
+        depth = Math.min(Math.max(1, depth), Math.max(1, Number(packMaxSessions) || 3));
+        const priceForDepth = packPricing?.[depth]?.[section] ?? packPricing?.[String(depth)]?.[section] ?? 0;
+        for (const sessionId of sessionIds) {
+          if (sessionSlots[sessionId].length > k) {
+            const slot = sessionSlots[sessionId][k];
+            slot.finalPrice = Number(priceForDepth);
+            result.push(slot);
+          }
+        }
+      }
+    }
+
+    const subtotal = result.reduce((sum, slot) => sum + (slot.finalPrice || 0), 0);
+    let discountAmount = 0;
+    if (appliedDiscount) {
+      const type = appliedDiscount.type;
+      const value = Number(appliedDiscount.value || 0);
+      if (type === 'percentage' || type === 'internal') {
+        const percent = type === 'internal' ? 100 : value;
+        const remaining = appliedDiscount.remaining_uses;
+        if (remaining != null) {
+          const ticketPrices = result.map(s => s.finalPrice || 0).sort((a, b) => b - a);
+          const count = Math.min(ticketPrices.length, Number(remaining));
+          discountAmount = Math.round(ticketPrices.slice(0, count).reduce((a, b) => a + b, 0) * (percent / 100));
+        } else {
+          discountAmount = Math.round(subtotal * (percent / 100));
+        }
+      } else if (type === 'fixed') {
+        discountAmount = Math.round(value);
+      }
+      discountAmount = Math.min(discountAmount, subtotal);
+    }
+    const serviceFeeAmount = Math.round((subtotal - discountAmount + serviceSubtotal) * (serviceFeePercent / 100));
+    const total = subtotal - discountAmount + serviceFeeAmount + serviceSubtotal;
+    return { slots: result, totals: { subtotal, servicesSubtotal: serviceSubtotal, discountAmount, serviceFeeAmount, total } };
+  };
+
+  const { slots: packSlots, totals: packTotals } = useMemo(computePackPrices, [
+    selectedSessionIds, selectionsBySession, currentSelection, currentSession, packPricing, packMaxSessions, appliedDiscount, serviceSubtotal, serviceFeePercent
+  ]);
+
+  const slotsBySession = useMemo(() => {
+    const map = {};
+    for (const slot of packSlots) {
+      if (!map[slot.session_id]) map[slot.session_id] = [];
+      map[slot.session_id].push(slot);
+    }
+    return map;
+  }, [packSlots]);
+
+  function getPackSection(item) {
+    if (!item || !item.type) return 'unknown';
+    const type = String(item.type).toLowerCase();
+    if (type === 'butaca') return 'platea_general';
+    if (type === 'palco') {
+      const sec = String(item.section || '').toLowerCase();
+      if (sec.includes('alto') || sec === 'palcos_altos') return 'palcos_altos';
+      return 'palcos_bajos';
+    }
+    if (type === 'pullman') return 'pullman';
+    if (type === 'general') return 'general';
+    return item.section || 'unknown';
+  }
+
+  function getOriginalPrice(item) {
+    if (!item) return 0;
+    if (item.type === 'butaca' || item.type === 'palco') return Number(item.price || 0);
+    return Number(item.unit_price || 0);
+  }
+
+  function expandItemToSlots(item, sessionId) {
+    const base = {
+      session_id: sessionId,
+      type: item.type,
+      section: getPackSection(item),
+      seat_code: item.seat_code || null,
+      capacity: item.type === 'palco' ? Number(item.capacity || 4) : 1,
+      quantity: 1,
+      originalPrice: getOriginalPrice(item),
+      finalPrice: null
+    };
+    if (item.type === 'pullman' || item.type === 'general') {
+      const qty = Math.max(1, Number(item.quantity || 1));
+      return Array.from({ length: qty }, () => ({ ...base }));
+    }
+    return [base];
+  }
 
   const validateDiscount = async () => {
     if (!discountCode.trim()) return;
-    const totalSeats = Object.values(selectionsBySession).reduce((sum, sel) => sum + countTickets(sel), 0) + countTickets(currentSelection);
+    const totalSeats = packSlots.length;
     setDiscountError('');
     try {
       const res = await apiFetch('/api/discounts/validate', {
@@ -195,15 +294,11 @@ export default function PackCheckout({
     }
   };
 
-  const createReservations = async () => {
-    const allSelections = { ...selectionsBySession };
-    if (currentSession && currentSelection) {
-      allSelections[currentSession.id] = currentSelection;
-    }
+  const createReservations = async (allSelections) => {
     const newReservations = {};
     for (const sessionId of selectedSessionIds) {
       const items = buildReservationItems(allSelections[sessionId]);
-      if (items.length === 0) continue;
+      if (items.length === 0) throw new Error(`Faltan selecciones para la función ${sessionId}`);
       const headers = { 'Content-Type': 'application/json' };
       if (token) headers['Authorization'] = `Bearer ${token}`;
       const body = { session_id: sessionId, items };
@@ -216,19 +311,16 @@ export default function PackCheckout({
       const data = await res.json();
       newReservations[sessionId] = data;
     }
-    if (Object.keys(newReservations).length !== selectedSessionIds.length) {
-      throw new Error('Faltan selecciones para algunas funciones');
-    }
     setReservationsBySession(newReservations);
     return newReservations;
   };
 
-  const fetchPreview = async () => {
+  const fetchPreview = async (allSelections) => {
     setLoading(true);
     setError('');
     setPreview(null);
     try {
-      const reservations = await createReservations();
+      const reservations = await createReservations(allSelections);
       const reservationIds = Object.values(reservations).map(r => r.id);
       const body = {
         reservation_ids: reservationIds,
@@ -248,21 +340,29 @@ export default function PackCheckout({
       setPreview(data);
     } catch (e) {
       setError(e.message);
+      throw e;
     } finally {
       setLoading(false);
     }
   };
 
-  const handleNextFunction = () => {
+  const handleNextFunction = async () => {
     if (!isCurrentSelectionValid()) return;
     if (!currentSession) return;
-    setSelectionsBySession(prev => ({ ...prev, [currentSession.id]: currentSelection }));
-    setCurrentSelection(null);
+    const updatedSelections = { ...selectionsBySession, [currentSession.id]: currentSelection };
+    setSelectionsBySession(updatedSelections);
+
     if (currentSessionIndex < selectedSessionIds.length - 1) {
+      setCurrentSelection(null);
       setCurrentSessionIndex(prev => prev + 1);
     } else {
-      setLoading(true);
-      fetchPreview().then(() => setStep('summary'));
+      try {
+        await fetchPreview(updatedSelections);
+        setCurrentSelection(null);
+        setStep('summary');
+      } catch (e) {
+        // Error already set in fetchPreview
+      }
     }
   };
 
@@ -334,43 +434,43 @@ export default function PackCheckout({
     }
   };
 
-  const handleGuestFormSubmit = (data) => {
-    onGuestCheckoutNeeded?.(data);
-  };
+  const handleGuestFormSubmit = (data) => onGuestCheckoutNeeded?.(data);
 
-  const cartTotalTickets = () => {
-    return selectedSessionIds.reduce((sum, sid) => sum + countTickets(selectionsBySession[sid]), 0) + countTickets(currentSelection);
-  };
+  const cartTotalTickets = () => packSlots.length;
 
-  const totalPackSubtotal = () => {
-    return selectedSessionIds.reduce((sum, sid) => {
-      const { subtotal } = calculateSelectionItems(selectionsBySession[sid]);
-      return sum + subtotal;
-    }, 0) + (currentSelection ? calculateSelectionItems(currentSelection).subtotal : 0);
-  };
-
-  const renderSessionItems = (selection) => {
-    const { items } = calculateSelectionItems(selection);
+  const renderSessionItems = (selection, sessionId) => {
+    const items = buildReservationItems(selection);
     if (items.length === 0) return <p style={{ color: '#6b7280', fontSize: 13, margin: 0 }}>Sin selección</p>;
+    const slots = slotsBySession[sessionId] || [];
+    let slotIdx = 0;
     return (
       <ul style={{ listStyle: 'none', padding: 0, margin: 0 }}>
-        {items.map((item, idx) => (
-          <li key={idx} style={{ display: 'flex', justifyContent: 'space-between', fontSize: 13, padding: '4px 0', borderBottom: '1px solid #f3f4f6' }}>
-            <span style={{ color: '#374151' }}>
-              {item.label} {item.quantity > 1 ? `x${item.quantity}` : ''}
-            </span>
-            <span style={{ fontWeight: 600, color: '#111827' }}>
-              {formatCurrency(item.price * item.quantity)}
-            </span>
-          </li>
-        ))}
+        {items.map((item, idx) => {
+          const qty = item.quantity || 1;
+          const itemSlots = slots.slice(slotIdx, slotIdx + qty);
+          slotIdx += qty;
+          const totalPrice = itemSlots.reduce((sum, s) => sum + (s?.finalPrice || 0), 0);
+          const avgPrice = itemSlots.length ? totalPrice / itemSlots.length : 0;
+          return (
+            <li key={idx} style={{ display: 'flex', justifyContent: 'space-between', fontSize: 13, padding: '4px 0', borderBottom: '1px solid #f3f4f6' }}>
+              <span style={{ color: '#374151' }}>
+                {item.type === 'butaca' && formatSeatLocation(item.seat_code, 'butaca')}
+                {item.type === 'palco' && formatSeatLocation(item.seat_code, 'palco')}
+                {(item.type === 'pullman' || item.type === 'general') && (item.type === 'general' ? 'Entrada General' : 'Pullman')}
+                {qty > 1 ? ` x${qty}` : ''}
+              </span>
+              <span style={{ fontWeight: 600, color: '#111827' }}>
+                {formatCurrency(totalPrice)}
+              </span>
+            </li>
+          );
+        })}
       </ul>
     );
   };
 
   const renderSidebar = () => {
     const completedSessions = selectedSessionIds.slice(0, currentSessionIndex);
-    const currentItems = currentSelection ? calculateSelectionItems(currentSelection) : { items: [], subtotal: 0 };
 
     return (
       <div style={{
@@ -392,12 +492,12 @@ export default function PackCheckout({
         {completedSessions.map((sid, idx) => {
           const session = sessions.find(s => s.id === sid);
           const selection = selectionsBySession[sid];
-          const { subtotal } = calculateSelectionItems(selection);
+          const subtotal = (slotsBySession[sid] || []).reduce((sum, s) => sum + (s.finalPrice || 0), 0);
           return (
             <div key={sid} style={{ paddingBottom: 10, borderBottom: '1px solid #f3f4f6' }}>
               <div style={{ fontWeight: 600, fontSize: 14, color: '#1e293b', marginBottom: 2 }}>Función {idx + 1}</div>
               <div style={{ fontSize: 12, color: '#64748b', marginBottom: 4 }}>{formatDateShort(session?.starts_at)} {formatTime(session?.starts_at)}</div>
-              {renderSessionItems(selection)}
+              {renderSessionItems(selection, sid)}
               <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 13, fontWeight: 600, marginTop: 4, color: '#1e293b' }}>
                 <span>Subtotal</span>
                 <span>{formatCurrency(subtotal)}</span>
@@ -410,21 +510,97 @@ export default function PackCheckout({
           <div style={{ paddingBottom: 10, borderBottom: '1px solid #f3f4f6' }}>
             <div style={{ fontWeight: 600, fontSize: 14, color: '#166534', marginBottom: 2 }}>Función actual</div>
             <div style={{ fontSize: 12, color: '#64748b', marginBottom: 4 }}>{formatDateShort(currentSession?.starts_at)} {formatTime(currentSession?.starts_at)}</div>
-            {renderSessionItems(currentSelection)}
+            {renderSessionItems(currentSelection, currentSession.id)}
             <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 13, fontWeight: 600, marginTop: 4, color: '#166534' }}>
               <span>Subtotal</span>
-              <span>{formatCurrency(currentItems.subtotal)}</span>
+              <span>{formatCurrency((slotsBySession[currentSession.id] || []).reduce((sum, s) => sum + (s.finalPrice || 0), 0))}</span>
             </div>
           </div>
         )}
 
-        <div style={{ display: 'flex', justifyContent: 'space-between', fontWeight: 700, paddingTop: 8, borderTop: '2px solid #333', color: '#1e293b' }}>
-          <span>Total entradas:</span>
-          <span>{cartTotalTickets()}</span>
-        </div>
-        <div style={{ display: 'flex', justifyContent: 'space-between', fontWeight: 700, color: '#1e293b' }}>
-          <span>Subtotal pack:</span>
-          <span>{formatCurrency(totalPackSubtotal())}</span>
+        {showServices.length > 0 && (
+          <div style={{ paddingTop: 8, borderTop: '1px solid #e5e7eb' }}>
+            <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 8, color: '#374151' }}>Servicios adicionales</div>
+            {showServices.map(svc => {
+              const qty = Math.min(selectedServices[svc.id] || 0, packSlots.length);
+              return (
+                <div key={svc.id} style={{ marginBottom: 10 }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 4 }}>
+                    <span style={{ fontSize: 13 }}>{svc.name}</span>
+                    <span style={{ fontSize: 13, fontWeight: 600 }}>{formatCurrency(svc.price)}/u</span>
+                  </div>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                    <button type="button" onClick={() => handleServiceChange(svc.id, (selectedServices[svc.id] || 0) - 1)} style={{ width: 24, height: 24, borderRadius: 4, border: '1px solid #d1d5db', background: '#f9fafb', cursor: 'pointer', fontWeight: 700 }}>−</button>
+                    <span style={{ minWidth: 24, textAlign: 'center', fontSize: 14 }}>{qty}</span>
+                    <button type="button" onClick={() => handleServiceChange(svc.id, (selectedServices[svc.id] || 0) + 1)} style={{ width: 24, height: 24, borderRadius: 4, border: '1px solid #d1d5db', background: '#f9fafb', cursor: 'pointer', fontWeight: 700 }}>+</button>
+                    {qty > 0 && <span style={{ marginLeft: 'auto', fontSize: 13, fontWeight: 600, color: '#1e40af' }}>{formatCurrency(svc.price * qty)}</span>}
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        )}
+
+        {!appliedDiscount ? (
+          <div style={{ paddingTop: 8, borderTop: '1px solid #e5e7eb' }}>
+            <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 4, color: '#374151' }}>¿Tenés un cupón?</div>
+            <div style={{ display: 'flex', gap: 4 }}>
+              <input
+                type="text"
+                value={discountCode}
+                onChange={(e) => setDiscountCode(e.target.value.toUpperCase())}
+                placeholder="CÓDIGO"
+                style={{ flex: 1, padding: '6px 8px', border: '1px solid #ccc', borderRadius: 4, fontSize: 13, textTransform: 'uppercase' }}
+              />
+              <button
+                onClick={validateDiscount}
+                disabled={!discountCode.trim() || loading}
+                style={{ padding: '6px 12px', background: discountCode.trim() ? '#3b82f6' : '#ccc', color: '#fff', border: 'none', borderRadius: 4, fontSize: 13, cursor: discountCode.trim() ? 'pointer' : 'not-allowed', fontWeight: 600 }}
+              >
+                Aplicar
+              </button>
+            </div>
+            {discountError && <div style={{ marginTop: 4, fontSize: 11, color: '#dc3545' }}>{discountError}</div>}
+          </div>
+        ) : (
+          <div style={{ padding: 8, background: '#d1fae5', border: '1px solid #a7f3d0', borderRadius: 4, display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+            <div>
+              <div style={{ fontSize: 12, color: '#065f46', fontWeight: 600 }}>{appliedDiscount?.alias || discountCode}</div>
+              <div style={{ fontSize: 11, color: '#059669' }}>Cupón aplicado</div>
+            </div>
+            <button onClick={() => { setAppliedDiscount(null); setDiscountCode(''); }} style={{ background: 'none', border: 'none', color: '#059669', cursor: 'pointer', fontSize: 18 }}>×</button>
+          </div>
+        )}
+
+        <div style={{ paddingTop: 8, borderTop: '2px solid #333', display: 'flex', flexDirection: 'column', gap: 6, fontSize: 14 }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', fontWeight: 600, color: '#1e293b' }}>
+            <span>Total entradas:</span>
+            <span>{cartTotalTickets()}</span>
+          </div>
+          <div style={{ display: 'flex', justifyContent: 'space-between', color: '#1e293b' }}>
+            <span>Subtotal pack:</span>
+            <span>{formatCurrency(packTotals.subtotal)}</span>
+          </div>
+          {packTotals.discountAmount > 0 && (
+            <div style={{ display: 'flex', justifyContent: 'space-between', color: '#059669', fontWeight: 600 }}>
+              <span>Descuento:</span>
+              <span>-{formatCurrency(packTotals.discountAmount)}</span>
+            </div>
+          )}
+          {packTotals.servicesSubtotal > 0 && (
+            <div style={{ display: 'flex', justifyContent: 'space-between', color: '#1e40af' }}>
+              <span>Servicios:</span>
+              <span>{formatCurrency(packTotals.servicesSubtotal)}</span>
+            </div>
+          )}
+          <div style={{ display: 'flex', justifyContent: 'space-between', color: '#666' }}>
+            <span>Cargo por servicio ({serviceFeePercent}%):</span>
+            <span>{formatCurrency(packTotals.serviceFeeAmount)}</span>
+          </div>
+          <div style={{ display: 'flex', justifyContent: 'space-between', fontWeight: 700, fontSize: 16, paddingTop: 6, borderTop: '1px solid #333', color: '#1e293b' }}>
+            <span>TOTAL:</span>
+            <span>{formatCurrency(packTotals.total)}</span>
+          </div>
         </div>
 
         {currentSession && (
@@ -444,7 +620,7 @@ export default function PackCheckout({
                 fontSize: 15
               }}
             >
-              {loading ? 'Procesando...' : currentSessionIndex < selectedSessionIds.length - 1 ? 'Siguiente función →' : 'Ver resumen y pagar'}
+              {loading ? 'Procesando...' : currentSessionIndex < selectedSessionIds.length - 1 ? 'Siguiente función →' : `Ver resumen y pagar · ${formatCurrency(packTotals.total)}`}
             </button>
             <button
               onClick={() => window.location.href = '/'}
@@ -472,12 +648,8 @@ export default function PackCheckout({
       <div style={{ padding: 24, background: '#fff', borderRadius: 12, border: '1px solid #ddd', maxWidth: 600, margin: '0 auto' }}>
         <h3 style={{ marginTop: 0 }}>Pack Multi-Función</h3>
         <p>Para comprar un pack de funciones, primero tenés que iniciar sesión o continuar como invitado.</p>
-        <button onClick={() => onGuestCheckoutNeeded?.()} style={{ padding: '10px 20px', background: '#3b82f6', color: '#fff', border: 'none', borderRadius: 6, cursor: 'pointer' }}>
-          Continuar
-        </button>
-        <button onClick={() => window.location.href = '/'} style={{ marginLeft: 12, padding: '10px 20px', background: '#6b7280', color: '#fff', border: 'none', borderRadius: 6, cursor: 'pointer' }}>
-          Cancelar
-        </button>
+        <button onClick={() => onGuestCheckoutNeeded?.()} style={{ padding: '10px 20px', background: '#3b82f6', color: '#fff', border: 'none', borderRadius: 6, cursor: 'pointer' }}>Continuar</button>
+        <button onClick={() => window.location.href = '/'} style={{ marginLeft: 12, padding: '10px 20px', background: '#6b7280', color: '#fff', border: 'none', borderRadius: 6, cursor: 'pointer' }}>Cancelar</button>
       </div>
     );
   }
@@ -537,24 +709,13 @@ export default function PackCheckout({
 
       {step === 'selectSeats' && currentSession && (
         <>
-          <div style={{
-            marginBottom: 16,
-            padding: 16,
-            background: '#f0fdf4',
-            borderRadius: 8,
-            border: '1px solid #86efac'
-          }}>
+          <div style={{ marginBottom: 16, padding: 16, background: '#f0fdf4', borderRadius: 8, border: '1px solid #86efac' }}>
             <div style={{ fontSize: 12, color: '#166534', fontWeight: 600, textTransform: 'uppercase', letterSpacing: 0.5 }}>Función {currentSessionIndex + 1} de {selectedSessionIds.length}</div>
             <div style={{ fontSize: 18, fontWeight: 700, color: '#166534' }}>{show.title}</div>
             <div style={{ fontSize: 15, color: '#166534' }}>{formatDateLong(currentSession.starts_at)} - {formatTime(currentSession.starts_at)} hs · {venueLabelMap[show?.venue_type] || currentSession.sala || 'Sala'}</div>
           </div>
 
-          <div style={{
-            display: 'flex',
-            flexDirection: isMobile ? 'column' : 'row',
-            gap: 24,
-            alignItems: 'flex-start'
-          }}>
+          <div style={{ display: 'flex', flexDirection: isMobile ? 'column' : 'row', gap: 24, alignItems: 'flex-start' }}>
             <div style={{ flex: '1 1 0%', minWidth: 0 }}>
               {isSalaPrincipal ? (
                 <SeatSelection
@@ -576,7 +737,6 @@ export default function PackCheckout({
                   sidebarContent={null}
                 />
               )}
-
               {error && <p style={{ color: '#dc3545', marginTop: 16 }}>{error}</p>}
             </div>
 
@@ -595,78 +755,91 @@ export default function PackCheckout({
         </>
       )}
 
-      {step === 'summary' && preview && (
+      {step === 'summary' && (
         <div style={{ maxWidth: 800, margin: '0 auto' }}>
           <h4 style={{ marginBottom: 16, color: '#1e293b' }}>Resumen del Pack</h4>
-          <div style={{ marginBottom: 16 }}>
-            {preview.slotsBySession && Object.entries(preview.slotsBySession).map(([sessionId, slots]) => {
-              const session = sessions.find(s => s.id === sessionId);
-              const subtotal = slots.reduce((sum, s) => sum + Number(s.finalPrice || 0), 0);
-              return (
-                <div key={sessionId} style={{ marginBottom: 12, padding: 12, background: '#f9fafb', borderRadius: 8 }}>
-                  <div style={{ fontWeight: 600, color: '#1e293b' }}>{formatDateLong(session?.starts_at)} - {formatTime(session?.starts_at)}</div>
-                  <div style={{ fontSize: 14, color: '#4b5563' }}>{slots.length} entradas · {formatCurrency(subtotal)}</div>
-                </div>
-              );
-            })}
-          </div>
-
-          {showServices.length > 0 && (
-            <div style={{ marginBottom: 24, padding: 12, background: '#f9fafb', borderRadius: 8 }}>
-              <div style={{ fontWeight: 600, marginBottom: 8, color: '#1e293b' }}>Servicios adicionales</div>
-              <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-                {showServices.map(svc => (
-                  <div key={svc.id} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-                    <div>
-                      <div style={{ fontSize: 14, color: '#1e293b' }}>{svc.name}</div>
-                      <div style={{ fontSize: 12, color: '#6b7280' }}>{formatCurrency(svc.price)} c/u</div>
+          {!preview ? (
+            <div style={{ padding: 24, textAlign: 'center' }}>
+              <p>{loading ? 'Cargando desglose...' : (error || 'No se pudo cargar el resumen. Intentá de nuevo.')}</p>
+              {!loading && !error && (
+                <button onClick={() => setStep('selectSeats')} style={{ marginTop: 16, padding: '10px 20px', background: '#3b82f6', color: '#fff', border: 'none', borderRadius: 6, cursor: 'pointer' }}>
+                  Volver a la selección
+                </button>
+              )}
+            </div>
+          ) : (
+            <>
+              <div style={{ marginBottom: 16 }}>
+                {preview.slotsBySession && Object.entries(preview.slotsBySession).map(([sessionId, slots]) => {
+                  const session = sessions.find(s => s.id === sessionId);
+                  const subtotal = slots.reduce((sum, s) => sum + Number(s.finalPrice || 0), 0);
+                  return (
+                    <div key={sessionId} style={{ marginBottom: 12, padding: 12, background: '#f9fafb', borderRadius: 8 }}>
+                      <div style={{ fontWeight: 600, color: '#1e293b' }}>{formatDateLong(session?.starts_at)} - {formatTime(session?.starts_at)}</div>
+                      <div style={{ fontSize: 14, color: '#4b5563' }}>{slots.length} entradas · {formatCurrency(subtotal)}</div>
                     </div>
-                    <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                      <button onClick={() => handleServiceChange(svc.id, (selectedServices[svc.id] || 0) - 1)} style={{ width: 28, height: 28, borderRadius: '50%', border: '1px solid #ccc', cursor: 'pointer' }}>-</button>
-                      <span style={{ minWidth: 24, textAlign: 'center' }}>{selectedServices[svc.id] || 0}</span>
-                      <button onClick={() => handleServiceChange(svc.id, (selectedServices[svc.id] || 0) + 1)} style={{ width: 28, height: 28, borderRadius: '50%', border: '1px solid #ccc', cursor: 'pointer' }}>+</button>
-                    </div>
-                  </div>
-                ))}
+                  );
+                })}
               </div>
-            </div>
+
+              {showServices.length > 0 && (
+                <div style={{ marginBottom: 24, padding: 12, background: '#f9fafb', borderRadius: 8 }}>
+                  <div style={{ fontWeight: 600, marginBottom: 8, color: '#1e293b' }}>Servicios adicionales</div>
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+                    {showServices.map(svc => (
+                      <div key={svc.id} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+                        <div>
+                          <div style={{ fontSize: 14, color: '#1e293b' }}>{svc.name}</div>
+                          <div style={{ fontSize: 12, color: '#6b7280' }}>{formatCurrency(svc.price)} c/u</div>
+                        </div>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                          <button onClick={() => handleServiceChange(svc.id, (selectedServices[svc.id] || 0) - 1)} style={{ width: 28, height: 28, borderRadius: '50%', border: '1px solid #ccc', cursor: 'pointer' }}>-</button>
+                          <span style={{ minWidth: 24, textAlign: 'center' }}>{selectedServices[svc.id] || 0}</span>
+                          <button onClick={() => handleServiceChange(svc.id, (selectedServices[svc.id] || 0) + 1)} style={{ width: 28, height: 28, borderRadius: '50%', border: '1px solid #ccc', cursor: 'pointer' }}>+</button>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              <div style={{ marginBottom: 24, padding: 12, background: '#f9fafb', borderRadius: 8 }}>
+                <label style={{ fontWeight: 600, display: 'block', marginBottom: 6, color: '#1e293b' }}>Código de descuento</label>
+                <div style={{ display: 'flex', gap: 8 }}>
+                  <input
+                    type="text"
+                    value={discountCode}
+                    onChange={(e) => setDiscountCode(e.target.value)}
+                    placeholder="Ingresá tu cupón"
+                    style={{ flex: 1, padding: 8, borderRadius: 4, border: '1px solid #ccc' }}
+                  />
+                  <button onClick={validateDiscount} style={{ padding: '8px 16px', background: '#3b82f6', color: '#fff', border: 'none', borderRadius: 4, cursor: 'pointer' }}>Aplicar</button>
+                </div>
+                {appliedDiscount && <p style={{ color: '#16a34a', fontSize: 13, marginTop: 4 }}>Descuento aplicado: {appliedDiscount.alias || appliedDiscount.code}</p>}
+                {discountError && <p style={{ color: '#dc3545', fontSize: 13, marginTop: 4 }}>{discountError}</p>}
+              </div>
+
+              <div style={{ marginBottom: 24, padding: 16, background: '#f0fdf4', borderRadius: 8 }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 4, color: '#1e293b' }}><span>Subtotal entradas</span><span>{formatCurrency(preview.subtotal)}</span></div>
+                {preview.servicesSubtotal > 0 && <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 4, color: '#1e293b' }}><span>Servicios</span><span>{formatCurrency(preview.servicesSubtotal)}</span></div>}
+                {preview.discountAmount > 0 && <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 4, color: '#1e293b' }}><span>Descuento</span><span>-{formatCurrency(preview.discountAmount)}</span></div>}
+                <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 4, color: '#1e293b' }}><span>Cargo por servicio ({serviceFeePercent}%)</span><span>{formatCurrency(preview.serviceFeeAmount)}</span></div>
+                <div style={{ display: 'flex', justifyContent: 'space-between', fontWeight: 700, fontSize: 20, marginTop: 8, paddingTop: 8, borderTop: '1px solid #bbf7d0', color: '#1e293b' }}>
+                  <span>TOTAL</span>
+                  <span>{formatCurrency(preview.total)}</span>
+                </div>
+              </div>
+
+              {error && <p style={{ color: '#dc3545', marginBottom: 16 }}>{error}</p>}
+
+              <div style={{ display: 'flex', justifyContent: 'space-between' }}>
+                <button onClick={() => window.location.href = '/'} style={{ padding: '10px 20px', background: '#6b7280', color: '#fff', border: 'none', borderRadius: 6, cursor: 'pointer' }}>Cancelar</button>
+                <button onClick={handleConfirmAndPay} disabled={loading} style={{ padding: '14px 28px', background: '#16a34a', color: '#fff', border: 'none', borderRadius: 6, cursor: 'pointer', fontWeight: 700, fontSize: 16 }}>
+                  {loading ? 'Procesando...' : `Pagar ${formatCurrency(preview.total)}`}
+                </button>
+              </div>
+            </>
           )}
-
-          <div style={{ marginBottom: 24, padding: 12, background: '#f9fafb', borderRadius: 8 }}>
-            <label style={{ fontWeight: 600, display: 'block', marginBottom: 6, color: '#1e293b' }}>Código de descuento</label>
-            <div style={{ display: 'flex', gap: 8 }}>
-              <input
-                type="text"
-                value={discountCode}
-                onChange={(e) => setDiscountCode(e.target.value)}
-                placeholder="Ingresá tu cupón"
-                style={{ flex: 1, padding: 8, borderRadius: 4, border: '1px solid #ccc' }}
-              />
-              <button onClick={validateDiscount} style={{ padding: '8px 16px', background: '#3b82f6', color: '#fff', border: 'none', borderRadius: 4, cursor: 'pointer' }}>Aplicar</button>
-            </div>
-            {appliedDiscount && <p style={{ color: '#16a34a', fontSize: 13, marginTop: 4 }}>Descuento aplicado: {appliedDiscount.alias || appliedDiscount.code}</p>}
-            {discountError && <p style={{ color: '#dc3545', fontSize: 13, marginTop: 4 }}>{discountError}</p>}
-          </div>
-
-          <div style={{ marginBottom: 24, padding: 16, background: '#f0fdf4', borderRadius: 8 }}>
-            <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 4, color: '#1e293b' }}><span>Subtotal entradas</span><span>{formatCurrency(preview.subtotal)}</span></div>
-            {preview.servicesSubtotal > 0 && <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 4, color: '#1e293b' }}><span>Servicios</span><span>{formatCurrency(preview.servicesSubtotal)}</span></div>}
-            {preview.discountAmount > 0 && <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 4, color: '#1e293b' }}><span>Descuento</span><span>-{formatCurrency(preview.discountAmount)}</span></div>}
-            <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 4, color: '#1e293b' }}><span>Cargo por servicio ({serviceFeePercent}%)</span><span>{formatCurrency(preview.serviceFeeAmount)}</span></div>
-            <div style={{ display: 'flex', justifyContent: 'space-between', fontWeight: 700, fontSize: 20, marginTop: 8, paddingTop: 8, borderTop: '1px solid #bbf7d0', color: '#1e293b' }}>
-              <span>TOTAL</span>
-              <span>{formatCurrency(preview.total)}</span>
-            </div>
-          </div>
-
-          {error && <p style={{ color: '#dc3545', marginBottom: 16 }}>{error}</p>}
-
-          <div style={{ display: 'flex', justifyContent: 'space-between' }}>
-            <button onClick={() => window.location.href = '/'} style={{ padding: '10px 20px', background: '#6b7280', color: '#fff', border: 'none', borderRadius: 6, cursor: 'pointer' }}>Cancelar</button>
-            <button onClick={handleConfirmAndPay} disabled={loading} style={{ padding: '14px 28px', background: '#16a34a', color: '#fff', border: 'none', borderRadius: 6, cursor: 'pointer', fontWeight: 700, fontSize: 16 }}>
-              {loading ? 'Procesando...' : `Pagar ${formatCurrency(preview.total)}`}
-            </button>
-          </div>
         </div>
       )}
     </div>
