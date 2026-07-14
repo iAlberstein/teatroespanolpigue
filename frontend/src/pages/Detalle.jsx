@@ -1588,7 +1588,7 @@ export default function Detalle(){
     >
       
       {/* Session selector (only if multiple sessions) */}
-      {sessions.length > 1 && (
+      {!showPackCheckout && sessions.length > 1 && (
         <div style={{ marginBottom: 24, paddingTop: 80, textAlign: 'center' }}>
           <h3 style={{ 
             fontSize: 18, 
@@ -1646,7 +1646,10 @@ export default function Detalle(){
           textAlign: 'center'
         }}>
           <h3 style={{ margin: '0 0 8px 0', color: '#166534' }}>Pack Multi-Función</h3>
-          <p style={{ margin: '0 0 16px 0', color: '#166534', fontSize: 15 }}>
+          <p style={{ margin: '0 0 4px 0', color: '#166534', fontSize: 15, fontWeight: 600 }}>
+            Comprando para más de una función tus entradas tienen descuento.
+          </p>
+          <p style={{ margin: '0 0 16px 0', color: '#166534', fontSize: 14 }}>
             Comprá entradas para {Math.min(show.pack_max_sessions || 3, sessions.length)} funciones y accedé a precios especiales.
           </p>
           <button
@@ -1721,6 +1724,28 @@ export default function Detalle(){
         border: '1px solid #e5e7eb',
         boxShadow: '0 10px 25px rgba(15, 23, 42, 0.05)'
       }}>
+        {showPackCheckout ? (
+          <PackCheckout
+            show={show}
+            sessions={sessions}
+            user={user}
+            token={token}
+            isGuest={isGuest}
+            guestData={guestData}
+            onGuestCheckoutNeeded={(data) => {
+              if (data) {
+                setGuestData(data);
+                setIsGuest(true);
+              } else {
+                setShowGuestModal(true);
+              }
+            }}
+            serviceFeePercent={serviceFeePercent}
+            showServices={showServices}
+            onClose={() => setShowPackCheckout(false)}
+          />
+        ) : (
+        <>
         {selectedSession && show && (
           <div style={{
             padding: isWideLayout ? '0 0 16px 0' : '0 24px 16px 24px',
@@ -1836,6 +1861,8 @@ export default function Detalle(){
             </div>
           )}
         </div>
+        </>
+      )}
       </section>
       )}
 
@@ -1856,41 +1883,6 @@ export default function Detalle(){
           loading={false}
           submitLabel={calculatePrices().total === 0 && appliedDiscount ? 'Emitir entradas' : 'Continuar al pago'}
         />
-      )}
-
-      {/* Pack Multi-Function Checkout */}
-      {showPackCheckout && (
-        <div style={{
-          position: 'fixed',
-          inset: 0,
-          background: 'rgba(0,0,0,0.5)',
-          backdropFilter: 'blur(4px)',
-          zIndex: 10000,
-          overflowY: 'auto',
-          padding: '90px 16px 40px 16px'
-        }}>
-          <div style={{ maxWidth: 900, margin: '0 auto' }}>
-            <PackCheckout
-              show={show}
-              sessions={sessions}
-              user={user}
-              token={token}
-              isGuest={isGuest}
-              guestData={guestData}
-              onGuestCheckoutNeeded={(data) => {
-                if (data) {
-                  setGuestData(data);
-                  setIsGuest(true);
-                } else {
-                  setShowGuestModal(true);
-                }
-              }}
-              serviceFeePercent={serviceFeePercent}
-              showServices={showServices}
-              onClose={() => setShowPackCheckout(false)}
-            />
-          </div>
-        </div>
       )}
 
       {/* Mobile Cart Peek - Fixed bottom bar (for all venue types on mobile) */}
