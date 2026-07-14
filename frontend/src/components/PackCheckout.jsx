@@ -3,6 +3,8 @@ import SeatSelection from './SeatSelection.jsx';
 import GeneralAdmissionSelection from './GeneralAdmissionSelection.jsx';
 import { apiFetch } from '../lib/api';
 import { formatDateLong, formatTime, formatDateShort } from '../lib/dateFormatter.js';
+import { formatSeatLocation } from '../lib/seatFormatter.js';
+import { getSeatPriceTier } from '../lib/seatPriceColors.js';
 import GuestCheckoutForm from './GuestCheckoutForm.jsx';
 
 export default function PackCheckout({
@@ -61,15 +63,53 @@ export default function PackCheckout({
   const formatCurrency = (amount) =>
     new Intl.NumberFormat('es-AR', { style: 'currency', currency: 'ARS', minimumFractionDigits: 0 }).format(Number(amount || 0));
 
-  const getBasePrice = () => {
-    const pricing = show?.pricing_json || {};
-    if (isSalaPrincipal) {
-      return pricing.platea_general || 0;
+  const getPricing = (selection) => selection?.pricing || show?.pricing_json || {};
+  const getPriceTiers = (selection) => selection?.priceTiers || [];
+
+  const calculateSelectionItems = (selection) => {
+    const pricing = getPricing(selection);
+    const priceTiers = getPriceTiers(selection);
+    const items = [];
+    let subtotal = 0;
+
+    Array.from(selection?.selectedSeatIds || []).forEach(sid => {
+      const tierInfo = priceTiers.length > 0 ? getSeatPriceTier(sid, priceTiers) : null;
+      const price = tierInfo?.price ? Number(tierInfo.price) : Number(pricing.platea_general || 0);
+      items.push({ type: 'butaca', label: formatSeatLocation(sid, 'butaca'), price, quantity: 1 });
+      subtotal += price;
+    });
+
+    Array.from(selection?.selectedPalcosLabels || []).forEach(label => {
+      const isPB = /^PB/i.test(label);
+      const tierInfo = priceTiers.length > 0 ? getSeatPriceTier(label, priceTiers) : null;
+      const price = tierInfo?.price ? Number(tierInfo.price) : Number(isPB ? pricing.palcos_bajos || 0 : pricing.palcos_altos || 0);
+      const seats = isPB ? 4 : 2;
+      items.push({ type: 'palco', label: formatSeatLocation(label, 'palco'), price, quantity: 1, seats });
+      subtotal += price;
+    });
+
+    const pullmanCount = selection?.pullmanSelected || 0;
+    const generalCount = selection?.generalAdmissionCount || 0;
+
+    if (isSalaPrincipal && pullmanCount > 0) {
+      const price = Number(pricing.pullman || 0);
+      items.push({ type: 'pullman', label: 'Pullman', price, quantity: pullmanCount });
+      subtotal += price * pullmanCount;
+    } else if (!isSalaPrincipal && (generalCount > 0 || pullmanCount > 0)) {
+      const qty = generalCount > 0 ? generalCount : pullmanCount;
+      const price = Number(pricing.general || pricing.pullman || 0);
+      items.push({ type: 'general', label: 'Entrada General', price, quantity: qty });
+      subtotal += price * qty;
+    } else if (!isSalaPrincipal && pullmanCount > 0) {
+      const price = Number(pricing.pullman || 0);
+      items.push({ type: 'pullman', label: 'Pullman', price, quantity: pullmanCount });
+      subtotal += price * pullmanCount;
     }
-    return pricing.general || 0;
+
+    return { items, subtotal };
   };
 
-  const buildItems = (selection) => {
+  const buildReservationItems = (selection) => {
     const items = [];
     if (!selection) return items;
     for (const sid of Array.from(selection.selectedSeatIds || new Set())) {
@@ -93,14 +133,14 @@ export default function PackCheckout({
     return items;
   };
 
-  const countTickets = (selection) => buildItems(selection).reduce((sum, it) => sum + (it.quantity || 1), 0);
+  const countTickets = (selection) => buildReservationItems(selection).reduce((sum, it) => sum + (it.quantity || 1), 0);
 
   const currentSession = selectedSessionIds[currentSessionIndex]
     ? sessions.find(s => s.id === selectedSessionIds[currentSessionIndex])
     : null;
 
   const isCurrentSelectionValid = () => {
-    const items = buildItems(currentSelection);
+    const items = buildReservationItems(currentSelection);
     return items.length > 0;
   };
 
@@ -162,7 +202,7 @@ export default function PackCheckout({
     }
     const newReservations = {};
     for (const sessionId of selectedSessionIds) {
-      const items = buildItems(allSelections[sessionId]);
+      const items = buildReservationItems(allSelections[sessionId]);
       if (items.length === 0) continue;
       const headers = { 'Content-Type': 'application/json' };
       if (token) headers['Authorization'] = `Bearer ${token}`;
@@ -298,26 +338,40 @@ export default function PackCheckout({
     onGuestCheckoutNeeded?.(data);
   };
 
-  const resetFlow = () => {
-    setStep('selectSessions');
-    setSelectedSessionIds([]);
-    setCurrentSessionIndex(0);
-    setSelectionsBySession({});
-    setReservationsBySession({});
-    setCurrentSelection(null);
-    setAppliedDiscount(null);
-    setDiscountCode('');
-    setSelectedServices({});
-    setPreview(null);
-    setError('');
-  };
-
   const cartTotalTickets = () => {
     return selectedSessionIds.reduce((sum, sid) => sum + countTickets(selectionsBySession[sid]), 0) + countTickets(currentSelection);
   };
 
+  const totalPackSubtotal = () => {
+    return selectedSessionIds.reduce((sum, sid) => {
+      const { subtotal } = calculateSelectionItems(selectionsBySession[sid]);
+      return sum + subtotal;
+    }, 0) + (currentSelection ? calculateSelectionItems(currentSelection).subtotal : 0);
+  };
+
+  const renderSessionItems = (selection) => {
+    const { items } = calculateSelectionItems(selection);
+    if (items.length === 0) return <p style={{ color: '#6b7280', fontSize: 13, margin: 0 }}>Sin selección</p>;
+    return (
+      <ul style={{ listStyle: 'none', padding: 0, margin: 0 }}>
+        {items.map((item, idx) => (
+          <li key={idx} style={{ display: 'flex', justifyContent: 'space-between', fontSize: 13, padding: '4px 0', borderBottom: '1px solid #f3f4f6' }}>
+            <span style={{ color: '#374151' }}>
+              {item.label} {item.quantity > 1 ? `x${item.quantity}` : ''}
+            </span>
+            <span style={{ fontWeight: 600, color: '#111827' }}>
+              {formatCurrency(item.price * item.quantity)}
+            </span>
+          </li>
+        ))}
+      </ul>
+    );
+  };
+
   const renderSidebar = () => {
     const completedSessions = selectedSessionIds.slice(0, currentSessionIndex);
+    const currentItems = currentSelection ? calculateSelectionItems(currentSelection) : { items: [], subtotal: 0 };
+
     return (
       <div style={{
         background: '#fff',
@@ -330,31 +384,85 @@ export default function PackCheckout({
         gap: 12
       }}>
         <h4 style={{ margin: 0, fontSize: 16, color: '#1e293b' }}>Tu pack</h4>
+
         {completedSessions.length === 0 && !currentSession && (
           <p style={{ color: '#6b7280', fontSize: 14, margin: 0 }}>Aún no seleccionaste funciones.</p>
         )}
+
         {completedSessions.map((sid, idx) => {
           const session = sessions.find(s => s.id === sid);
-          const items = buildItems(selectionsBySession[sid]);
+          const selection = selectionsBySession[sid];
+          const { subtotal } = calculateSelectionItems(selection);
           return (
             <div key={sid} style={{ paddingBottom: 10, borderBottom: '1px solid #f3f4f6' }}>
-              <div style={{ fontWeight: 600, fontSize: 14, color: '#1e293b' }}>Función {idx + 1}</div>
-              <div style={{ fontSize: 12, color: '#64748b' }}>{formatDateShort(session?.starts_at)} {formatTime(session?.starts_at)}</div>
-              <div style={{ fontSize: 13, color: '#4b5563' }}>{items.reduce((sum, it) => sum + (it.quantity || 1), 0)} entradas</div>
+              <div style={{ fontWeight: 600, fontSize: 14, color: '#1e293b', marginBottom: 2 }}>Función {idx + 1}</div>
+              <div style={{ fontSize: 12, color: '#64748b', marginBottom: 4 }}>{formatDateShort(session?.starts_at)} {formatTime(session?.starts_at)}</div>
+              {renderSessionItems(selection)}
+              <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 13, fontWeight: 600, marginTop: 4, color: '#1e293b' }}>
+                <span>Subtotal</span>
+                <span>{formatCurrency(subtotal)}</span>
+              </div>
             </div>
           );
         })}
+
         {currentSession && (
           <div style={{ paddingBottom: 10, borderBottom: '1px solid #f3f4f6' }}>
-            <div style={{ fontWeight: 600, fontSize: 14, color: '#166534' }}>Función actual</div>
-            <div style={{ fontSize: 12, color: '#64748b' }}>{formatDateShort(currentSession?.starts_at)} {formatTime(currentSession?.starts_at)}</div>
-            <div style={{ fontSize: 13, color: '#4b5563' }}>{countTickets(currentSelection)} entradas seleccionadas</div>
+            <div style={{ fontWeight: 600, fontSize: 14, color: '#166534', marginBottom: 2 }}>Función actual</div>
+            <div style={{ fontSize: 12, color: '#64748b', marginBottom: 4 }}>{formatDateShort(currentSession?.starts_at)} {formatTime(currentSession?.starts_at)}</div>
+            {renderSessionItems(currentSelection)}
+            <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 13, fontWeight: 600, marginTop: 4, color: '#166534' }}>
+              <span>Subtotal</span>
+              <span>{formatCurrency(currentItems.subtotal)}</span>
+            </div>
           </div>
         )}
+
         <div style={{ display: 'flex', justifyContent: 'space-between', fontWeight: 700, paddingTop: 8, borderTop: '2px solid #333', color: '#1e293b' }}>
           <span>Total entradas:</span>
           <span>{cartTotalTickets()}</span>
         </div>
+        <div style={{ display: 'flex', justifyContent: 'space-between', fontWeight: 700, color: '#1e293b' }}>
+          <span>Subtotal pack:</span>
+          <span>{formatCurrency(totalPackSubtotal())}</span>
+        </div>
+
+        {currentSession && (
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 8, marginTop: 4 }}>
+            <button
+              onClick={handleNextFunction}
+              disabled={!isCurrentSelectionValid() || loading}
+              style={{
+                width: '100%',
+                padding: '12px 16px',
+                background: isCurrentSelectionValid() ? '#16a34a' : '#9ca3af',
+                color: '#fff',
+                border: 'none',
+                borderRadius: 6,
+                cursor: isCurrentSelectionValid() ? 'pointer' : 'not-allowed',
+                fontWeight: 600,
+                fontSize: 15
+              }}
+            >
+              {loading ? 'Procesando...' : currentSessionIndex < selectedSessionIds.length - 1 ? 'Siguiente función →' : 'Ver resumen y pagar'}
+            </button>
+            <button
+              onClick={() => window.location.href = '/'}
+              style={{
+                width: '100%',
+                padding: '10px 16px',
+                background: '#fff',
+                color: '#64748b',
+                border: '1px solid #e5e7eb',
+                borderRadius: 6,
+                cursor: 'pointer',
+                fontSize: 14
+              }}
+            >
+              Cancelar
+            </button>
+          </div>
+        )}
       </div>
     );
   };
@@ -434,18 +542,11 @@ export default function PackCheckout({
             padding: 16,
             background: '#f0fdf4',
             borderRadius: 8,
-            border: '1px solid #86efac',
-            display: 'flex',
-            justifyContent: 'space-between',
-            alignItems: 'center',
-            flexWrap: 'wrap',
-            gap: 8
+            border: '1px solid #86efac'
           }}>
-            <div>
-              <div style={{ fontSize: 12, color: '#166534', fontWeight: 600, textTransform: 'uppercase', letterSpacing: 0.5 }}>Función {currentSessionIndex + 1} de {selectedSessionIds.length}</div>
-              <div style={{ fontSize: 18, fontWeight: 700, color: '#166534' }}>{show.title}</div>
-              <div style={{ fontSize: 15, color: '#166534' }}>{formatDateLong(currentSession.starts_at)} - {formatTime(currentSession.starts_at)} hs · {venueLabelMap[show?.venue_type] || currentSession.sala || 'Sala'}</div>
-            </div>
+            <div style={{ fontSize: 12, color: '#166534', fontWeight: 600, textTransform: 'uppercase', letterSpacing: 0.5 }}>Función {currentSessionIndex + 1} de {selectedSessionIds.length}</div>
+            <div style={{ fontSize: 18, fontWeight: 700, color: '#166534' }}>{show.title}</div>
+            <div style={{ fontSize: 15, color: '#166534' }}>{formatDateLong(currentSession.starts_at)} - {formatTime(currentSession.starts_at)} hs · {venueLabelMap[show?.venue_type] || currentSession.sala || 'Sala'}</div>
           </div>
 
           <div style={{
@@ -470,42 +571,17 @@ export default function PackCheckout({
                   userId={user?.id || null}
                   mode="spectator"
                   maxCapacity={currentSession.capacity_override || show.general_capacity}
-                  ticketPrice={getBasePrice()}
+                  ticketPrice={Number(getPricing(currentSelection).general || getPricing(currentSelection).platea_general || 0)}
                   onSelectionChange={handleSelectionChange}
                   sidebarContent={null}
                 />
               )}
 
               {error && <p style={{ color: '#dc3545', marginTop: 16 }}>{error}</p>}
-
-              <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: 24 }}>
-                <button
-                  onClick={() => window.location.href = '/'}
-                  style={{ padding: '10px 20px', background: '#6b7280', color: '#fff', border: 'none', borderRadius: 6, cursor: 'pointer' }}
-                >
-                  Cancelar
-                </button>
-                <button
-                  onClick={handleNextFunction}
-                  disabled={!isCurrentSelectionValid() || loading}
-                  style={{
-                    padding: '12px 24px',
-                    background: isCurrentSelectionValid() ? '#16a34a' : '#9ca3af',
-                    color: '#fff',
-                    border: 'none',
-                    borderRadius: 6,
-                    cursor: isCurrentSelectionValid() ? 'pointer' : 'not-allowed',
-                    fontWeight: 600,
-                    fontSize: 15
-                  }}
-                >
-                  {loading ? 'Procesando...' : currentSessionIndex < selectedSessionIds.length - 1 ? 'Siguiente función →' : 'Ver resumen y pagar'}
-                </button>
-              </div>
             </div>
 
             {!isMobile && (
-              <div style={{ flex: '0 0 300px', maxWidth: 320 }}>
+              <div style={{ flex: '0 0 320px', maxWidth: 360 }}>
                 {renderSidebar()}
               </div>
             )}
