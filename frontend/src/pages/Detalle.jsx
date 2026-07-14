@@ -1650,7 +1650,7 @@ export default function Detalle(){
             Comprando para más de una función tus entradas tienen descuento.
           </p>
           <p style={{ margin: '0 0 16px 0', color: '#166534', fontSize: 14 }}>
-            Comprá entradas para {Math.min(show.pack_max_sessions || 3, sessions.length)} funciones y accedé a precios especiales.
+            Verás el descuento aplicado en el detalle de tu carrito de compra.
           </p>
           <button
             onClick={() => setShowPackCheckout(true)}

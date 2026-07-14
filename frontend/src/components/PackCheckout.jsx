@@ -149,7 +149,7 @@ export default function PackCheckout({
 
   const serviceSubtotal = cartServiceItems.reduce((sum, s) => sum + s.price * s.quantity, 0);
 
-  // Frontend pack price calculation (mirrors backend packPricing.js)
+  // Frontend pack price calculation (mirrors backend packPricing.js with groups)
   const computePackPrices = () => {
     const itemsBySession = {};
     for (const sessionId of selectedSessionIds) {
@@ -159,35 +159,51 @@ export default function PackCheckout({
     }
     if (!packPricing || !Object.keys(packPricing).length) return { slots: [], totals: { subtotal: 0, servicesSubtotal: 0, discountAmount: 0, serviceFeeAmount: 0, total: 0 } };
 
-    const slotsBySectionBySession = {};
+    const slotsByGroupBySectionBySession = {};
     for (const [sessionId, items] of Object.entries(itemsBySession)) {
       for (const item of items) {
         const section = getPackSection(item);
-        if (!slotsBySectionBySession[section]) slotsBySectionBySession[section] = {};
-        if (!slotsBySectionBySession[section][sessionId]) slotsBySectionBySession[section][sessionId] = [];
-        slotsBySectionBySession[section][sessionId].push(...expandItemToSlots(item, sessionId));
+        const group = getPackGroup(section);
+        if (!slotsByGroupBySectionBySession[group]) slotsByGroupBySectionBySession[group] = {};
+        if (!slotsByGroupBySectionBySession[group][section]) slotsByGroupBySectionBySession[group][section] = {};
+        if (!slotsByGroupBySectionBySession[group][section][sessionId]) {
+          slotsByGroupBySectionBySession[group][section][sessionId] = [];
+        }
+        slotsByGroupBySectionBySession[group][section][sessionId].push(...expandItemToSlots(item, sessionId));
       }
     }
 
     const result = [];
-    for (const [section, sessionSlots] of Object.entries(slotsBySectionBySession)) {
-      const sessionIds = Object.keys(sessionSlots);
-      for (const sessionId of sessionIds) {
-        sessionSlots[sessionId].sort((a, b) => b.originalPrice - a.originalPrice);
-      }
-      const maxCount = Math.max(0, ...sessionIds.map(id => sessionSlots[id].length));
-      for (let k = 0; k < maxCount; k++) {
-        let depth = 0;
+    for (const [group, slotsBySectionBySession] of Object.entries(slotsByGroupBySectionBySession)) {
+      for (const [section, sessionSlots] of Object.entries(slotsBySectionBySession)) {
+        const sessionIds = Object.keys(sessionSlots);
         for (const sessionId of sessionIds) {
-          if (sessionSlots[sessionId].length > k) depth++;
+          sessionSlots[sessionId].sort((a, b) => b.originalPrice - a.originalPrice);
         }
-        depth = Math.min(Math.max(1, depth), Math.max(1, Number(packMaxSessions) || 3));
-        const priceForDepth = packPricing?.[depth]?.[section] ?? packPricing?.[String(depth)]?.[section] ?? 0;
-        for (const sessionId of sessionIds) {
-          if (sessionSlots[sessionId].length > k) {
-            const slot = sessionSlots[sessionId][k];
-            slot.finalPrice = Number(priceForDepth);
-            result.push(slot);
+        const groupSessions = new Set();
+        Object.values(slotsBySectionBySession).forEach(bySession => Object.keys(bySession).forEach(sid => groupSessions.add(sid)));
+        const groupSessionSlots = {};
+        for (const sessionId of groupSessions) {
+          groupSessionSlots[sessionId] = [];
+          for (const [sec, bySession] of Object.entries(slotsBySectionBySession)) {
+            groupSessionSlots[sessionId].push(...(bySession[sessionId] || []));
+          }
+          groupSessionSlots[sessionId].sort((a, b) => b.originalPrice - a.originalPrice);
+        }
+        const maxCount = Math.max(0, ...Object.values(groupSessionSlots).map(slots => slots.length));
+        for (let k = 0; k < maxCount; k++) {
+          let depth = 0;
+          for (const sessionId of groupSessions) {
+            if (groupSessionSlots[sessionId].length > k) depth++;
+          }
+          depth = Math.min(Math.max(1, depth), Math.max(1, Number(packMaxSessions) || 3));
+          const priceForDepth = packPricing?.[depth]?.[section] ?? packPricing?.[String(depth)]?.[section] ?? 0;
+          for (const sessionId of sessionIds) {
+            if (sessionSlots[sessionId].length > k) {
+              const slot = sessionSlots[sessionId][k];
+              slot.finalPrice = Number(priceForDepth);
+              result.push(slot);
+            }
           }
         }
       }
@@ -245,6 +261,12 @@ export default function PackCheckout({
     return item.section || 'unknown';
   }
 
+  function getPackGroup(section) {
+    if (section === 'platea_general' || section === 'pullman') return 'platea_pullman';
+    if (section === 'palcos_bajos' || section === 'palcos_altos') return 'palcos';
+    return section;
+  }
+
   function getOriginalPrice(item) {
     if (!item) return 0;
     if (item.type === 'butaca' || item.type === 'palco') return Number(item.price || 0);
@@ -296,19 +318,54 @@ export default function PackCheckout({
 
   const createReservations = async (allSelections) => {
     const newReservations = {};
+    const headers = { 'Content-Type': 'application/json' };
+    if (token) headers['Authorization'] = `Bearer ${token}`;
+
     for (const sessionId of selectedSessionIds) {
       const items = buildReservationItems(allSelections[sessionId]);
       if (items.length === 0) throw new Error(`Faltan selecciones para la función ${sessionId}`);
-      const headers = { 'Content-Type': 'application/json' };
-      if (token) headers['Authorization'] = `Bearer ${token}`;
+
+      let existingReservation = null;
+      if (user?.id) {
+        try {
+          const checkRes = await apiFetch(`/api/reservations?user_id=${user.id}&session_id=${sessionId}&status=active`, { headers });
+          if (checkRes.ok) {
+            const list = await checkRes.json();
+            if (Array.isArray(list) && list.length > 0) {
+              existingReservation = list[0];
+            }
+          }
+        } catch {}
+      }
+
       const body = { session_id: sessionId, items };
       if (user?.id) body.user_id = user.id;
-      const res = await apiFetch('/api/reservations', { method: 'POST', headers, body: JSON.stringify(body) });
-      if (!res.ok) {
-        const err = await res.json().catch(() => ({}));
-        throw new Error(err.message || `Error creando reserva para ${sessionId}`);
+
+      let res;
+      let data;
+      if (existingReservation?.id) {
+        res = await apiFetch(`/api/reservations/${existingReservation.id}`, { method: 'PUT', headers, body: JSON.stringify(body) });
+        if (!res.ok) {
+          const err = await res.json().catch(() => ({}));
+          if (res.status === 409) {
+            throw new Error(`Conflicto al actualizar la reserva para la función ${sessionId}: ${err.error || err.message || 'butacas no disponibles'}`);
+          }
+          throw new Error(err.message || `Error actualizando reserva para ${sessionId}`);
+        }
+        data = await res.json();
+      } else {
+        res = await apiFetch('/api/reservations', { method: 'POST', headers, body: JSON.stringify(body) });
+        if (!res.ok) {
+          const err = await res.json().catch(() => ({}));
+          if (res.status === 409) {
+            const reason = err.error || 'items_conflict';
+            const message = err.message || 'butacas no disponibles';
+            throw new Error(`Conflicto de reserva para la función ${sessionId}: ${reason} - ${message}`);
+          }
+          throw new Error(err.message || `Error creando reserva para ${sessionId}`);
+        }
+        data = await res.json();
       }
-      const data = await res.json();
       newReservations[sessionId] = data;
     }
     setReservationsBySession(newReservations);
@@ -450,7 +507,8 @@ export default function PackCheckout({
           const itemSlots = slots.slice(slotIdx, slotIdx + qty);
           slotIdx += qty;
           const totalPrice = itemSlots.reduce((sum, s) => sum + (s?.finalPrice || 0), 0);
-          const avgPrice = itemSlots.length ? totalPrice / itemSlots.length : 0;
+          const originalTotal = itemSlots.reduce((sum, s) => sum + (s?.originalPrice || 0), 0);
+          const hasDiscount = totalPrice < originalTotal;
           return (
             <li key={idx} style={{ display: 'flex', justifyContent: 'space-between', fontSize: 13, padding: '4px 0', borderBottom: '1px solid #f3f4f6' }}>
               <span style={{ color: '#374151' }}>
@@ -459,8 +517,13 @@ export default function PackCheckout({
                 {(item.type === 'pullman' || item.type === 'general') && (item.type === 'general' ? 'Entrada General' : 'Pullman')}
                 {qty > 1 ? ` x${qty}` : ''}
               </span>
-              <span style={{ fontWeight: 600, color: '#111827' }}>
-                {formatCurrency(totalPrice)}
+              <span style={{ display: 'flex', alignItems: 'center', gap: 6, fontWeight: 600, color: '#111827' }}>
+                {hasDiscount && (
+                  <span style={{ fontSize: 11, color: '#dc2626', textDecoration: 'line-through', fontWeight: 400 }}>
+                    {formatCurrency(originalTotal)}
+                  </span>
+                )}
+                <span>{formatCurrency(totalPrice)}</span>
               </span>
             </li>
           );
