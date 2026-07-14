@@ -31,6 +31,20 @@ export default function PackCheckout({
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
 
+  useEffect(() => {
+    // Prevent browser back from returning to previous step; instead go home
+    window.history.pushState({ pack: true }, '');
+    const onPopState = (e) => {
+      if (!e.state || !e.state.pack) {
+        window.location.href = '/';
+      }
+    };
+    window.addEventListener('popstate', onPopState);
+    return () => {
+      window.removeEventListener('popstate', onPopState);
+    };
+  }, []);
+
   const venueLabelMap = {
     sala_principal: 'Sala Principal',
     el_tablado: 'El Tablado',
@@ -413,7 +427,7 @@ export default function PackCheckout({
           )}
 
           <div style={{ display: 'flex', justifyContent: 'space-between' }}>
-            <button onClick={resetFlow} style={{ padding: '10px 20px', background: '#6b7280', color: '#fff', border: 'none', borderRadius: 6, cursor: 'pointer' }}>Cancelar</button>
+            <button onClick={() => window.location.href = '/'} style={{ padding: '10px 20px', background: '#6b7280', color: '#fff', border: 'none', borderRadius: 6, cursor: 'pointer' }}>Cancelar</button>
             <button
               onClick={() => { setCurrentSessionIndex(0); setStep('selectSeats'); }}
               disabled={selectedSessionIds.length < 2}
@@ -459,18 +473,10 @@ export default function PackCheckout({
 
             <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: 24 }}>
               <button
-                onClick={() => {
-                  if (currentSessionIndex === 0) {
-                    setStep('selectSessions');
-                  } else {
-                    setSelectionsBySession(prev => ({ ...prev, [currentSession.id]: currentSelection }));
-                    setCurrentSessionIndex(prev => prev - 1);
-                    setCurrentSelection(selectionsBySession[selectedSessionIds[currentSessionIndex - 1]] || null);
-                  }
-                }}
+                onClick={() => window.location.href = '/'}
                 style={{ padding: '10px 20px', background: '#6b7280', color: '#fff', border: 'none', borderRadius: 6, cursor: 'pointer' }}
               >
-                {currentSessionIndex === 0 ? 'Volver a funciones' : 'Función anterior'}
+                Cancelar
               </button>
               <button
                 onClick={handleNextFunction}
@@ -561,8 +567,7 @@ export default function PackCheckout({
 
             {error && <p style={{ color: '#dc3545', marginBottom: 16 }}>{error}</p>}
 
-            <div style={{ display: 'flex', justifyContent: 'space-between' }}>
-              <button onClick={() => { setCurrentSessionIndex(selectedSessionIds.length - 1); setStep('selectSeats'); }} style={{ padding: '10px 20px', background: '#6b7280', color: '#fff', border: 'none', borderRadius: 6, cursor: 'pointer' }}>Volver</button>
+            <div style={{ display: 'flex', justifyContent: 'flex-end' }}>
               <button onClick={handleConfirmAndPay} disabled={loading} style={{ padding: '14px 28px', background: '#16a34a', color: '#fff', border: 'none', borderRadius: 6, cursor: 'pointer', fontWeight: 700, fontSize: 16 }}>
                 {loading ? 'Procesando...' : `Pagar ${formatCurrency(preview.total)}`}
               </button>
