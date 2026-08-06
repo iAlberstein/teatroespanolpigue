@@ -9,6 +9,20 @@ import { computePackTicketPrices, calculatePackTotals, parseServiceItems as pars
 const router = express.Router();
 import { createSipagoOrder, getSipagoOrder } from '../lib/sipago.js';
 
+const packFinalizationPromises = new Map();
+
+function getSipagoOrderStatus(order) {
+  return (order?.data?.order?.status || order?.data?.attributes?.status || order?.attributes?.status || '').toString().toUpperCase();
+}
+
+async function verifyPackSipagoSuccess(packSale) {
+  if (!packSale?.sipago_order_id) throw new Error('missing_sipago_order');
+  const normalizedOrderUuid = String(packSale.sipago_order_id).split('/').filter(Boolean).pop();
+  const order = await getSipagoOrder(normalizedOrderUuid);
+  const status = getSipagoOrderStatus(order);
+  if (status !== 'SUCCESS') throw new Error(`order_not_success:${status || 'unknown'}`);
+}
+
 // Helper to safely parse service_items from DB (handles plain array, JSON string, or double-encoded string)
 function parseServiceItems(raw) {
   if (!raw) return [];
@@ -896,6 +910,7 @@ router.post('/sipago-webhook', async (req, res) => {
           showTitle: session.show.title,
           sessionDate: formatDateLong(session.starts_at),
           sessionTime: formatTime(session.starts_at),
+          functionName: session.function_name || null,
           tickets: regularTicketsForEmail,
           saleId: sale.id,
           totalAmount: sale.total_amount,
@@ -1090,6 +1105,7 @@ router.get('/pack-sale/:pack_id', async (req, res) => {
         id: s.id,
         session_id: s.session_id,
         session_date: s.session?.starts_at,
+        function_name: s.session?.function_name || null,
         show_title: s.session?.show?.title,
         total_amount: Number(s.total_amount || 0),
         payment_method: s.payment_method
@@ -1205,6 +1221,7 @@ router.post('/email', async (req, res) => {
       showTitle: session.show.title,
       sessionDate: formatDateLong(session.starts_at),
       sessionTime: formatTime(session.starts_at),
+      functionName: session.function_name || null,
       tickets: formattedTickets,
       saleId: sale.id,
       totalAmount: totalAmount,
@@ -1318,6 +1335,7 @@ router.post('/email-sale', async (req, res) => {
       showTitle: session.show.title,
       sessionDate: formatDateLong(session.starts_at),
       sessionTime: formatTime(session.starts_at),
+      functionName: session.function_name || null,
       tickets: formattedTickets,
       saleId: sale.id,
       totalAmount: total,
@@ -1391,7 +1409,8 @@ router.post('/email-container', async (req, res) => {
         hour: '2-digit', 
         minute: '2-digit' 
       }),
-      sala: session.sala || 'Sala Principal'
+      sala: session.sala || 'Sala Principal',
+      functionName: session.function_name || null
     };
     
     const customerName = sale.customer_name || 'Cliente';
@@ -1469,7 +1488,8 @@ router.post('/email-ticket', async (req, res) => {
         hour: '2-digit', 
         minute: '2-digit' 
       }),
-      sala: session.sala || 'Sala Principal'
+      sala: session.sala || 'Sala Principal',
+      functionName: session.function_name || null
     };
     
     const customerName = ticket.sale?.customer_name || 'Cliente';
@@ -1548,7 +1568,8 @@ router.get('/generate-pdf/:sale_id', async (req, res) => {
         hour: '2-digit', 
         minute: '2-digit' 
       }),
-      sala: session.sala || 'Sala Principal'
+      sala: session.sala || 'Sala Principal',
+      functionName: session.function_name || null
     };
     
     // Get customer name
@@ -1982,6 +2003,7 @@ router.post('/sipago-confirm', optionalAuth, async (req, res) => {
           showTitle: session.show.title,
           sessionDate: formatDateLong(session.starts_at),
           sessionTime: formatTime(session.starts_at),
+          functionName: session.function_name || null,
           tickets: formattedTicketsForEmail,
           saleId: sale.id,
           totalAmount: sale.total_amount,
@@ -2241,6 +2263,7 @@ router.post('/free-emission', optionalAuth, async (req, res) => {
           customerEmail: emailToSend, customerName: nameToSend,
           showTitle: session.show.title,
           sessionDate: formatDateLong(session.starts_at), sessionTime: formatTime(session.starts_at),
+          functionName: session.function_name || null,
           tickets: formattedTicketsForEmail, saleId: sale.id,
           totalAmount: 0, paymentMethod: 'courtesy',
           subtotal: baseSubtotal,
@@ -2277,7 +2300,12 @@ router.post('/sipago-pack-webhook', async (req, res) => {
       return res.status(200).json({ ignored: true });
     }
 
-    const result = await finalizePackPayment({ packId, paymentStatusSource: req.body, reqBody: req.body, io: req.app.get('io') });
+    const { pack_sales: PackSale } = sequelize.models;
+    const packSale = await PackSale.findByPk(packId);
+    if (!packSale) throw new Error('pack_sale_not_found');
+    await verifyPackSipagoSuccess(packSale);
+
+    const result = await finalizePackPayment({ packId, paymentStatusSource: req.body, reqBody: req.body, io: req.app.get('io'), paymentVerified: true });
     return res.status(200).json(result);
   } catch (e) {
     console.error('[SIPAGO_PACK_WEBHOOK] unexpected error', e);
@@ -2296,20 +2324,18 @@ router.post('/sipago-pack-confirm', optionalAuth, async (req, res) => {
     const packSale = await PackSale.findByPk(pack_id);
     if (!packSale) return res.status(404).json({ error: 'pack_not_found' });
 
-    // If we have order_uuid, verify with Sipago that it's SUCCESS
-    if (order_uuid) {
-      try {
-        const order = await getSipagoOrder(order_uuid);
-        const status = (order?.data?.order?.status || '').toString().toUpperCase();
-        if (status !== 'SUCCESS') {
-          return res.status(409).json({ error: 'order_not_success', status });
-        }
-      } catch (err) {
-        console.warn('[SIPAGO_PACK_CONFIRM] Could not verify order status:', err?.message || err);
+    try {
+      await verifyPackSipagoSuccess(packSale);
+    } catch (err) {
+      const message = err?.message || String(err);
+      console.error('[SIPAGO_PACK_CONFIRM] Could not verify order status:', message);
+      if (message.startsWith('order_not_success:')) {
+        return res.status(409).json({ error: 'order_not_success', status: message.split(':')[1] });
       }
+      return res.status(502).json({ error: 'sipago_order_verification_failed' });
     }
 
-    const result = await finalizePackPayment({ packId: pack_id, paymentStatusSource: {}, reqBody: req.body, io: req.app.get('io') });
+    const result = await finalizePackPayment({ packId: pack_id, paymentStatusSource: {}, reqBody: req.body, io: req.app.get('io'), paymentVerified: true });
     return res.json(result);
   } catch (e) {
     console.error('[SIPAGO_PACK_CONFIRM] ❌ ERROR:', e);
@@ -2402,7 +2428,7 @@ async function createTicketsFromPricedSlots(pricedSlots, { sessionId, saleId, us
       status: 'sold',
       capacity: slot.capacity || 1,
       capacity_validated: 0
-    });
+    }, { transaction });
     const { qr_code, qr_data } = await generateIndividualQR(t.id, slot.seat_code || null, slot.type);
     await t.update({ qr_code, qr_data }, { transaction });
     createdTickets.push(t);
@@ -2427,7 +2453,7 @@ async function createServiceTickets(serviceItems, { sessionId, saleId, userId, t
       status: 'sold',
       capacity: Number(svc.quantity || 1),
       capacity_validated: 0
-    });
+    }, { transaction });
     const { qr_code: sQr, qr_data: sQd } = await generateIndividualQR(svcT.id, svc.name, 'service');
     await svcT.update({ qr_code: sQr, qr_data: sQd }, { transaction });
     createdTickets.push(svcT);
@@ -2472,6 +2498,7 @@ async function sendPackConfirmationEmail({ reservation, sale, tickets, customerE
       showTitle: session.show.title,
       sessionDate: formatDateLong(session.starts_at),
       sessionTime: formatTime(session.starts_at),
+      functionName: session.function_name || null,
       tickets: formattedTickets,
       saleId: sale.id,
       totalAmount: sale.total_amount,
@@ -2490,13 +2517,26 @@ async function sendPackConfirmationEmail({ reservation, sale, tickets, customerE
   }
 }
 
-async function finalizePackPayment({ packId, paymentStatusSource, reqBody, io }) {
+async function finalizePackPayment(args) {
+  const existing = packFinalizationPromises.get(args.packId);
+  if (existing) return existing;
+
+  const promise = finalizePackPaymentInternal(args).finally(() => {
+    if (packFinalizationPromises.get(args.packId) === promise) {
+      packFinalizationPromises.delete(args.packId);
+    }
+  });
+  packFinalizationPromises.set(args.packId, promise);
+  return promise;
+}
+
+async function finalizePackPaymentInternal({ packId, paymentStatusSource, reqBody, io, paymentVerified = false }) {
   const { reservations: Reservation, pack_sales: PackSale, sales: Sale, discounts: Discount, users: User } = sequelize.models;
 
   const packSale = await PackSale.findByPk(packId);
   if (!packSale) throw new Error('pack_sale_not_found');
 
-  const orderStatus = (paymentStatusSource?.data?.order?.status || '').toString().toUpperCase();
+  const orderStatus = getSipagoOrderStatus(paymentStatusSource);
   if (orderStatus && orderStatus !== 'SUCCESS') {
     return { ok: true, status: orderStatus };
   }
@@ -2518,8 +2558,12 @@ async function finalizePackPayment({ packId, paymentStatusSource, reqBody, io })
   const now = dayjs();
   for (const r of reservations) {
     if (r.status === 'confirmed' && r.sale_id) continue;
-    if (r.status !== 'active' || dayjs(r.expires_at).isBefore(now)) {
+    const isExpired = dayjs(r.expires_at).isBefore(now);
+    if (r.status !== 'active' && r.status !== 'expired') {
       throw new Error(`reservation_not_active:${r.id}`);
+    }
+    if (isExpired && !paymentVerified) {
+      throw new Error(`reservation_expired:${r.id}`);
     }
   }
 
@@ -2577,9 +2621,8 @@ async function finalizePackPayment({ packId, paymentStatusSource, reqBody, io })
       const reservationServiceItems = getServiceItemsForReservation(reservation, packServiceItems, reservationSubtotal, packSubtotal);
       const servicesSubtotal = reservationServiceItems.reduce((sum, s) => sum + (Number(s.price || 0) * Number(s.quantity || 1)), 0);
 
-      // Service fee per function (Option A)
       const serviceFeeAmount = Math.round((reservationSubtotal - reservationDiscount + servicesSubtotal) * (packServiceFeePercent / 100));
-      const totalAmount = reservationSubtotal - reservationDiscount + serviceFeeAmount + servicesSubtotal;
+      const totalAmount = reservationSubtotal - reservationDiscount + servicesSubtotal;
 
       const saleId = crypto.randomUUID();
       const { generateContainerQR } = await import('../lib/qrGenerator.js');

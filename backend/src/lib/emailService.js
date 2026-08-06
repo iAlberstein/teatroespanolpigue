@@ -61,6 +61,7 @@ export async function sendPurchaseConfirmation({
   showTitle,
   sessionDate,
   sessionTime,
+  functionName,
   tickets,
   saleId,
   totalAmount,
@@ -134,6 +135,7 @@ export async function sendPurchaseConfirmation({
           <div style="background-color: #f9fafb; border-left: 4px solid #3b82f6; padding: 20px; margin-bottom: 24px;">
             <h3 style="color: #1f2937; margin: 0 0 12px 0; font-size: 18px;">${showTitle}</h3>
             <p style="color: #6b7280; margin: 0; font-size: 14px;">
+              ${functionName ? `<strong>Función:</strong> ${functionName}<br>` : ''}
               <strong>📅 Fecha:</strong> ${sessionDate}<br>
               <strong>🕐 Hora:</strong> ${sessionTime}
             </p>
@@ -557,9 +559,107 @@ export async function sendAdminNotification({
   };
 }
 
+/**
+ * Send password reset email
+ */
+export async function sendPasswordResetEmail({ to, name, resetToken }) {
+  const baseUrl = process.env.FRONTEND_URL || 'http://localhost:5173';
+  const resetUrl = `${baseUrl}/restablecer-contrasena?token=${resetToken}`;
+
+  // Password reset must use the auth email account (EMAIL_*), not the tickets account
+  const host = process.env.EMAIL_HOST;
+  const user = process.env.EMAIL_USER;
+  const pass = process.env.EMAIL_PASS;
+  const port = parseInt(process.env.EMAIL_PORT || '587');
+  const from = process.env.EMAIL_FROM || user;
+
+  if (!host || !user || !pass) {
+    console.error('[EMAIL] Auth SMTP not configured for password reset');
+    return { success: false, error: 'Auth SMTP not configured' };
+  }
+
+  const transporter = nodemailer.createTransport({
+    host,
+    port,
+    secure: false,
+    auth: { user, pass }
+  });
+
+  const html = `
+    <!DOCTYPE html>
+    <html>
+    <head>
+      <meta charset="utf-8">
+      <meta name="viewport" content="width=device-width, initial-scale=1.0">
+      <title>Restablecer contraseña</title>
+    </head>
+    <body style="margin: 0; padding: 0; font-family: Arial, sans-serif; background-color: #f3f4f6;">
+      <div style="max-width: 600px; margin: 0 auto; background-color: #ffffff;">
+        <div style="background: linear-gradient(135deg, #1e40af 0%, #3b82f6 100%); padding: 40px 20px; text-align: center;">
+          <h1 style="color: #ffffff; margin: 0; font-size: 28px;">Teatro Español Pigüé</h1>
+          <p style="color: #e0e7ff; margin: 10px 0 0 0; font-size: 16px;">Restablecer contraseña</p>
+        </div>
+
+        <div style="padding: 40px 20px;">
+          <h2 style="color: #1f2937; margin: 0 0 20px 0; font-size: 24px;">Hola ${name || ''},</h2>
+          <p style="color: #4b5563; font-size: 16px; line-height: 1.6; margin: 0 0 24px 0;">
+            Recibimos una solicitud para restablecer tu contraseña. Hacé clic en el siguiente botón para crear una nueva contraseña:
+          </p>
+
+          <div style="text-align: center; margin: 32px 0;">
+            <a href="${resetUrl}" style="display: inline-block; background-color: #28a745; color: #ffffff; text-decoration: none; padding: 16px 32px; border-radius: 8px; font-weight: 600; font-size: 16px;">
+              Restablecer contraseña
+            </a>
+          </div>
+
+          <p style="color: #4b5563; font-size: 14px; line-height: 1.6; margin: 0 0 16px 0;">
+            Este enlace expirará en 1 hora.
+          </p>
+
+          <p style="color: #4b5563; font-size: 14px; line-height: 1.6; margin: 0 0 24px 0;">
+            Si no solicitaste restablecer tu contraseña, podés ignorar este email.
+          </p>
+
+          <div style="border-top: 1px solid #e5e7eb; padding-top: 20px; margin-top: 20px;">
+            <p style="color: #9ca3af; font-size: 12px; margin: 0;">
+              Si el botón no funciona, copiá y pegá este enlace en tu navegador:<br>
+              <a href="${resetUrl}" style="color: #3b82f6;">${resetUrl}</a>
+            </p>
+          </div>
+        </div>
+
+        <div style="background-color: #f9fafb; padding: 24px 20px; text-align: center; border-top: 1px solid #e5e7eb;">
+          <p style="color: #6b7280; font-size: 14px; margin: 0 0 8px 0;">
+            Teatro Español Pigüé
+          </p>
+          <p style="color: #9ca3af; font-size: 12px; margin: 0;">
+            Este es un email automático, por favor no respondas a este mensaje.
+          </p>
+        </div>
+      </div>
+    </body>
+    </html>
+  `;
+
+  try {
+    const info = await transporter.sendMail({
+      from,
+      to,
+      subject: 'Restablecer contraseña - Teatro Español',
+      html
+    });
+    console.log('[EMAIL] Password reset email sent:', info.messageId);
+    return { success: true, messageId: info.messageId };
+  } catch (error) {
+    console.error('[EMAIL] Error sending password reset email:', error);
+    return { success: false, error: error.message };
+  }
+}
+
 export default {
   sendPurchaseConfirmation,
   sendShowReminder,
   sendAdminNotification,
-  sendRefundNotification
+  sendRefundNotification,
+  sendPasswordResetEmail
 };

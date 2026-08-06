@@ -59,14 +59,15 @@ describe('computePackTicketPrices', () => {
     assert.deepStrictEqual(bySession.C.sort((a, b) => a - b), [16000, 16000]);
   });
 
-  it('groups palcos separately by section', () => {
+  it('calculates pack depth from palco localities', () => {
     const itemsBySession = {
       A: [
         { type: 'palco', section: 'palcos_bajos', seat_code: 'PB1', price: 80000, capacity: 4 },
         { type: 'palco', section: 'palcos_altos', seat_code: 'PA1', price: 60000, capacity: 2 }
       ],
       B: [
-        { type: 'palco', section: 'palcos_bajos', seat_code: 'PB2', price: 80000, capacity: 4 }
+        { type: 'palco', section: 'palcos_bajos', seat_code: 'PB2', price: 80000, capacity: 4 },
+        { type: 'palco', section: 'palcos_altos', seat_code: 'PA2', price: 60000, capacity: 2 }
       ]
     };
 
@@ -75,9 +76,9 @@ describe('computePackTicketPrices', () => {
     const pa = priced.filter(s => s.section === 'palcos_altos');
 
     assert.strictEqual(pb.length, 2);
-    assert.strictEqual(pa.length, 1);
+    assert.strictEqual(pa.length, 2);
     assert.strictEqual(pb.every(s => s.finalPrice === 72000), true);
-    assert.strictEqual(pa[0].finalPrice, 60000);
+    assert.strictEqual(pa.every(s => s.finalPrice === 54000), true);
   });
 
   it('handles pullman and general as quantity slots', () => {

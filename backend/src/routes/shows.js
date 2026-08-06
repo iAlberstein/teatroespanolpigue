@@ -597,28 +597,35 @@ router.put('/:id', authenticateToken, requireRole('admin'), async (req, res) => 
 
 // Delete a show (admin only)
 router.delete('/:id', authenticateToken, requireRole('admin'), async (req, res) => {
+  const transaction = await sequelize.transaction();
   try {
     const Show = sequelize.models.shows;
     const Session = sequelize.models.sessions;
+    const ShowProducer = sequelize.models.show_producer;
     
-    const show = await Show.findByPk(req.params.id);
+    const show = await Show.findByPk(req.params.id, { transaction });
     
     if (!show) {
+      await transaction.rollback();
       return res.status(404).json({ error: 'not_found', message: 'Espectáculo no encontrado' });
     }
     
     // Check if show has sessions
-    const sessionCount = await Session.count({ where: { show_id: req.params.id } });
+    const sessionCount = await Session.count({ where: { show_id: req.params.id }, transaction });
     if (sessionCount > 0) {
+      await transaction.rollback();
       return res.status(400).json({ 
         error: 'has_sessions', 
         message: 'No se puede eliminar un espectáculo con sesiones. Elimine las sesiones primero.' 
       });
     }
-    
-    await show.destroy();
+
+    await ShowProducer.destroy({ where: { show_id: req.params.id }, transaction });
+    await show.destroy({ transaction });
+    await transaction.commit();
     res.json({ success: true, message: 'Espectáculo eliminado exitosamente' });
   } catch (error) {
+    await transaction.rollback();
     console.error('[SHOWS] Error deleting show:', error);
     res.status(500).json({ error: 'internal_error', message: 'Error al eliminar espectáculo' });
   }

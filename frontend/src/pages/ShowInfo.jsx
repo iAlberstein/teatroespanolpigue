@@ -2,7 +2,7 @@ import { useParams, useNavigate } from 'react-router-dom';
 import { useEffect, useState } from 'react';
 import { apiFetch } from '../lib/api';
 import { getShowImageUrl } from '../lib/media';
-import { formatDate, formatTime } from '../lib/dateFormatter.js';
+import { formatDate, formatTime, formatDateLong } from '../lib/dateFormatter.js';
 
 export default function ShowInfo() {
   const { id } = useParams();
@@ -230,150 +230,176 @@ export default function ShowInfo() {
               </div>
               
               <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
-                {sessions.map(session => {
-                  const dateStr = formatDate(session.starts_at);
-                  const timeStr = formatTime(session.starts_at);
-
-                  const isFlipped = flippedCardId === session.id;
-                  const seatPricing = sessionPricing[session.id] || [];
-                  const isSoldOut = !!session.is_sold_out;
-                  
+                {(() => {
+                  const isPack = !!show.pack_enabled;
                   return (
-                    <div
-                      key={session.id}
-                      onClick={() => !isSoldOut && setFlippedCardId(isFlipped ? null : session.id)}
-                      style={{
-                        position: 'relative',
-                        height: isFlipped ? 'auto' : 80,
-                        cursor: isSoldOut ? 'default' : 'pointer',
-                        perspective: '1000px'
-                      }}
-                    >
-                      {/* Card Container with Flip Animation */}
-                      <div style={{
-                        position: 'relative',
-                        width: '100%',
-                        height: '100%',
-                        transformStyle: 'preserve-3d',
-                        transition: 'transform 0.6s',
-                        transform: isFlipped ? 'rotateX(180deg)' : 'rotateX(0deg)'
-                      }}>
-                        {/* Front of card (always visible initially) */}
-                        <div style={{
-                          position: isFlipped ? 'absolute' : 'relative',
-                          width: '100%',
-                          height: '100%',
-                          backfaceVisibility: 'hidden',
-                          display: 'flex',
-                          alignItems: 'center',
-                          justifyContent: 'space-between',
-                          padding: '16px 20px',
-                          background: isSoldOut
-                            ? 'linear-gradient(135deg, #94a3b8 0%, #64748b 100%)'
-                            : 'linear-gradient(135deg, #a78bfa 0%, #8b5cf6 100%)',
-                          borderRadius: 12,
-                          boxShadow: isSoldOut
-                            ? '0 4px 6px -1px rgba(100, 116, 139, 0.2)'
-                            : '0 4px 6px -1px rgba(139, 92, 246, 0.2)',
-                          transform: isFlipped ? 'rotateX(180deg)' : 'rotateX(0deg)',
-                          overflow: 'hidden'
-                        }}>
-                          <div>
-                            <div style={{ fontSize: 18, color: '#ffffff', fontWeight: 700 }}>
-                              {timeStr}
+                    <>
+                      {sessions.map(session => {
+                        const dateStr = formatDate(session.starts_at);
+                        const timeStr = formatTime(session.starts_at);
+                        const longDateStr = formatDateLong(session.starts_at);
+
+                        const isSoldOut = !!session.is_sold_out;
+                        const isFlipped = !isPack && flippedCardId === session.id;
+                        const seatPricing = sessionPricing[session.id] || [];
+
+                        if (isPack) {
+                          return (
+                            <div key={session.id} style={{ fontSize: 15, color: '#374151', padding: '4px 0' }}>
+                              {longDateStr} - {timeStr} hs
                             </div>
-                            <div style={{ fontSize: 14, color: isSoldOut ? '#e2e8f0' : '#ede9fe', marginTop: 2 }}>
-                              {dateStr}
-                            </div>
-                          </div>
-                          {isSoldOut ? (
-                            <div style={{
-                              background: '#ef4444',
-                              color: '#ffffff',
-                              fontSize: 12,
-                              fontWeight: 800,
-                              letterSpacing: '0.5px',
-                              padding: '6px 14px',
-                              borderRadius: 999,
-                              textTransform: 'uppercase',
-                              whiteSpace: 'nowrap',
-                              boxShadow: '0 2px 8px rgba(239,68,68,0.4)'
-                            }}>
-                              LOCALIDADES AGOTADAS
-                            </div>
-                          ) : (
-                          <div style={{ 
-                            display: 'flex', 
-                            alignItems: 'center', 
-                            gap: 8
-                          }}>
-                            <div style={{ 
-                              fontSize: 13, 
-                              color: '#ffffff', 
-                              fontWeight: 700,
-                              letterSpacing: '0.5px'
-                            }}>
-                              VER PRECIOS
-                            </div>
-                            <div style={{ fontSize: 20, color: '#ffffff' }}>
-                              →
-                            </div>
-                          </div>
-                          )}
-                        </div>
+                          );
+                        }
                         
-                        {/* Back of card (pricing info) */}
-                        {isFlipped && (
-                          <div style={{
-                            width: '100%',
-                            background: '#f8fafc',
-                            borderRadius: 12,
-                            border: '1px solid #e5e7eb',
-                            padding: 16,
-                            transform: 'rotateX(180deg)'
-                          }}>
-                            {/* Header */}
+                        return (
+                          <div
+                            key={session.id}
+                            onClick={() => !isSoldOut && setFlippedCardId(isFlipped ? null : session.id)}
+                            style={{
+                              position: 'relative',
+                              height: isFlipped ? 'auto' : 80,
+                              cursor: isSoldOut ? 'default' : 'pointer',
+                              perspective: '1000px'
+                            }}
+                          >
+                            {/* Card Container with Flip Animation */}
                             <div style={{
-                              display: 'flex',
-                              justifyContent: 'space-between',
-                              alignItems: 'center',
-                              marginBottom: 12,
-                              paddingBottom: 12,
-                              borderBottom: '1px solid #e5e7eb'
+                              position: 'relative',
+                              width: '100%',
+                              height: '100%',
+                              transformStyle: isPack ? 'flat' : 'preserve-3d',
+                              transition: 'transform 0.6s',
+                              transform: isPack ? 'none' : (isFlipped ? 'rotateX(180deg)' : 'rotateX(0deg)')
                             }}>
-                              <div>
-                                <div style={{ fontSize: 16, color: '#0f172a', fontWeight: 700 }}>
-                                  {dateStr} - {timeStr}
-                                </div>
-                                <div style={{ fontSize: 12, color: '#64748b' }}>
-                                  Precios según ubicación
-                                </div>
-                              </div>
+                              {/* Front of card (always visible initially) */}
                               <div style={{
-                                fontSize: 12,
-                                color: '#8b5cf6',
-                                fontWeight: 600,
-                                cursor: 'pointer'
+                                position: isFlipped ? 'absolute' : 'relative',
+                                width: '100%',
+                                height: '100%',
+                                backfaceVisibility: 'hidden',
+                                display: 'flex',
+                                alignItems: 'center',
+                                justifyContent: 'space-between',
+                                padding: '16px 20px',
+                                background: isSoldOut
+                                  ? 'linear-gradient(135deg, #94a3b8 0%, #64748b 100%)'
+                                  : 'linear-gradient(135deg, #a78bfa 0%, #8b5cf6 100%)',
+                                borderRadius: 12,
+                                boxShadow: isSoldOut
+                                  ? '0 4px 6px -1px rgba(100, 116, 139, 0.2)'
+                                  : '0 4px 6px -1px rgba(139, 92, 246, 0.2)',
+                                transform: isPack ? 'none' : (isFlipped ? 'rotateX(180deg)' : 'rotateX(0deg)'),
+                                overflow: 'hidden'
                               }}>
-                                ← Volver
+                                <div>
+                                  <div style={{ fontSize: 18, color: '#ffffff', fontWeight: 700 }}>
+                                    {timeStr}
+                                  </div>
+                                  <div style={{ fontSize: 14, color: isSoldOut ? '#e2e8f0' : '#ede9fe', marginTop: 2 }}>
+                                    {dateStr}
+                                  </div>
+                                </div>
+                                {isSoldOut ? (
+                                  <div style={{
+                                    background: '#ef4444',
+                                    color: '#ffffff',
+                                    fontSize: 12,
+                                    fontWeight: 800,
+                                    letterSpacing: '0.5px',
+                                    padding: '6px 14px',
+                                    borderRadius: 999,
+                                    textTransform: 'uppercase',
+                                    whiteSpace: 'nowrap',
+                                    boxShadow: '0 2px 8px rgba(239,68,68,0.4)'
+                                  }}>
+                                    LOCALIDADES AGOTADAS
+                                  </div>
+                                ) : !isPack && (
+                                <div style={{ 
+                                  display: 'flex', 
+                                  alignItems: 'center', 
+                                  gap: 8
+                                }}>
+                                  <div style={{ 
+                                    fontSize: 13, 
+                                    color: '#ffffff', 
+                                    fontWeight: 700,
+                                    letterSpacing: '0.5px'
+                                  }}>
+                                    VER PRECIOS
+                                  </div>
+                                  <div style={{ fontSize: 20, color: '#ffffff' }}>
+                                    →
+                                  </div>
+                                </div>
+                                )}
                               </div>
+                              
+                              {/* Back of card (pricing info) */}
+                              {isFlipped && !isPack && (
+                                <div style={{
+                                  width: '100%',
+                                  background: '#f8fafc',
+                                  borderRadius: 12,
+                                  border: '1px solid #e5e7eb',
+                                  padding: 16,
+                                  transform: 'rotateX(180deg)'
+                                }}>
+                                  {/* Header */}
+                                  <div style={{
+                                    display: 'flex',
+                                    justifyContent: 'space-between',
+                                    alignItems: 'center',
+                                    marginBottom: 12,
+                                    paddingBottom: 12,
+                                    borderBottom: '1px solid #e5e7eb'
+                                  }}>
+                                    <div>
+                                      <div style={{ fontSize: 16, color: '#0f172a', fontWeight: 700 }}>
+                                        {dateStr} - {timeStr}
+                                      </div>
+                                      <div style={{ fontSize: 12, color: '#64748b' }}>
+                                        Precios según ubicación
+                                      </div>
+                                    </div>
+                                    <div style={{
+                                      fontSize: 12,
+                                      color: '#8b5cf6',
+                                      fontWeight: 600,
+                                      cursor: 'pointer'
+                                    }}>
+                                      ← Volver
+                                    </div>
+                                  </div>
+                                  
+                                  {/* Pricing Display for this session */}
+                                  <SessionPricingDisplay 
+                                    session={session} 
+                                    seatPricing={seatPricing}
+                                    pricing={pricing}
+                                    palcosIndividualSeats={palcosIndividualSeats}
+                                    venueType={show.venue_type}
+                                    isMobile={isMobile}
+                                  />
+                                </div>
+                              )}
                             </div>
-                            
-                            {/* Pricing Display for this session */}
-                            <SessionPricingDisplay 
-                              session={session} 
-                              seatPricing={seatPricing}
-                              pricing={pricing}
-                              palcosIndividualSeats={palcosIndividualSeats}
-                              venueType={show.venue_type}
-                              isMobile={isMobile}
-                            />
                           </div>
-                        )}
-                      </div>
-                    </div>
+                        );
+                      })}
+
+                      {isPack && (
+                        <PackPricingDisplay
+                          packPricingJson={show.pack_pricing_json}
+                          basePricing={show.pricing_json}
+                          packMaxSessions={show.pack_max_sessions}
+                          palcosIndividualSeats={palcosIndividualSeats}
+                          isMobile={isMobile}
+                        />
+                      )}
+                    </>
                   );
-                })}
+                })()}
               </div>
             </div>
           )}
@@ -496,6 +522,99 @@ export default function ShowInfo() {
         >
           ← Volver al inicio
         </button>
+      </div>
+    </div>
+  );
+}
+
+// Component to display pack pricing by number of functions
+function PackPricingDisplay({ packPricingJson, basePricing, packMaxSessions, palcosIndividualSeats, isMobile }) {
+  const parse = (value) => {
+    if (!value) return {};
+    if (typeof value === 'string') {
+      try {
+        const parsed = JSON.parse(value);
+        return parsed && typeof parsed === 'object' ? parsed : {};
+      } catch {
+        return {};
+      }
+    }
+    return typeof value === 'object' ? value : {};
+  };
+
+  const packPricing = parse(packPricingJson);
+  const base = parse(basePricing);
+  const maxSessions = Math.max(1, Number(packMaxSessions) || 3);
+
+  const formatCurrency = (amount) =>
+    new Intl.NumberFormat('es-AR', { style: 'currency', currency: 'ARS', minimumFractionDigits: 0 }).format(Number(amount || 0));
+
+  const getPrice = (depth, key) => {
+    const depthPrices = packPricing[depth] || packPricing[String(depth)] || {};
+    return depthPrices[key] || depthPrices[key.replace(/_/g, ' ')] || base[key] || 0;
+  };
+
+  const priceRow = (sec) => {
+    const price = sec.price;
+    if (!price) return null;
+    return (
+      <div key={sec.key} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8, padding: '6px 0', borderBottom: '1px solid #f1f5f9' }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+          <span style={{ background: sec.color, padding: '3px 8px', borderRadius: 999, fontSize: 11, fontWeight: 600, color: sec.key === 'palcos_altos' ? '#ffffff' : '#1f2937', flexShrink: 0 }}>{sec.badge}</span>
+          <div>
+            <div style={{ fontSize: 13, color: '#1f2937' }}>{sec.title}</div>
+            {sec.localidades && <div style={{ fontSize: 11, color: '#94a3b8' }}>{sec.localidades}</div>}
+            {sec.location && <div style={{ fontSize: 11, color: '#94a3b8', whiteSpace: 'pre-line' }}>{sec.location}</div>}
+          </div>
+        </div>
+        <span style={{ fontSize: 13, fontWeight: 700, color: '#0f172a', whiteSpace: 'nowrap' }}>{formatCurrency(price)}</span>
+      </div>
+    );
+  };
+
+  return (
+    <div style={{ background: '#f8fafc', border: '1px solid #e5e7eb', borderRadius: 12, padding: 16 }}>
+      <div style={{
+        background: '#f0fdf4',
+        border: '1px solid #86efac',
+        borderRadius: 8,
+        padding: 12,
+        marginBottom: 16,
+        fontSize: 14,
+        color: '#166534',
+        lineHeight: 1.5
+      }}>
+        Espectáculo dividido en varios días. comprando para más de una función, tus entradas tienen descuento
+      </div>
+
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+        {Array.from({ length: maxSessions }, (_, i) => i + 1).map(depth => {
+          const leftSections = [
+            { key: 'platea_general', badge: 'Platea', title: 'Platea General', location: 'Planta baja', color: '#a8d8a8', price: getPrice(depth, 'platea_general') },
+            { key: 'palcos_altos', badge: 'PA', title: 'Palcos Altos', localidades: !palcosIndividualSeats ? '2 localidades' : null, location: '1° piso por escalera', color: '#6b8e6b', price: getPrice(depth, 'palcos_altos') }
+          ];
+          const rightSections = [
+            { key: 'palcos_bajos', badge: 'PB', title: 'Palcos Bajos', localidades: !palcosIndividualSeats ? '4 localidades' : null, location: 'Planta baja', color: '#8fbc8f', price: getPrice(depth, 'palcos_bajos') },
+            { key: 'pullman', badge: 'Pullman', title: 'Pullman', location: '2° piso por escalera\nSin ubicación fija', color: '#c0c0c0', price: getPrice(depth, 'pullman') },
+            { key: 'general', badge: 'General', title: 'Entrada General', location: 'Sin ubicación fija', color: '#94a3b8', price: getPrice(depth, 'general') }
+          ];
+
+          const label = depth === 1 ? '1 función' : `${depth} funciones`;
+          return (
+            <div key={depth} style={{ background: '#ffffff', borderRadius: 8, border: '1px solid #e5e7eb', padding: 12 }}>
+              <div style={{ fontSize: 14, fontWeight: 700, color: '#1e293b', marginBottom: 10 }}>{label}</div>
+              <div style={{ display: 'flex', flexDirection: isMobile ? 'column' : 'row', gap: isMobile ? 8 : 16 }}>
+                <div style={{ flex: 1, display: 'flex', flexDirection: 'column', gap: 4 }}>
+                  {leftSections.map(priceRow)}
+                </div>
+                {!isMobile && <div style={{ width: 1, background: '#e5e7eb' }} />}
+                <div style={{ flex: 1, display: 'flex', flexDirection: 'column', gap: 4 }}>
+                  {rightSections.map(priceRow)}
+                </div>
+              </div>
+            </div>
+          );
+        })}
       </div>
     </div>
   );

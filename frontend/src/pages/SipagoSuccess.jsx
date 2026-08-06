@@ -266,6 +266,7 @@ export default function SipagoSuccess(){
   };
 
   const { subtotal, discountAmount, serviceCharge, servicesSubtotal: calcServicesSubtotal, total } = calculateTotals();
+  const purchaseConfirmed = packId ? packData?.payment_status === 'approved' : Boolean(saleId);
 
   const onSendEmail = async () => {
     if (packId) return onSendPackEmail();
@@ -339,14 +340,16 @@ export default function SipagoSuccess(){
 
   return (
     <div style={{ padding: 24, maxWidth: 600, margin: '0 auto' }}>
-      <h1 style={{ color: '#28a745', marginBottom: 8 }}> ¡Compra confirmada!</h1>
-      <p style={{ fontSize: 16, marginBottom: 16 }}>Gracias por tu compra. Tu pago fue aprobado exitosamente.</p>
+      <h1 style={{ color: purchaseConfirmed ? '#28a745' : '#a16207', marginBottom: 8 }}>{purchaseConfirmed ? '¡Compra confirmada!' : 'Estamos confirmando tu compra'}</h1>
+      <p style={{ fontSize: 16, marginBottom: 16 }}>{purchaseConfirmed ? 'Gracias por tu compra. Tu pago fue aprobado exitosamente.' : 'Tu pago fue recibido. Estamos registrando tus entradas; esta página se actualizará automáticamente.'}</p>
 
-      <div style={{ padding: 12, background: '#e7f3ff', border: '1px solid #2196f3', borderRadius: 8, color: '#0d47a1', fontSize: 14, textAlign: 'center', marginBottom: 24 }}>
-        Tus entradas ya están guardadas en tu perfil
-      </div>
+      {purchaseConfirmed && (
+        <div style={{ padding: 12, background: '#e7f3ff', border: '1px solid #2196f3', borderRadius: 8, color: '#0d47a1', fontSize: 14, textAlign: 'center', marginBottom: 24 }}>
+          Tus entradas ya están guardadas en tu perfil
+        </div>
+      )}
 
-      {emailAutoSent && autoSentEmail && (
+      {purchaseConfirmed && emailAutoSent && autoSentEmail && (
         <div style={{ padding: 12, background: '#d1fae5', border: '1px solid #a7f3d0', borderRadius: 8, color: '#065f46', fontSize: 14, textAlign: 'center', marginBottom: 24 }}>
           ✅ Tus entradas fueron enviadas automáticamente a <strong>{autoSentEmail}</strong>
         </div>
@@ -362,7 +365,7 @@ export default function SipagoSuccess(){
                 <ul style={{ listStyle: 'none', padding: 0, margin: 0 }}>
                   {packData.sales.map((sale, idx) => (
                     <li key={sale.id} style={{ padding: '10px 0', borderBottom: idx < packData.sales.length - 1 ? '1px solid #eee' : 'none', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                      <span>Función {idx + 1}: {formatDateLong(sale.session_date)} - {formatTime(sale.session_date)}</span>
+                      <span>{sale.function_name || `Función ${idx + 1}`}: {formatDateLong(sale.session_date)} - {formatTime(sale.session_date)}</span>
                       <span style={{ fontWeight: 600 }}>${Number(sale.total_amount || 0).toLocaleString('es-AR')}</span>
                     </li>
                   ))}
@@ -418,6 +421,7 @@ export default function SipagoSuccess(){
                   {reservation.session.show.title}
                 </h3>
                 <p style={{ margin: 0, fontSize: 14, color: '#64748b' }}>
+                  {reservation.session.function_name && <>🎭 Función: {reservation.session.function_name}<br/></>}
                   📅 Fecha: {formatDateLong(reservation.session.starts_at)}<br/>
                   🕐 Hora: {formatTime(reservation.session.starts_at)}
                 </p>
@@ -489,6 +493,7 @@ export default function SipagoSuccess(){
         )}
       </div>
 
+      {purchaseConfirmed && (
       <div style={{ marginTop: 24, padding: 16, background: '#f8f9fa', borderRadius: 8 }}>
         <div style={{ fontWeight: 600, marginBottom: 8, fontSize: 15 }}> Enviar entradas</div>
         <p style={{ fontSize: 14, color: '#666', marginBottom: 16 }}>
@@ -539,7 +544,9 @@ export default function SipagoSuccess(){
           </div>
         </div>
       </div>
+      )}
 
+      {purchaseConfirmed && (
       <div style={{ marginTop: 24, textAlign: 'center' }}>
         <a 
           href="/perfil"
@@ -548,6 +555,7 @@ export default function SipagoSuccess(){
           Ver mis entradas en mi perfil →
         </a>
       </div>
+      )}
     </div>
   );
 }

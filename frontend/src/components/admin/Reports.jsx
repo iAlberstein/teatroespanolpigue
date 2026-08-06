@@ -84,10 +84,10 @@ const DateInput = ({ value, onChange, style }) => {
 };
 
 export default function Reports({ shows }) {
-  const { token, user } = useAuth();
+  const { token, user, hasRole } = useAuth();
   const isProductor = user?.role === 'productor';
-  const isBoleteria = user?.role === 'boleteria';
-  const isAdmin = user?.role === 'admin' || (user?.roles && user.roles.some(r => r.name === 'admin'));
+  const isBoleteria = hasRole('boleteria');
+  const isAdmin = hasRole('admin');
   const [reportType, setReportType] = useState('general'); // 'general' | 'individual'
   const [selectedShowId, setSelectedShowId] = useState('');
   const [selectedSessionId, setSelectedSessionId] = useState(''); // '' = consolidado, id = sesión específica
@@ -450,9 +450,12 @@ export default function Reports({ shows }) {
   };
 
   const canRefund = isAdmin || isBoleteria;
+  const canManageSale = (sale) =>
+    (sale.channel === 'Boletería' && canRefund) ||
+    (sale.channel === 'Online' && isAdmin);
 
   const handleOpenRefundModal = async (sale) => {
-    if (!canRefund) return;
+    if (!canManageSale(sale)) return;
     setRefundSale(sale);
     setRefundReason('');
     const emailValue = sale.customer_email && sale.customer_email !== 'N/A' && sale.customer_email !== '-' ? sale.customer_email : '';
@@ -487,7 +490,7 @@ export default function Reports({ shows }) {
 
   const toggleRefundTicketSelection = (ticket) => {
     const isValidated = ticket.status === 'validated' || (ticket.capacity_validated && ticket.capacity_validated > 0);
-    if (isValidated) return;
+    if (isValidated || refundSale?.channel === 'Online') return;
 
     setSelectedRefundTicketIds((prev) => {
       if (prev.includes(ticket.id)) {
@@ -544,7 +547,7 @@ export default function Reports({ shows }) {
         notify_email: refundEmail || undefined
       };
 
-      if (!isAllSelectableSelected) {
+      if (refundSale.channel !== 'Online' && !isAllSelectableSelected) {
         body.ticket_ids = selectedRefundTicketIds;
       }
 
@@ -576,6 +579,7 @@ export default function Reports({ shows }) {
       } else if (reportType === 'individual' && selectedShowId) {
         await loadShowReport(selectedShowId, true);
       }
+      await loadSalesPaginated(salesPagination.page, true);
 
       handleCloseRefundModal();
     } catch (err) {
@@ -1541,7 +1545,7 @@ export default function Reports({ shows }) {
                   const isRefundOperation = sale.is_refund_operation || false;
                   const isRefundedOriginal = isRefunded && !isRefundOperation;
                   const showDetailButton = isRefundOperation;
-                  const showRefundButton = canRefund && sale.channel === 'Boletería' && !isRefunded && !isRefundOperation;
+                  const showRefundButton = canManageSale(sale) && !isRefunded && !isRefundOperation;
 
                   return (
                   <tr key={sale.sale_id} style={{ borderBottom: `1px solid ${theme.colors.borderLight}` }}>
@@ -1590,7 +1594,7 @@ export default function Reports({ shows }) {
                                 variant="danger"
                                 style={{ fontSize: 12, padding: '4px 12px' }}
                               >
-                                Devolver
+                                {sale.channel === 'Online' ? 'Anular' : 'Devolver'}
                               </Button>
                             )}
                           </>
@@ -1754,7 +1758,7 @@ export default function Reports({ shows }) {
                   color: theme.colors.textPrimary
                 }}
               >
-                Devolver venta
+                {refundSale.channel === 'Online' ? 'Anular venta online' : 'Devolver venta'}
               </h2>
               <button
                 onClick={handleCloseRefundModal}
@@ -1778,9 +1782,9 @@ export default function Reports({ shows }) {
                   fontSize: theme.typography.small
                 }}
               >
-                Esta acción liberará las entradas seleccionadas de esta venta y registrará un
-                movimiento negativo en tu caja actual. Solo se pueden devolver
-                entradas que no tengan ingresos registrados.
+                {refundSale.channel === 'Online'
+                  ? 'Esta acción anulará la venta online y liberará todas sus entradas. No se podrá deshacer y no se procesará ningún reintegro desde el sistema.'
+                  : 'Esta acción liberará las entradas seleccionadas de esta venta y registrará un movimiento negativo en tu caja actual. Solo se pueden devolver entradas que no tengan ingresos registrados.'}
               </p>
 
               <div style={{ marginBottom: theme.spacing.md }}>
@@ -1824,7 +1828,7 @@ export default function Reports({ shows }) {
                     color: theme.colors.textSecondary
                   }}
                 >
-                  Seleccioná las entradas a devolver
+                  {refundSale.channel === 'Online' ? 'Entradas a anular' : 'Seleccioná las entradas a devolver'}
                 </div>
 
                 {refundTicketsLoading ? (
@@ -1887,7 +1891,7 @@ export default function Reports({ shows }) {
                             justifyContent: 'space-between',
                             padding: theme.spacing.sm,
                             borderBottom: `1px solid ${theme.colors.borderLight}`,
-                            cursor: isValidated ? 'not-allowed' : 'pointer',
+                            cursor: isValidated || refundSale.channel === 'Online' ? 'not-allowed' : 'pointer',
                             background: isSelected && !isValidated ? '#eff6ff' : theme.colors.surface,
                             opacity: isValidated ? 0.6 : 1
                           }}
@@ -1928,7 +1932,7 @@ export default function Reports({ shows }) {
                             <input
                               type="checkbox"
                               checked={isSelected && !isValidated}
-                              disabled={isValidated}
+                              disabled={isValidated || refundSale.channel === 'Online'}
                               onChange={(e) => {
                                 e.stopPropagation();
                                 toggleRefundTicketSelection(ticket);
@@ -1967,7 +1971,7 @@ export default function Reports({ shows }) {
                         color: theme.colors.textSecondary
                       }}
                     >
-                      Entradas seleccionadas:{' '}
+                      {refundSale.channel === 'Online' ? 'Entradas a anular:' : 'Entradas seleccionadas:'}{' '}
                       {selectedRefundTicketIds.length} de{' '}
                       {
                         refundTickets.filter(
@@ -1975,7 +1979,7 @@ export default function Reports({ shows }) {
                             !(t.status === 'validated' || (t.capacity_validated && t.capacity_validated > 0))
                         ).length
                       }
-                      . Total a devolver:{' '}
+                      . {refundSale.channel === 'Online' ? 'Total original:' : 'Total a devolver:'}{' '}
                       {formatCurrency(totalToRefund)}
                       {discountFactor < 1 && (
                         <span style={{ marginLeft: 8, color: theme.colors.textMuted }}>
@@ -2049,7 +2053,7 @@ export default function Reports({ shows }) {
                     color: theme.colors.textSecondary
                   }}
                 >
-                  Motivo de la devolución (opcional)
+                  {refundSale.channel === 'Online' ? 'Motivo de la anulación (opcional)' : 'Motivo de la devolución (opcional)'}
                 </label>
                 <textarea
                   value={refundReason}
@@ -2118,7 +2122,9 @@ export default function Reports({ shows }) {
                     cursor: refundLoading ? 'default' : 'pointer'
                   }}
                 >
-                  {refundLoading ? 'Devolviendo...' : 'Confirmar devolución'}
+                  {refundLoading
+                    ? (refundSale.channel === 'Online' ? 'Anulando...' : 'Devolviendo...')
+                    : (refundSale.channel === 'Online' ? 'Confirmar anulación' : 'Confirmar devolución')}
                 </button>
               </div>
             </div>

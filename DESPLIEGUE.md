@@ -2,6 +2,8 @@
 
 **Sistema de Venta de Entradas**
 
+
+
 ---
 
 ## 📋 Información del Servidor
@@ -29,7 +31,7 @@
 
 > **Nota:** Nginx sirve archivos desde la raíz, NO desde `dist/`. Por eso copiamos `index.html` y `assets/` a la raíz.
 
-> **Nota para trabajo con Cascade:** Cascade (el asistente) ejecuta los comandos de despliegue **automáticamente** usando la terminal integrada, paso a paso y esperando a que cada comando termine antes de avanzar al siguiente. No es necesario que copies y pegues los comandos manualmente. Cuando un comando requiera contraseña SSH u otro dato sensible, Cascade solicitará tu aprobación/ingreso antes de continuar. Si preferís ejecutarlos vos mismo, indicale a Cascade "desplegá" y te pedirá los códigos/passwords necesarios.
+> **Nota para trabajo con Cascade:** Cascade ejecuta los comandos paso a paso y espera a que cada uno termine antes de avanzar. Los comandos que modifican archivos, suben artefactos o actúan sobre producción requieren tu aprobación. Cuando SSH solicite credenciales, ingresalas en la terminal; nunca deben guardarse en este documento ni en el repositorio.
 
 ---
 
@@ -37,6 +39,7 @@
 
 Antes de compilar o subir cualquier cosa:
 
+- [ ] Revisar `git status --short`: confirmar explícitamente que todos los cambios pendientes deben incluirse, porque el ZIP publica el estado completo de `backend/` y el build completo de `frontend/`.
 - [ ] Commits pusheados y código probado en desarrollo local.
 - [ ] `frontend/.env` y `backend/.env` locales **NO** contienen URLs de producción (no commitear `.env`).
 - [ ] Si hay cambios de schema, la migración SQL está en `backend/migrations/` y `registerModels.js` está actualizado.
@@ -106,6 +109,8 @@ scp -P 5089 frontend-deploy.zip root@66.97.42.246:/home/teatropigue/htdocs/www.t
 
 ```bash
 ssh -p 5089 root@66.97.42.246 "cd /home/teatropigue/htdocs/www.teatropigue.com.ar && \
+  rm -rf dist assets && \
+  mkdir assets && \
   unzip -o deploy-files/frontend-deploy.zip && \
   cp dist/index.html ./ && \
   cp -rf dist/assets/* assets/ && \
@@ -157,7 +162,7 @@ scp -P 5089 backend-deploy.zip root@66.97.42.246:/home/teatropigue/htdocs/www.te
 ```bash
 ssh -p 5089 root@66.97.42.246 "cd /home/teatropigue/htdocs/www.teatropigue.com.ar/backend && \
   unzip -o ../deploy-files/backend-deploy.zip && \
-  npm install --production && \
+  npm install --omit=dev && \
   chown -R teatropigue:teatropigue . && \
   pm2 restart tep-backend"
 ```
@@ -179,13 +184,14 @@ ssh -p 5089 root@66.97.42.246 "pm2 logs tep-backend --lines 50 --nostream"
 curl -s https://www.teatropigue.com.ar/api/health | head -c 200
 ```
 
-Si no existe `/api/health`, verificar con:
+Si no existe `/api/health`, verificar con endpoints públicos existentes:
 
 ```bash
-curl -s -o /dev/null -w "%{http_code}" https://www.teatropigue.com.ar/api/sessions/upcoming
+curl -s -o /dev/null -w "%{http_code}\n" https://www.teatropigue.com.ar/api/shows
+curl -s -o /dev/null -w "%{http_code}\n" https://www.teatropigue.com.ar/api/sessions
 ```
 
-Debe devolver `200`.
+Ambos deben devolver `200`. No usar `/api/sessions/upcoming`: esa ruta no existe.
 
 ---
 
@@ -260,20 +266,22 @@ scp -P "$PORT" frontend-deploy.zip backend-deploy.zip "$SERVER:$REMOTE_DIR/deplo
 
 # 5. Desplegar en servidor
 ssh -p "$PORT" "$SERVER" "cd $REMOTE_DIR && \
-  rm -rf dist && \
+  rm -rf dist assets && \
+  mkdir assets && \
   unzip -o deploy-files/frontend-deploy.zip && \
   cp dist/index.html ./ && \
   cp -rf dist/assets/* assets/ && \
   rm -rf dist && \
   cd backend && \
   unzip -o ../deploy-files/backend-deploy.zip && \
-  npm install --production && \
+  npm install --omit=dev && \
   chown -R teatropigue:teatropigue . && \
   pm2 restart tep-backend"
 
 # 6. Health check
 sleep 3
-curl -s -o /dev/null -w "HTTP %{http_code}\n" https://www.teatropigue.com.ar/api/sessions/upcoming
+curl -s -o /dev/null -w "GET /api/shows: %{http_code}\n" https://www.teatropigue.com.ar/api/shows
+curl -s -o /dev/null -w "GET /api/sessions: %{http_code}\n" https://www.teatropigue.com.ar/api/sessions
 
 echo "✅ Despliegue completo finalizado"
 ```
@@ -318,14 +326,15 @@ cd /Users/brunoalberstein/Documents/GitHub/newTEP/deploy-files && \
 **4. Desplegar en servidor:**
 ```bash
 ssh -p 5089 root@66.97.42.246 "cd /home/teatropigue/htdocs/www.teatropigue.com.ar && \
-  rm -rf dist && \
+  rm -rf dist assets && \
+  mkdir assets && \
   unzip -o deploy-files/frontend-deploy.zip && \
   cp dist/index.html ./ && \
   cp -rf dist/assets/* assets/ && \
   rm -rf dist && \
   cd backend && \
   unzip -o ../deploy-files/backend-deploy.zip && \
-  npm install --production && \
+  npm install --omit=dev && \
   chown -R teatropigue:teatropigue . && \
   pm2 restart tep-backend"
 ```
@@ -341,7 +350,8 @@ ssh -p 5089 root@66.97.42.246 "cd /home/teatropigue/htdocs/www.teatropigue.com.a
 5. Revisar consola (F12) por errores
 6. Health check del backend:
    ```bash
-   curl -s -o /dev/null -w "%{http_code}\n" https://www.teatropigue.com.ar/api/sessions/upcoming
+   curl -s -o /dev/null -w "GET /api/shows: %{http_code}\n" https://www.teatropigue.com.ar/api/shows
+   curl -s -o /dev/null -w "GET /api/sessions: %{http_code}\n" https://www.teatropigue.com.ar/api/sessions
    ```
 7. Revisar logs:
    ```bash
@@ -408,7 +418,7 @@ ssh -p 5089 root@66.97.42.246 "cd /home/teatropigue/htdocs/www.teatropigue.com.a
 ```bash
 ssh -p 5089 root@66.97.42.246 "cd /home/teatropigue/htdocs/www.teatropigue.com.ar/backend && \
   unzip -o ../deploy-files/backend-deploy.zip.anterior && \
-  npm install --production && \
+  npm install --omit=dev && \
   pm2 restart tep-backend"
 ```
 

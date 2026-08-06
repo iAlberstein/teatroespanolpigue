@@ -128,7 +128,8 @@ export default function Perfil(){
               title: ticket.show_title,
               image_url: ticket.show_image_url
             },
-            starts_at: ticket.session_starts_at
+            starts_at: ticket.session_starts_at,
+            function_name: ticket.function_name || null
           },
           tickets: [],
           all_used: true, // Asumimos todos usados hasta que encontremos uno activo
@@ -648,6 +649,7 @@ export default function Perfil(){
                         </div>
                         <div style={{ flex: 1, minWidth: 0 }}>
                           <div style={{ fontSize: 15, fontWeight: 700, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{s.session?.show?.title || 'Espectáculo'}</div>
+                          {s.session?.function_name && <div style={{ color: '#374151', fontSize: 13, fontWeight: 600, marginTop: 2 }}>{s.session.function_name}</div>}
                           <div style={{ color: '#6b7280', fontSize: 13, marginTop: 2 }}>
                             {fmtDate(s.session?.starts_at)}
                           </div>
@@ -690,6 +692,7 @@ export default function Perfil(){
                       {/* 2) Título + fecha/hora + QR de acceso */}
                       <div style={{ minWidth:0, textAlign:'center', padding:'0 8px' }}>
                         <div style={{ fontSize:18, fontWeight:700, whiteSpace:'nowrap', overflow:'hidden', textOverflow:'ellipsis' }}>{s.session?.show?.title || 'Espectáculo'}</div>
+                        {s.session?.function_name && <div style={{ color:'#374151', marginTop:4, fontWeight:600 }}>{s.session.function_name}</div>}
                         <div style={{ color:'#6b7280', marginTop:4 }}>
                           {fmtDate(s.session?.starts_at)} - {fmtTime(s.session?.starts_at)}
                         </div>

@@ -508,54 +508,6 @@ export default function Home() {
         </div>
       )}
 
-      {/* Muestras Fin de Año 2026 banner */}
-      <div style={{
-        width: '100%',
-        background: '#2d6a4f',
-        padding: isMobile ? '28px 20px' : '36px 32px',
-        boxSizing: 'border-box',
-        textAlign: 'center'
-      }}>
-        <h2 style={{
-          margin: '0 0 8px',
-          fontSize: isMobile ? 22 : 30,
-          fontWeight: 700,
-          color: '#ffffff',
-          fontFamily: 'Helvetica Neue, Helvetica, Arial, sans-serif',
-          textTransform: 'uppercase',
-          letterSpacing: '2px'
-        }}>
-          MUESTRAS FIN DE AÑO 2026
-        </h2>
-        <p style={{
-          margin: '0 0 20px',
-          fontSize: isMobile ? 14 : 15,
-          color: '#b7e4c7',
-          fontFamily: 'Helvetica Neue, Helvetica, Arial, sans-serif'
-        }}>
-          Registrá tu institución para participar del sorteo de fechas
-        </p>
-        <a
-          href="/muestras2026"
-          style={{
-            display: 'inline-block',
-            padding: isMobile ? '11px 28px' : '13px 36px',
-            background: '#ffffff',
-            color: '#1e293b',
-            border: 'none',
-            borderRadius: 8,
-            fontSize: isMobile ? 14 : 15,
-            fontWeight: 700,
-            cursor: 'pointer',
-            textDecoration: 'none',
-            fontFamily: 'Helvetica Neue, Helvetica, Arial, sans-serif',
-            letterSpacing: '0.3px'
-          }}
-        >
-          Inscribir institución
-        </a>
-      </div>
-
       {/* Ateneo welcome row */}
       <div style={{
         width: '100%',

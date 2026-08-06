@@ -31,21 +31,33 @@ function getPackSection(item) {
  * - Palcos Altos + Palcos Bajos share the same depth counter.
  * - General remains independent.
  */
-function getPackGroup(section) {
-  if (section === 'platea_general' || section === 'pullman') return 'platea_pullman';
-  if (section === 'palcos_bajos' || section === 'palcos_altos') return 'palcos';
-  return section;
+function getPackGroup() {
+  return 'pack';
 }
 
 /**
  * Original/base price used only for ordering slots within a session/section.
  */
-function getOriginalPrice(item) {
+function getOriginalPrice(item, packPricing) {
   if (!item) return 0;
+  const section = getPackSection(item);
+  const packPrice1 = getPackPrice(packPricing, 1, section);
+  if (packPrice1 > 0) return packPrice1;
   if (item.type === 'butaca' || item.type === 'palco') {
     return Number(item.price || 0);
   }
   return Number(item.unit_price || 0);
+}
+
+function getPackPrice(packPricing, depth, section) {
+  const tier = packPricing?.[depth] || packPricing?.[String(depth)] || {};
+  if (tier == null) return 0;
+  if (tier[section] !== undefined && tier[section] !== '') return Number(tier[section]);
+  const spaced = section.replace(/_/g, ' ');
+  if (tier[spaced] !== undefined && tier[spaced] !== '') return Number(tier[spaced]);
+  const lower = Object.keys(tier).find(k => k.toLowerCase().replace(/ /g, '_') === section);
+  if (lower !== undefined && tier[lower] !== '') return Number(tier[lower]);
+  return 0;
 }
 
 /**
@@ -53,7 +65,7 @@ function getOriginalPrice(item) {
  * - butaca / palco -> 1 slot each (the whole seat/box)
  * - pullman / general -> N slots of 1 person each
  */
-function expandItemToSlots(item, sessionId) {
+function expandItemToSlots(item, sessionId, packPricing) {
   if (!item) return [];
   const base = {
     session_id: sessionId,
@@ -62,7 +74,7 @@ function expandItemToSlots(item, sessionId) {
     seat_code: item.seat_code || null,
     capacity: item.type === 'palco' ? Number(item.capacity || 1) : 1,
     quantity: 1,
-    originalPrice: getOriginalPrice(item),
+    originalPrice: getOriginalPrice(item, packPricing),
     finalPrice: null
   };
 
@@ -99,7 +111,7 @@ export function computePackTicketPrices(itemsBySession, packPricing, packMaxSess
       if (!slotsByGroupBySectionBySession[group][section][sessionId]) {
         slotsByGroupBySectionBySession[group][section][sessionId] = [];
       }
-      const slots = expandItemToSlots(item, sessionId);
+      const slots = expandItemToSlots(item, sessionId, packPricing);
       slotsByGroupBySectionBySession[group][section][sessionId].push(...slots);
     }
   }
@@ -121,30 +133,37 @@ export function computePackTicketPrices(itemsBySession, packPricing, packMaxSess
         Object.keys(bySession).forEach(sid => groupSessions.add(sid));
       });
       const groupSessionSlots = {};
+      const groupSlotEndPositions = new Map();
       for (const sessionId of groupSessions) {
         groupSessionSlots[sessionId] = [];
-        for (const [sec, bySession] of Object.entries(slotsBySectionBySession)) {
+        for (const bySession of Object.values(slotsBySectionBySession)) {
           groupSessionSlots[sessionId].push(...(bySession[sessionId] || []));
         }
         groupSessionSlots[sessionId].sort((a, b) => b.originalPrice - a.originalPrice);
-      }
-      const maxCount = Math.max(0, ...Object.values(groupSessionSlots).map(slots => slots.length));
-
-      for (let k = 0; k < maxCount; k++) {
-        let depth = 0;
-        for (const sessionId of groupSessions) {
-          if (groupSessionSlots[sessionId].length > k) depth++;
+        let position = 0;
+        for (const slot of groupSessionSlots[sessionId]) {
+          position += slot.capacity || 1;
+          groupSlotEndPositions.set(slot, position);
         }
+      }
 
-        depth = Math.min(Math.max(1, depth), Math.max(1, Number(packMaxSessions) || 3));
-        const priceForDepth = packPricing?.[depth]?.[section] ?? packPricing?.[String(depth)]?.[section] ?? 0;
-
-        for (const sessionId of sessionIds) {
-          if (sessionSlots[sessionId].length > k) {
-            const slot = sessionSlots[sessionId][k];
-            slot.finalPrice = Number(priceForDepth);
-            result.push(slot);
+      for (const sessionId of sessionIds) {
+        for (const slot of sessionSlots[sessionId]) {
+          const endPosition = groupSlotEndPositions.get(slot) || 1;
+          let depth = 0;
+          for (const groupSessionId of groupSessions) {
+            const units = groupSessionSlots[groupSessionId].reduce(
+              (sum, groupSlot) => sum + (groupSlot.capacity || 1),
+              0
+            );
+            if (units >= endPosition) depth++;
           }
+
+          depth = Math.min(Math.max(1, depth), Math.max(1, Number(packMaxSessions) || 3));
+
+          const priceForDepth = getPackPrice(packPricing, depth, section);
+          slot.finalPrice = Number(priceForDepth || slot.originalPrice || 0);
+          result.push(slot);
         }
       }
     }

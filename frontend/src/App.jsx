@@ -26,7 +26,6 @@ import ResetPassword from './pages/ResetPassword.jsx';
 import SipagoSuccess from './pages/SipagoSuccess.jsx';
 import SipagoFailure from './pages/SipagoFailure.jsx';
 import Aportes from './pages/Aportes.jsx';
-import Muestras2026 from './pages/Muestras2026.jsx';
 import AportesSuccess from './pages/AportesSuccess.jsx';
 import AportesPending from './pages/AportesPending.jsx';
 import AportesFailure from './pages/AportesFailure.jsx';
@@ -781,11 +780,6 @@ function Footer() {
             <Link to="/ateneo" style={linkStyle}>Ateneo</Link>
             <Link to="/trabaja-con-nosotros" style={linkStyle}>Trabaja con nosotros</Link>
             <Link to="/centro-de-ayuda" style={linkStyle}>Centro de ayuda</Link>
-            <Link
-              to="/muestras2026"
-              style={linkStyle}
-              onClick={() => window.scrollTo({ top: 0, behavior: 'smooth' })}
-            >Muestras 2026</Link>
           </div>
 
           {/* Column 3: Accesibilidad */}
@@ -1097,9 +1091,6 @@ function AppRoutes() {
           <Route path="/sipago/success" element={<SipagoSuccess />} />
           <Route path="/sipago/failure" element={<SipagoFailure />} />
           
-          {/* Muestras Fin de Año 2026 (hidden route) */}
-          <Route path="/muestras2026" element={<Muestras2026 />} />
-
           {/* Aportes Solidarios (hidden route) */}
           <Route path="/aportes" element={<Aportes />} />
           <Route path="/aportes/success" element={<AportesSuccess />} />

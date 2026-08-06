@@ -1,8 +1,10 @@
 import { useState, useEffect } from 'react';
-import { apiFetch } from '../../lib/api';
+import { useAuth } from '../../contexts/AuthContext';
+import { apiFetch, apiAuthFetch } from '../../lib/api';
 import { theme } from '../../styles/theme.js';
 
 export default function Sponsors() {
+  const { token } = useAuth();
   const [sponsors, setSponsors] = useState([]);
   const [uploading, setUploading] = useState(false);
   const [error, setError] = useState('');
@@ -27,10 +29,10 @@ export default function Sponsors() {
     try {
       const formData = new FormData();
       formData.append('image', file);
-      const res = await apiFetch('/api/sponsors', {
+      const res = await apiAuthFetch('/api/sponsors', {
         method: 'POST',
         body: formData,
-      });
+      }, token);
       if (!res.ok) {
         const d = await res.json();
         throw new Error(d.error || 'Error al subir');
@@ -47,7 +49,7 @@ export default function Sponsors() {
   const handleDelete = async (filename) => {
     if (!confirm('¿Eliminar este patrocinador?')) return;
     try {
-      await apiFetch(`/api/sponsors/${filename}`, { method: 'DELETE' });
+      await apiAuthFetch(`/api/sponsors/${filename}`, { method: 'DELETE' }, token);
       await load();
     } catch (e) {
       setError('Error al eliminar');

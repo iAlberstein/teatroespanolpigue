@@ -449,11 +449,15 @@ router.post(
       }
 
       const method = (sale.payment_method || '').toLowerCase();
-      if (method === 'mp') {
+      const isOnlineSale = ['mp', 'card'].includes(method);
+      const userRoles = req.user.roles || (req.user.role ? [req.user.role] : []);
+      const isAdmin = userRoles.includes('admin');
+
+      if (isOnlineSale && !isAdmin) {
         await transaction.rollback();
-        return res.status(400).json({
-          error: 'online_refund_not_supported',
-          message: 'Las devoluciones de ventas online deben gestionarse directamente en Mercado Pago'
+        return res.status(403).json({
+          error: 'online_cancellation_admin_only',
+          message: 'Solo los administradores pueden anular ventas online'
         });
       }
 
@@ -461,6 +465,14 @@ router.post(
 
       const allTickets = sale.tickets || [];
       const isPartial = Array.isArray(ticket_ids) && ticket_ids.length > 0;
+
+      if (isOnlineSale && isPartial) {
+        await transaction.rollback();
+        return res.status(400).json({
+          error: 'partial_online_cancellation_not_supported',
+          message: 'Las ventas online solo pueden anularse en su totalidad'
+        });
+      }
 
       if (!isPartial && currentMetadata.refunded) {
         await transaction.rollback();
@@ -512,18 +524,21 @@ router.post(
         });
       }
 
-      const shift = await CashRegisterShift.findOne({
-        where: { user_id: req.user.userId, status: 'open' },
-        transaction,
-        lock: transaction.LOCK.UPDATE
-      });
-
-      if (!shift) {
-        await transaction.rollback();
-        return res.status(400).json({
-          error: 'shift_required',
-          message: 'Necesitás tener una caja abierta para registrar una devolución'
+      let shift = null;
+      if (!isOnlineSale) {
+        shift = await CashRegisterShift.findOne({
+          where: { user_id: req.user.userId, status: 'open' },
+          transaction,
+          lock: transaction.LOCK.UPDATE
         });
+
+        if (!shift) {
+          await transaction.rollback();
+          return res.status(400).json({
+            error: 'shift_required',
+            message: 'Necesitás tener una caja abierta para registrar una devolución'
+          });
+        }
       }
 
       for (const ticket of ticketsToRefund) {
@@ -552,7 +567,7 @@ router.post(
               refunded: true,
               refunded_at: now,
               refunded_by: req.user.userId,
-              refund_shift_id: shift.id,
+              refund_shift_id: shift?.id || null,
               refund_snapshot: refundSnapshot,
               refund_reason: reason || null
             })
@@ -564,61 +579,56 @@ router.post(
 
       sale.metadata = updatedMetadata;
 
-      // Calcular monto a devolver considerando descuentos aplicados
-      // El factor de descuento es: total_amount / suma_precios_base
       const allTicketsBasePrice = allTickets.reduce((sum, t) => sum + toNumber(t.price), 0);
       const saleTotalAmount = toNumber(sale.total_amount);
       const discountFactor = allTicketsBasePrice > 0 ? saleTotalAmount / allTicketsBasePrice : 1;
 
-      let refundAmount = 0;
+      let refundAmount = -saleTotalAmount;
       if (isPartial) {
         const ticketsBaseAmount = ticketsToRefund.reduce((sum, t) => sum + toNumber(t.price), 0);
-        // Aplicar el mismo factor de descuento que tuvo la venta original
-        const ticketsDiscountedAmount = ticketsBaseAmount * discountFactor;
-        refundAmount = -Math.round(ticketsDiscountedAmount * 100) / 100;
+        refundAmount = -Math.round(ticketsBaseAmount * discountFactor * 100) / 100;
 
-        // Ajustar capacidad total de la venta si aplica
         const totalCapacityToRefund = ticketsToRefund.reduce(
           (sum, t) => sum + (t.capacity || 1),
           0
         );
-        const newTotalCapacity = Math.max(0, (sale.total_capacity || 0) - totalCapacityToRefund);
-        sale.total_capacity = newTotalCapacity;
-      } else {
-        refundAmount = -saleTotalAmount;
+        sale.total_capacity = Math.max(0, (sale.total_capacity || 0) - totalCapacityToRefund);
       }
 
       await sale.save({ transaction });
 
-      const refundSale = await Sale.create(
-        {
-          session_id: sale.session_id,
-          user_id: sale.user_id,
-          cashier_id: shift.user_id,
-          cash_register_shift_id: shift.id,
-          payment_method: sale.payment_method,
-          payment_status: 'approved',
-          discount_id: null,
-          total_amount: refundAmount,
-          customer_name: sale.customer_name,
-          customer_email: sale.customer_email,
-          customer_phone: sale.customer_phone,
-          customer_dni: sale.customer_dni,
-          sold_by: shift.user_id,
-          metadata: {
-            type: 'refund',
-            refund_of: sale.id,
-            original_amount: Math.abs(refundAmount),
-            reason: reason || null,
-            refund_snapshot: refundSnapshot
+      let refundSale = null;
+      if (!isOnlineSale) {
+        refundSale = await Sale.create(
+          {
+            session_id: sale.session_id,
+            user_id: sale.user_id,
+            cashier_id: shift.user_id,
+            cash_register_shift_id: shift.id,
+            payment_method: sale.payment_method,
+            payment_status: 'approved',
+            discount_id: null,
+            total_amount: refundAmount,
+            customer_name: sale.customer_name,
+            customer_email: sale.customer_email,
+            customer_phone: sale.customer_phone,
+            customer_dni: sale.customer_dni,
+            sold_by: shift.user_id,
+            metadata: {
+              type: 'refund',
+              refund_of: sale.id,
+              original_amount: Math.abs(refundAmount),
+              reason: reason || null,
+              refund_snapshot: refundSnapshot
+            },
+            container_qr_code: null,
+            container_qr_data: null,
+            validated_count: 0,
+            total_capacity: 0
           },
-          container_qr_code: null,
-          container_qr_data: null,
-          validated_count: 0,
-          total_capacity: 0
-        },
-        { transaction }
-      );
+          { transaction }
+        );
+      }
 
       await transaction.commit();
 
@@ -633,6 +643,7 @@ router.post(
           const seatSet = io.soldSeats.get(sessionId) || new Set();
           const palcoSet = io.soldPalcos.get(sessionId) || new Set();
           let pullmanCount = io.pullmanSold.get(sessionId) || 0;
+          const hasGeneralAdmissionTickets = ticketsToRefund.some((t) => t.type === 'general');
 
           ticketsToRefund.forEach((t) => {
             if (t.type === 'butaca' && t.seat_code) {
@@ -659,11 +670,33 @@ router.post(
             available,
             capacity: pullmanState.capacity || 92
           });
+
+          if (hasGeneralAdmissionTickets) {
+            const session = await Session.findByPk(sessionId, {
+              include: [{ model: Show, as: 'show' }]
+            });
+            const capacity = session?.capacity_override || session?.show?.general_capacity;
+            if (capacity != null) {
+              const soldCount = await Ticket.count({
+                where: {
+                  session_id: sessionId,
+                  type: 'general',
+                  status: { [Op.in]: ['sold', 'validated'] }
+                }
+              });
+              io.to(`session:${sessionId}`).emit('general-admission-update', {
+                sessionId,
+                sold: soldCount,
+                available: Math.max(0, capacity - soldCount)
+              });
+            }
+          }
         }
       } catch (ioError) {
         console.error('[CASH REGISTER] Refund socket update error:', ioError);
       }
 
+      if (!isOnlineSale) {
       // Send refund email notification (best-effort, after commit)
       try {
         const { sendRefundNotification } = await import('../lib/emailService.js');
@@ -723,14 +756,16 @@ router.post(
       } catch (emailError) {
         console.error('[CASH REGISTER] Refund email send error:', emailError);
       }
+      }
 
       return res.status(201).json({
         ok: true,
-        refund: {
+        cancellation: isOnlineSale,
+        refund: refundSale ? {
           id: refundSale.id,
           refund_of: sale.id,
           total_amount: refundSale.total_amount
-        }
+        } : null
       });
     } catch (error) {
       await transaction.rollback();

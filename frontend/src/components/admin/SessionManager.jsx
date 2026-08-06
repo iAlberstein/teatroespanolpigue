@@ -8,6 +8,7 @@ import { formatDateLong, formatTime } from '../../lib/dateFormatter.js';
 export default function SessionManager({ show, sessions, onAddSession, onDeleteSession, onEditSession, onClose }) {
   const [newSession, setNewSession] = useState({
     starts_at: '',
+    function_name: '',
     capacity_override: '',
     use_custom_pricing: false,
     general_price: '',
@@ -53,6 +54,7 @@ export default function SessionManager({ show, sessions, onAddSession, onDeleteS
     const payload = {
       show_id: show.id,
       starts_at: new Date(newSession.starts_at).toISOString(),
+      function_name: show.pack_enabled ? newSession.function_name.trim() || null : null,
       capacity_override: newSession.capacity_override ? Number(newSession.capacity_override) : null,
       palcos_individual_seats: newSession.palcos_individual_seats
     };
@@ -76,6 +78,7 @@ export default function SessionManager({ show, sessions, onAddSession, onDeleteS
     onAddSession(payload);
     setNewSession({ 
       starts_at: '', 
+      function_name: '',
       capacity_override: '', 
       use_custom_pricing: false,
       general_price: '',
@@ -205,6 +208,22 @@ export default function SessionManager({ show, sessions, onAddSession, onDeleteS
             </div>
           </div>
         </div>
+
+        {show.pack_enabled && (
+          <div style={{ marginBottom: 16, maxWidth: 600 }}>
+            <label style={{ display: 'block', marginBottom: 4, fontWeight: 600, fontSize: 14 }}>
+              Nombre de función
+            </label>
+            <input
+              type="text"
+              value={newSession.function_name}
+              onChange={(e) => setNewSession(prev => ({ ...prev, function_name: e.target.value }))}
+              placeholder="Ej: Función estreno"
+              maxLength={150}
+              style={{ width: '100%', padding: 8, borderRadius: 4, border: '1px solid #ccc' }}
+            />
+          </div>
+        )}
 
         {/* Custom pricing toggle */}
         <div style={{ marginBottom: 16 }}>
@@ -470,6 +489,20 @@ export default function SessionManager({ show, sessions, onAddSession, onDeleteS
                         </div>
                       </div>
 
+                      {show.pack_enabled && (
+                        <div style={{ marginBottom: 12 }}>
+                          <label style={{ display: 'block', marginBottom: 4, fontSize: 13, fontWeight: 600 }}>Nombre de función</label>
+                          <input
+                            type="text"
+                            value={editingSession.function_name || ''}
+                            onChange={(e) => setEditingSession(prev => ({ ...prev, function_name: e.target.value }))}
+                            placeholder="Ej: Función estreno"
+                            maxLength={150}
+                            style={{ width: '100%', padding: 8, borderRadius: 4, border: '1px solid #ccc' }}
+                          />
+                        </div>
+                      )}
+
                       {/* Custom Pricing Toggle */}
                       <div style={{ marginBottom: 12 }}>
                         <label style={{ display: 'flex', alignItems: 'center', gap: 8, cursor: 'pointer' }}>
@@ -598,7 +631,8 @@ export default function SessionManager({ show, sessions, onAddSession, onDeleteS
                           onClick={() => {
                             if (onEditSession) {
                               const updateData = {
-                                starts_at: new Date(editingSession.starts_at).toISOString()
+                                starts_at: new Date(editingSession.starts_at).toISOString(),
+                                function_name: show.pack_enabled ? editingSession.function_name?.trim() || null : null
                               };
                               if (editingSession.use_custom_pricing && editingSession.pricing_json) {
                                 // Merge with show defaults for any missing/null values
@@ -643,7 +677,7 @@ export default function SessionManager({ show, sessions, onAddSession, onDeleteS
                     >
                       <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
                         <span style={{ fontWeight: 600, textTransform: 'capitalize' }}>
-                          {dateStr} - {timeStr}
+                          {session.function_name ? `${session.function_name} · ` : ''}{dateStr} - {timeStr}
                         </span>
                         {isPast && <span style={{ color: '#dc3545', fontSize: 12, fontWeight: 600 }}>Finalizada</span>}
                       </div>
@@ -669,6 +703,7 @@ export default function SessionManager({ show, sessions, onAddSession, onDeleteS
                               setEditingSession({
                                 id: session.id,
                                 starts_at: `${localDate}T${localTime}`,
+                                function_name: session.function_name || '',
                                 use_custom_pricing: hasCustomPricing,
                                 pricing_json: mergedPricing
                               });

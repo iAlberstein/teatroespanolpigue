@@ -2,6 +2,8 @@ import { Router } from 'express';
 import { sequelize } from '../lib/sequelize.js';
 import { authenticateToken, requireRole } from '../middleware/auth.js';
 import { Op } from 'sequelize';
+import bcrypt from 'bcrypt';
+import crypto from 'crypto';
 
 function parseServiceItems(raw) {
   if (!raw) return [];
@@ -259,8 +261,8 @@ router.get('/', authenticateToken, requireRole('admin', 'boleteria'), async (req
   }
 });
 
-// Create user
-router.post('/', async (req, res) => {
+// Create user (admin/boleteria only)
+router.post('/', authenticateToken, requireRole('admin', 'boleteria'), async (req, res) => {
   const { id, name, email, password } = req.body || {};
   if (!name || !email) return res.status(400).json({ error: 'name and email required' });
   const { users: User } = sequelize.models;
@@ -268,16 +270,19 @@ router.post('/', async (req, res) => {
     // if email exists, return existing user
     const existing = await User.findOne({ where: { email } });
     if (existing) return res.status(200).json(existing);
-    const password_hash = password && String(password).length > 0 ? String(password) : 'nopass';
+    const rawPassword = password && String(password).length > 0 ? String(password) : crypto.randomBytes(32).toString('hex');
+    const password_hash = await bcrypt.hash(rawPassword, 10);
     const user = await User.create({ id: id || undefined, name, email, password_hash, role: 'espectador' });
-    return res.status(201).json(user);
+    const { password_hash: _, ...userResponse } = user.toJSON();
+    return res.status(201).json(userResponse);
   } catch (e) {
+    console.error('[USERS] Create user error:', e);
     return res.status(500).json({ error: 'create_failed' });
   }
 });
 
 // Get user by id
-router.get('/:id', async (req, res) => {
+router.get('/:id', authenticateToken, requireRole('admin', 'boleteria'), async (req, res) => {
   const { users: User } = sequelize.models;
   const user = await User.findByPk(req.params.id, {
     attributes: { exclude: ['password_hash'] }
@@ -498,6 +503,7 @@ router.get('/:id/tickets', authenticateToken, async (req, res) => {
         validated_at: t.validated_at,
         show_title: session?.show?.title || 'N/A',
         show_image_url: session?.show?.image_principal_mobile || session?.show?.image_url || null,
+        function_name: session?.function_name || null,
         session_starts_at: sessionDate ? sessionDate.toISOString() : null,
         session_date: sessionDate ? sessionDate.toLocaleDateString('es-AR', {
           day: '2-digit',

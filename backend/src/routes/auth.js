@@ -6,6 +6,7 @@ import { sequelize } from '../lib/sequelize.js';
 import { authenticateToken } from '../middleware/auth.js';
 import { createActivityLog, ActionTypes, EntityTypes } from '../middleware/activityLogger.js';
 import { linkTicketsToUserByDni } from '../lib/linkTicketsByDni.js';
+import { sendPasswordResetEmail } from '../lib/emailService.js';
 
 const router = express.Router();
 const JWT_SECRET = process.env.JWT_SECRET || 'iStein2513';
@@ -385,39 +386,19 @@ router.post('/forgot-password', async (req, res) => {
     });
 
     // Send email with reset link
-    const nodemailer = await import('nodemailer');
-    const transporter = nodemailer.default.createTransport({
-      host: process.env.EMAIL_HOST || 'smtp.gmail.com',
-      port: parseInt(process.env.EMAIL_PORT || '587'),
-      secure: false,
-      auth: {
-        user: process.env.EMAIL_USER,
-        pass: process.env.EMAIL_PASS
-      }
+    const emailResult = await sendPasswordResetEmail({
+      to: user.email,
+      name: user.name,
+      resetToken
     });
 
-    const resetUrl = `${process.env.FRONTEND_URL}/restablecer-contrasena?token=${resetToken}`;
-    
-    await transporter.sendMail({
-      from: process.env.EMAIL_FROM || process.env.EMAIL_USER,
-      to: user.email,
-      subject: 'Restablecer contraseña - Teatro Español',
-      html: `
-        <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
-          <h2>Restablecer contraseña</h2>
-          <p>Hola ${user.name},</p>
-          <p>Recibimos una solicitud para restablecer tu contraseña. Hacé clic en el siguiente enlace para crear una nueva contraseña:</p>
-          <p style="margin: 30px 0;">
-            <a href="${resetUrl}" style="background: #28a745; color: white; padding: 12px 24px; text-decoration: none; border-radius: 4px; display: inline-block;">
-              Restablecer contraseña
-            </a>
-          </p>
-          <p>Este enlace expirará en 1 hora.</p>
-          <p>Si no solicitaste restablecer tu contraseña, podés ignorar este email.</p>
-          <p>Saludos,<br>Teatro Español</p>
-        </div>
-      `
-    });
+    if (!emailResult.success) {
+      console.error('[AUTH] Failed to send password reset email:', emailResult.error);
+      return res.status(500).json({
+        error: 'email_error',
+        message: 'No pudimos enviar el email de recuperación. Verificá la configuración del servidor o intentá más tarde.'
+      });
+    }
 
     console.log(`[AUTH] Password reset requested for: ${email}`);
     return res.json({ message: 'If the email exists, a reset link will be sent' });

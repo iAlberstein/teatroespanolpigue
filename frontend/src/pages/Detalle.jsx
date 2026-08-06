@@ -61,6 +61,13 @@ export default function Detalle(){
   // Pack multi-function checkout state
   const [showPackCheckout, setShowPackCheckout] = useState(false);
 
+  // Auto-open pack checkout for pack-enabled shows with multiple sessions
+  useEffect(() => {
+    if (show?.pack_enabled && sessions.length >= 2) {
+      setShowPackCheckout(true);
+    }
+  }, [show?.pack_enabled, sessions.length]);
+
   // Mobile cart drawer state
   const [isMobileCartOpen, setIsMobileCartOpen] = useState(false);
 
@@ -1069,6 +1076,7 @@ export default function Detalle(){
   const sessionTimeLabel = selectedSessionObj?.starts_at
     ? formatTime(selectedSessionObj.starts_at)
     : '';
+  const sessionFunctionName = selectedSessionObj?.function_name || '';
 
   // Calculate prices and total
   const calculatePrices = () => {
@@ -1214,7 +1222,7 @@ export default function Detalle(){
         <div style={{ marginBottom: 10, padding: '8px 10px', background: '#f0f9ff', borderRadius: 6, borderLeft: '3px solid #3b82f6' }}>
           <div style={{ fontWeight: 600, fontSize: 14, color: '#1e293b' }}>{show.title}</div>
           <div style={{ fontSize: 12, color: '#64748b', marginTop: 2 }}>
-            {sessionDateLabel} - {sessionTimeLabel} hs
+            {sessionFunctionName && <>{sessionFunctionName} · </>}{sessionDateLabel} - {sessionTimeLabel} hs
           </div>
         </div>
       )}
@@ -1626,6 +1634,7 @@ export default function Detalle(){
                     minWidth: 160
                   }}
                 >
+                  {session.function_name && <div style={{ marginBottom: 2 }}>{session.function_name}</div>}
                   <div style={{ textTransform: 'capitalize' }}>{dateStr}</div>
                   <div style={{ fontSize: 14, opacity: 0.9 }}>{timeStr} hs</div>
                 </button>
@@ -1635,8 +1644,8 @@ export default function Detalle(){
         </div>
       )}
 
-      {/* Pack multi-function promo */}
-      {show?.pack_enabled && sessions.length >= 2 && (
+      {/* Pack multi-function promo removed — shown directly via PackCheckout */}
+      {show?.pack_enabled && sessions.length >= 2 && !showPackCheckout && (
         <div style={{
           marginBottom: 24,
           padding: 20,
@@ -1761,7 +1770,7 @@ export default function Detalle(){
               {show.title}
             </h3>
             <span style={{ fontSize: 14, color: '#64748b' }}>
-              {sessionDateLabel} - {sessionTimeLabel} hs
+              {sessionFunctionName && <>{sessionFunctionName} · </>}{sessionDateLabel} - {sessionTimeLabel} hs
             </span>
           </div>
         )}
@@ -2029,7 +2038,7 @@ export default function Detalle(){
                   <div style={{ marginBottom: 12, padding: '10px 12px', background: '#f0f9ff', borderRadius: 8, borderLeft: '3px solid #3b82f6' }}>
                     <div style={{ fontWeight: 600, fontSize: 14, color: '#1e293b' }}>{show.title}</div>
                     <div style={{ fontSize: 12, color: '#64748b', marginTop: 2 }}>
-                      {sessionDateLabel} - {sessionTimeLabel} hs
+                      {sessionFunctionName && <>{sessionFunctionName} · </>}{sessionDateLabel} - {sessionTimeLabel} hs
                     </div>
                   </div>
                 )}

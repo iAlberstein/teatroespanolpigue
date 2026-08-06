@@ -82,12 +82,10 @@ router.get('/:id/availability', async (req, res) => {
     });
     
     if (session) {
-      // Priority 1: Session-specific pricing (override)
-      pricing = parsePricing(session.pricing_json);
-      // Priority 2: Show default pricing (base)
-      if (!pricing && session.show) {
-        pricing = parsePricing(session.show.pricing_json);
-      }
+      const sessionPricing = parsePricing(session.pricing_json) || {};
+      const showPricing = session.show ? (parsePricing(session.show.pricing_json) || {}) : {};
+      pricing = { ...showPricing, ...sessionPricing };
+      if (Object.keys(pricing).length === 0) pricing = null;
 
       // Pack pricing preview: if pack_size is requested and show has pack enabled
       const packSize = req.query.pack_size;
@@ -240,7 +238,7 @@ router.post('/', authenticateToken, requireRole('admin'), async (req, res) => {
   try {
     const Session = sequelize.models.sessions;
     const Show = sequelize.models.shows;
-    const { show_id, starts_at, capacity_override, pricing_json, palcos_individual_seats } = req.body;
+    const { show_id, starts_at, function_name, capacity_override, pricing_json, palcos_individual_seats } = req.body;
     
     if (!show_id || !starts_at) {
       return res.status(400).json({ 
@@ -264,6 +262,7 @@ router.post('/', authenticateToken, requireRole('admin'), async (req, res) => {
       show_id,
       starts_at: startsAt,
       ends_at: endsAt,
+      function_name: typeof function_name === 'string' && function_name.trim() ? function_name.trim() : null,
       capacity_override: capacity_override || null,
       pricing_json: pricing_json || null,
       palcos_individual_seats: palcos_individual_seats !== undefined ? palcos_individual_seats : null
@@ -283,7 +282,7 @@ router.put('/:id', authenticateToken, requireRole('admin'), async (req, res) => 
   try {
     const Session = sequelize.models.sessions;
     const Show = sequelize.models.shows;
-    const { starts_at, capacity_override, pricing_json, palcos_individual_seats } = req.body;
+    const { starts_at, function_name, capacity_override, pricing_json, palcos_individual_seats } = req.body;
     
     const session = await Session.findByPk(req.params.id, {
       include: [{ model: Show, as: 'show' }]
@@ -304,6 +303,10 @@ router.put('/:id', authenticateToken, requireRole('admin'), async (req, res) => 
       updateData.ends_at = endsAt;
     }
     
+    if (function_name !== undefined) {
+      updateData.function_name = typeof function_name === 'string' && function_name.trim() ? function_name.trim() : null;
+    }
+
     if (capacity_override !== undefined) {
       updateData.capacity_override = capacity_override || null;
     }

@@ -118,6 +118,7 @@ export default function registerModels(sequelize) {
     show_id: { type: DataTypes.UUID, allowNull: false },
     starts_at: { type: DataTypes.DATE, allowNull: false },
     ends_at: { type: DataTypes.DATE, allowNull: false },
+    function_name: { type: DataTypes.STRING(150), allowNull: true },
     pricing_json: { 
       type: DataTypes.JSON, 
       allowNull: true,

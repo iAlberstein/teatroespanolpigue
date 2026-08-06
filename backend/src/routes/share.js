@@ -163,6 +163,7 @@ function generateTicketHTML(ticket, sessionInfo, customerName, { instructions = 
     
     <div class="event-info">
       <div class="event-title">${sessionInfo.showName}</div>
+      ${sessionInfo.functionName ? `<div class="event-detail"><strong>${sessionInfo.functionName}</strong></div>` : ''}
       <div class="event-detail">📅 ${sessionInfo.date}</div>
       <div class="event-detail">🕐 ${sessionInfo.time}</div>
       <div class="event-detail">📍 ${sessionInfo.sala || 'Sala Principal'}</div>
@@ -432,6 +433,7 @@ function generateContainerHTML(sale, tickets, sessionInfo, options = {}, { instr
     
     <div class="event-info">
       <div class="event-title">${sessionInfo.showName}</div>
+      ${sessionInfo.functionName ? `<div class="event-detail"><strong>${sessionInfo.functionName}</strong></div>` : ''}
       <div class="event-detail">${sessionInfo.date}</div>
       <div class="event-detail">${sessionInfo.time} - ${sessionInfo.sala || 'Sala Principal'}</div>
     </div>
@@ -530,7 +532,8 @@ router.get('/ticket/:ticket_id', async (req, res) => {
         minute: '2-digit',
         hour12: false
       }),
-      sala: session.sala || 'Sala Principal'
+      sala: session.sala || 'Sala Principal',
+      functionName: session.function_name || null
     };
     
     const customerName = ticket.sale?.customer_name || 'Cliente';
@@ -605,7 +608,8 @@ router.get('/sale/:sale_id', async (req, res) => {
         minute: '2-digit',
         hour12: false
       }),
-      sala: session.sala || 'Sala Principal'
+      sala: session.sala || 'Sala Principal',
+      functionName: session.function_name || null
     };
     
     const mode = req.query.mode === 'print' ? 'print' : 'view';

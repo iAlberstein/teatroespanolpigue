@@ -78,6 +78,7 @@ function generateTicketEmailHTML(tickets, sessionInfo, customerName) {
                       <td>
                         <h3 style="color: #333; margin: 0 0 10px 0;">${sessionInfo.showName || 'Espectáculo'}</h3>
                         <p style="color: #666; margin: 5px 0; font-size: 14px;">
+                          ${sessionInfo.functionName ? `Función: ${sessionInfo.functionName}<br>` : ''}
                           📅 ${sessionInfo.date}<br>
                           🕐 ${sessionInfo.time}<br>
                           📍 ${sessionInfo.sala || 'Sala Principal'}
@@ -191,7 +192,7 @@ export async function generateTicketsPDF({ tickets, sessionInfo, customerName })
       doc.fontSize(12).fillColor('#666').text(`Hola ${customerName}!`, { align: 'left' });
       doc.moveDown(0.5);
       doc.fontSize(10).text(
-        `Te comparto tus entradas para ${sessionInfo.showName} del día ${sessionInfo.date} a las ${sessionInfo.time}.`, 
+        `Te comparto tus entradas para ${sessionInfo.showName}${sessionInfo.functionName ? ` (${sessionInfo.functionName})` : ''} del día ${sessionInfo.date} a las ${sessionInfo.time}.`,
         { align: 'left' }
       );
       doc.fontSize(10).fillColor('#856404').text(
@@ -205,8 +206,9 @@ export async function generateTicketsPDF({ tickets, sessionInfo, customerName })
       // Event details box
       doc.rect(50, doc.y, 495, 80).fillAndStroke('#f8f9fa', '#ddd');
       doc.fillColor('#333').fontSize(14).text(sessionInfo.showName || 'Espectáculo', 60, doc.y + 15);
-      doc.fontSize(10).fillColor('#666')
-        .text(`📅 ${sessionInfo.date}`, 60, doc.y + 10)
+      doc.fontSize(10).fillColor('#666');
+      if (sessionInfo.functionName) doc.text(`Función: ${sessionInfo.functionName}`, 60, doc.y + 10);
+      doc.text(`📅 ${sessionInfo.date}`, 60, doc.y + 10)
         .text(`🕐 ${sessionInfo.time}`, 60, doc.y + 5)
         .text(`📍 ${sessionInfo.sala || 'Sala Principal'}`, 60, doc.y + 5);
       

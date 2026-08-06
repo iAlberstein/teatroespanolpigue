@@ -38,7 +38,8 @@ export default function SeatSelection({
   userId = null,
   mode = 'spectator',
   onSelectionChange,
-  sidebarContent
+  sidebarContent,
+  compactMap = false
 }) {
   const navigate = useNavigate();
   const socketRef = useRef(null);
@@ -328,7 +329,7 @@ export default function SeatSelection({
   const isBoxOffice = mode === 'boxoffice';
   const isBlocking = mode === 'blocking';
   const isHorizontalLayout = isDesktop;
-  const desktopScale = isBoxOffice ? 1 : 0.9;
+  const desktopScale = isBoxOffice ? (compactMap ? 0.72 : 1) : 0.9;
 
   // Calculate total tickets considering palco multipliers
   const calculateTotalTickets = () => {

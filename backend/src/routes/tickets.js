@@ -5,6 +5,7 @@ import { validateQRData } from '../lib/qr.js';
 import { authenticateToken, requireRole } from '../middleware/auth.js';
 import { createActivityLog, ActionTypes, EntityTypes } from '../middleware/activityLogger.js';
 import { getSeatPrice } from '../lib/seatPricing.js';
+import { computePackTicketPrices, calculatePackTotals } from '../lib/packPricing.js';
 import crypto from 'crypto';
 
 const router = express.Router();
@@ -347,6 +348,333 @@ router.get('/:id/validations', authenticateToken, requireRole('admin', 'boleteri
   } catch (error) {
     console.error('[TICKETS] Get validations error:', error);
     return res.status(500).json({ error: 'internal_error' });
+  }
+});
+
+router.post('/box-office-pack-preview', authenticateToken, requireRole('boleteria', 'admin'), async (req, res) => {
+  try {
+    const { selections, discount_id } = req.body || {};
+    const { sessions: Session, shows: Show, discounts: Discount } = sequelize.models;
+    if (!Array.isArray(selections) || selections.length === 0 || selections.some(selection => !selection?.session_id || !Array.isArray(selection.items))) {
+      return res.status(400).json({ error: 'invalid_items', message: 'Seleccioná al menos una función' });
+    }
+    const sessionIds = selections.map(selection => selection.session_id);
+    if (new Set(sessionIds).size !== sessionIds.length) {
+      return res.status(400).json({ error: 'duplicated_session', message: 'No se puede repetir una función en el pack' });
+    }
+    const sessions = await Session.findAll({ where: { id: { [Op.in]: sessionIds } }, include: [{ model: Show, as: 'show' }] });
+    if (sessions.length !== selections.length) {
+      return res.status(404).json({ error: 'session_not_found', message: 'No se encontró una de las funciones seleccionadas' });
+    }
+    const show = sessions[0].show;
+    if (!show?.pack_enabled || !show?.pack_pricing_json || sessions.some(session => session.show_id !== show.id)) {
+      return res.status(400).json({ error: 'invalid_pack', message: 'Las funciones no pertenecen a un show con pack habilitado' });
+    }
+    if (selections.length > Number(show.pack_max_sessions || 3)) {
+      return res.status(400).json({ error: 'pack_max_sessions_exceeded', message: 'Se superó el máximo de funciones permitido para el pack' });
+    }
+    const itemsBySession = Object.fromEntries(selections.map(selection => [selection.session_id, selection.items]));
+    let packPricing = show.pack_pricing_json;
+    if (typeof packPricing === 'string') packPricing = JSON.parse(packPricing);
+    const pricedSlots = computePackTicketPrices(itemsBySession, packPricing, show.pack_max_sessions);
+    const slotsBySession = pricedSlots.reduce((result, slot) => {
+      if (!result[slot.session_id]) result[slot.session_id] = [];
+      result[slot.session_id].push(slot);
+      return result;
+    }, {});
+
+    let discountAmount = 0;
+    let validDiscount = null;
+    if (discount_id) {
+      validDiscount = await Discount.findByPk(discount_id);
+    }
+    const subtotal = pricedSlots.reduce((sum, slot) => sum + Number(slot.finalPrice || 0), 0);
+    if (validDiscount && validDiscount.active) {
+      if (validDiscount.type === 'percentage') {
+        discountAmount = Math.round(subtotal * (validDiscount.value / 100));
+      } else if (validDiscount.type === 'fixed') {
+        discountAmount = Math.round(validDiscount.value);
+      } else if (validDiscount.type === 'internal') {
+        discountAmount = subtotal;
+      }
+      discountAmount = Math.min(discountAmount, subtotal);
+    }
+
+    return res.json({
+      priced_slots: pricedSlots,
+      slots_by_session: slotsBySession,
+      subtotal,
+      original_subtotal: pricedSlots.reduce((sum, slot) => sum + Number(slot.originalPrice || 0), 0),
+      discount_amount: discountAmount,
+      total: subtotal - discountAmount
+    });
+  } catch (error) {
+    console.error('[BOX_OFFICE_PACK_PREVIEW] Error:', error);
+    return res.status(500).json({ error: 'server_error', message: 'No se pudo calcular el precio del pack' });
+  }
+});
+
+router.post('/box-office-pack-sale', authenticateToken, requireRole('boleteria', 'admin'), async (req, res) => {
+  const transaction = await sequelize.transaction();
+  try {
+    const { selections, customer, payment_method = 'cash', discount_id } = req.body || {};
+    const { sales: Sale, tickets: Ticket, sessions: Session, shows: Show, users: User, cash_register_shifts: CashRegisterShift, pack_sales: PackSale, discounts: Discount } = sequelize.models;
+
+    if (!Array.isArray(selections) || selections.length === 0) {
+      await transaction.rollback();
+      return res.status(400).json({ error: 'invalid_pack', message: 'Seleccioná al menos una función' });
+    }
+    if (!customer?.name?.trim()) {
+      await transaction.rollback();
+      return res.status(400).json({ error: 'invalid_customer', message: 'El nombre del cliente es obligatorio' });
+    }
+    if (selections.some(selection => !selection?.session_id || !Array.isArray(selection.items) || selection.items.length === 0)) {
+      await transaction.rollback();
+      return res.status(400).json({ error: 'invalid_items', message: 'Cada función del pack debe tener al menos una entrada' });
+    }
+
+    const sessionIds = selections.map(selection => selection.session_id);
+    if (new Set(sessionIds).size !== sessionIds.length) {
+      await transaction.rollback();
+      return res.status(400).json({ error: 'duplicated_session', message: 'No se puede repetir una función en el pack' });
+    }
+
+    const sessions = await Session.findAll({
+      where: { id: { [Op.in]: sessionIds } },
+      include: [{ model: Show, as: 'show' }],
+      transaction,
+      lock: transaction.LOCK.UPDATE
+    });
+    if (sessions.length !== selections.length) {
+      await transaction.rollback();
+      return res.status(404).json({ error: 'session_not_found', message: 'No se encontró una de las funciones seleccionadas' });
+    }
+
+    const show = sessions[0].show;
+    if (!show?.pack_enabled || !show?.pack_pricing_json || sessions.some(session => session.show_id !== show.id)) {
+      await transaction.rollback();
+      return res.status(400).json({ error: 'invalid_pack', message: 'Las funciones no pertenecen a un show con pack habilitado' });
+    }
+    if (selections.length > Number(show.pack_max_sessions || 3)) {
+      await transaction.rollback();
+      return res.status(400).json({ error: 'pack_max_sessions_exceeded', message: 'Se superó el máximo de funciones permitido para el pack' });
+    }
+
+    const activeShift = await CashRegisterShift.findOne({
+      where: { user_id: req.user.userId, status: 'open' },
+      transaction,
+      lock: transaction.LOCK.UPDATE
+    });
+    if (req.user.role === 'boleteria' && !activeShift) {
+      await transaction.rollback();
+      return res.status(409).json({ error: 'cash_register_required', message: 'Debés abrir la caja antes de registrar ventas en boletería.' });
+    }
+
+    let existingUser = null;
+    if (customer.email) existingUser = await User.findOne({ where: { email: customer.email }, transaction });
+    if (!existingUser && customer.dni) existingUser = await User.findOne({ where: { dni: customer.dni }, transaction });
+    if (!existingUser && customer.phone) existingUser = await User.findOne({ where: { phone: customer.phone }, transaction });
+
+    for (const selection of selections) {
+      const session = sessions.find(candidate => candidate.id === selection.session_id);
+      const seatCodes = selection.items
+        .filter(item => (item.type === 'butaca' || item.type === 'palco') && item.seat_code)
+        .map(item => item.seat_code);
+      if (seatCodes.length > 0) {
+        const sold = await Ticket.findOne({
+          where: { session_id: session.id, seat_code: { [Op.in]: seatCodes }, status: { [Op.in]: ['sold', 'validated'] } },
+          transaction,
+          lock: transaction.LOCK.UPDATE
+        });
+        if (sold) {
+          await transaction.rollback();
+          return res.status(409).json({ error: 'seat_unavailable', message: `La ubicación ${sold.seat_code} ya no está disponible` });
+        }
+      }
+      const generalQuantity = selection.items
+        .filter(item => item.type === 'general')
+        .reduce((sum, item) => sum + Number(item.quantity || 0), 0);
+      if (generalQuantity > 0) {
+        const capacity = Number(session.capacity_override || session.show.general_capacity || 0);
+        const soldCount = await Ticket.count({
+          where: { session_id: session.id, type: 'general', status: { [Op.in]: ['sold', 'validated'] } },
+          transaction
+        });
+        if (capacity > 0 && soldCount + generalQuantity > capacity) {
+          await transaction.rollback();
+          return res.status(409).json({ error: 'general_admission_unavailable', message: 'No hay suficientes localidades disponibles para esta función' });
+        }
+      }
+    }
+
+    let packPricing = show.pack_pricing_json;
+    if (typeof packPricing === 'string') packPricing = JSON.parse(packPricing);
+    const itemsBySession = Object.fromEntries(selections.map(selection => [selection.session_id, selection.items]));
+    const pricedSlots = computePackTicketPrices(itemsBySession, packPricing, show.pack_max_sessions);
+    const subtotal = pricedSlots.reduce((sum, slot) => sum + Number(slot.finalPrice || 0), 0);
+
+    let validDiscount = null;
+    let discountAmount = 0;
+    if (discount_id) {
+      validDiscount = await Discount.findByPk(discount_id, { transaction });
+      if (!validDiscount || !validDiscount.active) {
+        await transaction.rollback();
+        return res.status(400).json({ error: 'invalid_discount', message: 'Cupón inválido o inactivo' });
+      }
+      if (validDiscount.usage_limit && validDiscount.used_count >= validDiscount.usage_limit) {
+        await transaction.rollback();
+        return res.status(400).json({ error: 'discount_limit_reached', message: 'El cupón alcanzó su límite de usos' });
+      }
+      if (validDiscount.type === 'percentage') {
+        discountAmount = Math.round(subtotal * (validDiscount.value / 100));
+      } else if (validDiscount.type === 'fixed') {
+        discountAmount = Math.round(validDiscount.value);
+      } else if (validDiscount.type === 'internal') {
+        discountAmount = subtotal;
+      }
+      discountAmount = Math.min(discountAmount, subtotal);
+    }
+
+    const packSale = await PackSale.create({
+      user_id: existingUser?.id || null,
+      payment_method,
+      payment_status: 'approved',
+      subtotal,
+      discount_amount: discountAmount,
+      service_fee_percent: 0,
+      service_fee_amount: 0,
+      services_subtotal: 0,
+      total_amount: subtotal - discountAmount,
+      customer_name: customer.name.trim(),
+      customer_email: customer.email || null,
+      customer_phone: customer.phone || null,
+      customer_dni: customer.dni || null,
+      discount_id: discount_id || null,
+      metadata: { source: 'box_office', session_ids: sessionIds, discount: validDiscount ? { id: validDiscount.id, code: validDiscount.code, type: validDiscount.type, value: validDiscount.value, discount_amount: discountAmount } : null },
+    }, { transaction });
+
+    if (validDiscount) {
+      await validDiscount.increment('used_count', { transaction });
+    }
+
+    const discountBySession = new Map();
+    let allocatedDiscount = 0;
+    selections.forEach((selection, index) => {
+      const sessionSubtotal = pricedSlots
+        .filter(slot => slot.session_id === selection.session_id)
+        .reduce((sum, slot) => sum + Number(slot.finalPrice || 0), 0);
+      const sessionDiscount = index === selections.length - 1
+        ? Math.min(sessionSubtotal, Math.max(0, discountAmount - allocatedDiscount))
+        : Math.min(sessionSubtotal, Math.round(discountAmount * (sessionSubtotal / subtotal)));
+      discountBySession.set(selection.session_id, sessionDiscount);
+      allocatedDiscount += sessionDiscount;
+    });
+
+    const { generateContainerQR, generateIndividualQR } = await import('../lib/qrGenerator.js');
+    const sales = [];
+    const createdTickets = [];
+    for (const selection of selections) {
+      const sessionSlots = pricedSlots.filter(slot => slot.session_id === selection.session_id);
+      const remainingSlots = [...sessionSlots];
+      const takeSlots = item => {
+        const matches = remainingSlots.filter(slot => slot.type === item.type && (item.seat_code ? slot.seat_code === item.seat_code : true));
+        const count = item.type === 'pullman' || item.type === 'general' ? Number(item.quantity || 0) : 1;
+        const taken = matches.slice(0, count);
+        for (const slot of taken) remainingSlots.splice(remainingSlots.indexOf(slot), 1);
+        return taken;
+      };
+      const ticketItems = selection.items.flatMap(item => takeSlots(item));
+      const saleId = crypto.randomUUID();
+      const containerQR = await generateContainerQR(saleId, ticketItems);
+      const saleSubtotal = ticketItems.reduce((sum, slot) => sum + Number(slot.finalPrice || 0), 0);
+      const saleDiscount = Number(discountBySession.get(selection.session_id) || 0);
+      const saleTotal = saleSubtotal - saleDiscount;
+      const sale = await Sale.create({
+        id: saleId,
+        session_id: selection.session_id,
+        pack_sale_id: packSale.id,
+        user_id: existingUser?.id || null,
+        cashier_id: req.user.userId,
+        cash_register_shift_id: activeShift?.id || null,
+        payment_method,
+        payment_status: 'approved',
+        total_amount: saleTotal,
+        discount_id: discount_id || null,
+        customer_name: customer.name.trim(),
+        customer_email: customer.email || null,
+        customer_phone: customer.phone || null,
+        customer_dni: customer.dni || null,
+        sold_by: req.user.userId,
+        container_qr_code: containerQR.qr_code,
+        container_qr_data: containerQR.qr_data,
+        total_capacity: containerQR.total_capacity,
+        metadata: { source: 'box_office_pack', pack_sale_id: packSale.id, discount: validDiscount ? { id: validDiscount.id, code: validDiscount.code, type: validDiscount.type, value: validDiscount.value, amount: saleDiscount } : null },
+      }, { transaction });
+
+      for (const slot of ticketItems) {
+        const isPalco = slot.type === 'palco';
+        const isPB = /^PB/i.test(slot.seat_code || '');
+        const capacity = isPalco ? (isPB ? 4 : 2) : 1;
+        const section = slot.type === 'butaca' ? 'platea_general' : isPalco ? (isPB ? 'palcos_bajos' : 'palcos_altos') : slot.type;
+        const ticket = await Ticket.create({
+          session_id: selection.session_id,
+          sale_id: sale.id,
+          user_id: existingUser?.id || null,
+          type: slot.type,
+          seat_code: slot.seat_code || null,
+          section,
+          price: Number(slot.finalPrice || 0),
+          status: 'sold',
+          capacity,
+          capacity_validated: 0,
+        }, { transaction });
+        const { qr_code, qr_data } = await generateIndividualQR(ticket.id, ticket.seat_code, ticket.type);
+        await ticket.update({ qr_code, qr_data }, { transaction });
+        createdTickets.push(ticket);
+      }
+      sales.push(sale);
+    }
+
+    await transaction.commit();
+
+    const io = req.app.get('io');
+    if (io) {
+      io.soldSeats = io.soldSeats || new Map();
+      io.soldPalcos = io.soldPalcos || new Map();
+      io.pullmanSold = io.pullmanSold || new Map();
+      for (const selection of selections) {
+        const seatSet = io.soldSeats.get(selection.session_id) || new Set();
+        const palcoSet = io.soldPalcos.get(selection.session_id) || new Set();
+        let pullmanCount = io.pullmanSold.get(selection.session_id) || 0;
+        for (const item of selection.items) {
+          if (item.type === 'butaca' && item.seat_code) {
+            seatSet.add(item.seat_code);
+            io.to(`session:${selection.session_id}`).emit('seat_sold', { seatId: item.seat_code });
+          }
+          if (item.type === 'palco' && item.seat_code) {
+            palcoSet.add(item.seat_code);
+            io.to(`session:${selection.session_id}`).emit('palco_sold', { palco: item.seat_code });
+          }
+          if (item.type === 'pullman') pullmanCount += Number(item.quantity || 0);
+          if (item.type === 'general') io.to(`session:${selection.session_id}`).emit('general-admission-update', { sessionId: selection.session_id });
+        }
+        io.soldSeats.set(selection.session_id, seatSet);
+        io.soldPalcos.set(selection.session_id, palcoSet);
+        io.pullmanSold.set(selection.session_id, pullmanCount);
+        if (pullmanCount > 0) io.to(`session:${selection.session_id}`).emit('pullman_sold', { sold: pullmanCount });
+      }
+    }
+
+    return res.json({
+      success: true,
+      pack_sale: { id: packSale.id, total_amount: packSale.total_amount },
+      sales: sales.map(sale => ({ id: sale.id, session_id: sale.session_id, total_amount: sale.total_amount })),
+      tickets_count: createdTickets.reduce((sum, ticket) => sum + Number(ticket.capacity || 1), 0)
+    });
+  } catch (error) {
+    if (!transaction.finished) await transaction.rollback();
+    console.error('[BOX_OFFICE_PACK_SALE] Error:', error);
+    return res.status(500).json({ error: 'server_error', message: 'Error al registrar la venta del pack' });
   }
 });
 
@@ -736,6 +1064,7 @@ router.post('/box-office-sale', authenticateToken, requireRole('boleteria', 'adm
           showTitle: session.show.title,
           sessionDate: formatDateLong(session.starts_at),
           sessionTime: formatTime(session.starts_at),
+          functionName: session.function_name || null,
           tickets: formattedTickets,
           saleId: sale.id,
           totalAmount: total,
@@ -1724,6 +2053,7 @@ router.post('/resend', authenticateToken, requireRole('boleteria', 'admin'), asy
         showTitle,
         sessionDate,
         sessionTime,
+        functionName: sale.session?.function_name || null,
         tickets: formattedTickets,
         saleId: sale_id,
         totalAmount: sale.total_amount,

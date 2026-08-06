@@ -5,6 +5,7 @@ import SeatSelection from '../components/SeatSelection';
 import GeneralAdmissionSelection from '../components/GeneralAdmissionSelection';
 import BoxOfficeSessionPicker from '../components/BoxOfficeSessionPicker';
 import BoxOfficeReferences from '../components/BoxOfficeReferences';
+import BoxOfficePackCheckout from '../components/BoxOfficePackCheckout.jsx';
 import TicketViewModal from '../components/admin/TicketViewModal.jsx';
 import { formatSeatLocation } from '../lib/seatFormatter';
 import { getSeatPriceTier } from '../lib/seatPriceColors.js';
@@ -49,6 +50,7 @@ export default function BoxOffice() {
   const [selectedShowData, setSelectedShowData] = useState(null);
   const [sessions, setSessions] = useState([]);
   const [selectedSession, setSelectedSession] = useState(null);
+  const [packCheckoutOpen, setPackCheckoutOpen] = useState(false);
   const [isWideLayout, setIsWideLayout] = useState(() => {
     if (typeof window === 'undefined') return true;
     return window.innerWidth >= 1200;
@@ -1302,6 +1304,7 @@ export default function BoxOffice() {
       setDiscountCode('');
       setAppliedDiscount(null);
       setDiscountError('');
+      setSelectedServices({});
       
     } catch (err) {
       setError(err.message || 'Error al procesar la venta');
@@ -1312,12 +1315,13 @@ export default function BoxOffice() {
 
   const totalItems = currentSelection.selectedSeatIds.size + currentSelection.selectedPalcosLabels.size + currentSelection.pullmanSelected;
   const { subtotal, discountAmount, total, serviceItems: saleServiceItems, servicesSubtotal } = calculateTotal();
+  const hasSaleItems = totalItems > 0 || saleServiceItems.length > 0;
   
   useEffect(() => {
-    if (showSaleModal && totalItems === 0) {
+    if (showSaleModal && !hasSaleItems) {
       setShowSaleModal(false);
     }
-  }, [showSaleModal, totalItems]);
+  }, [showSaleModal, hasSaleItems]);
 
   const handleCloseSaleModal = () => {
     setShowSaleModal(false);
@@ -1333,6 +1337,7 @@ export default function BoxOffice() {
     setDiscountCode('');
     setAppliedDiscount(null);
     setDiscountError('');
+    setSelectedServices({});
     setCustomerName('');
     setCustomerEmail('');
     setCustomerPhone('');
@@ -1344,7 +1349,7 @@ export default function BoxOffice() {
   };
 
   const handleOpenSaleModal = () => {
-    if (totalItems === 0) return;
+    if (!hasSaleItems) return;
     setShowSaleModal(true);
     setError('');
     setShowSearchResults(false);
@@ -1427,6 +1432,7 @@ export default function BoxOffice() {
       setDiscountCode('');
       setAppliedDiscount(null);
       setDiscountError('');
+      setSelectedServices({});
     } catch (err) {
       setError(err.message || 'Error al procesar la venta');
     } finally {
@@ -1709,7 +1715,8 @@ Teatro Español Pigüé`;
         </aside>
       );
     }
-    const summaryDisabled = totalItems === 0;
+    const summaryDisabled = !hasSaleItems;
+    const quickSaleDisabled = totalItems === 0;
     return (
       <aside
         style={{
@@ -1742,10 +1749,10 @@ Teatro Español Pigüé`;
             }}
           >
             <div>
-              <div style={{ marginBottom: 8, fontWeight: 600 }}>Entradas seleccionadas</div>
+              <div style={{ marginBottom: 8, fontWeight: 600 }}>Ítems seleccionados</div>
               {summaryDisabled ? (
                 <div style={{ fontSize: 13, color: '#6b7280' }}>
-                  Seleccioná butacas o palcos para ver el detalle de la venta.
+                  Seleccioná entradas o servicios para ver el detalle de la venta.
                 </div>
               ) : (
                 <ul style={{ margin: 0, paddingLeft: 20, fontSize: 14, display: 'grid', gap: 6, listStyle: 'none', padding: 0 }}>
@@ -1898,7 +1905,7 @@ Teatro Español Pigüé`;
               }}
               disabled={summaryDisabled}
             >
-              Vender entradas
+              Registrar venta
             </button>
             <button
               type="button"
@@ -1912,10 +1919,10 @@ Teatro Español Pigüé`;
                 background: '#eff6ff',
                 color: '#2563eb',
                 fontWeight: 600,
-                cursor: summaryDisabled ? 'not-allowed' : 'pointer',
-                opacity: summaryDisabled ? 0.5 : 1
+                cursor: quickSaleDisabled ? 'not-allowed' : 'pointer',
+                opacity: quickSaleDisabled ? 0.5 : 1
               }}
-              disabled={summaryDisabled}
+              disabled={quickSaleDisabled}
             >
               Vender en función
             </button>
@@ -2608,6 +2615,7 @@ Teatro Español Pigüé`;
     const pricing = currentSelection.pricing || defaultPricing;
 
     const handleShowChange = async (showId) => {
+      setPackCheckoutOpen(false);
       setSelectedShow(showId);
       setSelectedSession(null);
       if (currentSelection.clearSelection) {
@@ -2637,6 +2645,9 @@ Teatro Español Pigüé`;
               pricing_json: data.pricing_json
             });
             setSelectedShowData(data);
+            if (data.pack_enabled) {
+              setPackCheckoutOpen(true);
+            }
           }
         } catch (err) {
           console.error('Error loading show data:', err);
@@ -2654,6 +2665,23 @@ Teatro Español Pigüé`;
       setTimeout(() => window.scrollTo({ top: 0, behavior: 'smooth' }), 100);
     };
 
+    if (packCheckoutOpen && selectedShowData?.pack_enabled) {
+      return (
+        <BoxOfficePackCheckout
+          show={selectedShowData}
+          sessions={sessions.filter(session => session.show_id === selectedShow)}
+          token={token}
+          onClose={() => {
+            setPackCheckoutOpen(false);
+            setSelectedShow(null);
+            setSelectedSession(null);
+            setSelectedShowData(null);
+            loadCashContext();
+          }}
+        />
+      );
+    }
+
     return (
       <div>
         <div style={isWideLayout ? undefined : { padding: '0 8px' }}>
@@ -2665,6 +2693,7 @@ Teatro Español Pigüé`;
             selectedSession={selectedSession}
             onSelectShow={handleShowChange}
             onSelectSession={handleSessionChange}
+            onStartPack={() => setPackCheckoutOpen(true)}
           />
         </div>
 

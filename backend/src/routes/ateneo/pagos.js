@@ -391,10 +391,11 @@ router.post('/generar-cuotas', authenticateToken, requireRole('admin', 'admin_at
 
           // Calcular monto con becas
           const montoFinal = await calcularMontoConBecas(
-            inscripcion.alumno_id, 
-            clase_id, 
-            montoBase, 
-            'cuota'
+            inscripcion.alumno_id,
+            clase_id,
+            montoBase,
+            'cuota',
+            periodo
           );
 
           const pago = await AteneoPago.create({
@@ -471,7 +472,7 @@ router.post('/generar-cuotas-alumno', authenticateToken, requireRole('admin', 'a
         const [year, month] = periodo.split('-').map(Number);
         const fechaVencimiento = new Date(year, month - 1, diaVencimiento);
         const montoBase = (monto_parcial && parseFloat(monto_parcial) > 0) ? parseFloat(monto_parcial) : clase.costo_cuota;
-        const montoFinal = await calcularMontoConBecas(inscripcion.alumno_id, inscripcion.clase_id, montoBase, 'cuota');
+        const montoFinal = await calcularMontoConBecas(inscripcion.alumno_id, inscripcion.clase_id, montoBase, 'cuota', periodo);
 
         const pago = await AteneoPago.create({
           alumno_id: inscripcion.alumno_id,
