@@ -571,9 +571,12 @@ router.post('/box-office-pack-sale', authenticateToken, requireRole('boleteria',
     });
 
     const { generateContainerQR, generateIndividualQR } = await import('../lib/qrGenerator.js');
+    const { formatSeatLocation } = await import('../lib/seatFormatter.js');
     const sales = [];
     const createdTickets = [];
+    const emailBySale = [];
     for (const selection of selections) {
+      const selectionSession = sessions.find(candidate => candidate.id === selection.session_id);
       const sessionSlots = pricedSlots.filter(slot => slot.session_id === selection.session_id);
       const remainingSlots = [...sessionSlots];
       const takeSlots = item => {
@@ -633,9 +636,51 @@ router.post('/box-office-pack-sale', authenticateToken, requireRole('boleteria',
         createdTickets.push(ticket);
       }
       sales.push(sale);
+      emailBySale.push({
+        sale,
+        session: selectionSession,
+        formattedTickets: ticketItems.map(slot => ({
+          type: slot.type,
+          seat_code: slot.seat_code,
+          location: formatSeatLocation(slot.type, slot.type === 'butaca' ? 'platea_general' : (slot.type === 'palco' ? (/^PB/i.test(slot.seat_code || '') ? 'palcos_bajos' : 'palcos_altos') : slot.type), slot.seat_code, /^PB/i.test(slot.seat_code || '') ? 4 : (slot.type === 'palco' ? 2 : 1)),
+          price: Number(slot.finalPrice || 0)
+        })),
+        discountAmount: Number(discountBySession.get(selection.session_id) || 0)
+      });
     }
 
     await transaction.commit();
+
+    // Send confirmation email per función (best-effort, after commit)
+    if (customer.email) {
+      try {
+        const { formatDateLong, formatTime } = await import('../lib/dateFormatter.js');
+        const { sendPurchaseConfirmation } = await import('../lib/emailService.js');
+        for (const entry of emailBySale) {
+          try {
+            await sendPurchaseConfirmation({
+              customerEmail: customer.email,
+              customerName: customer.name.trim(),
+              showTitle: show.title,
+              sessionDate: formatDateLong(entry.session?.starts_at),
+              sessionTime: formatTime(entry.session?.starts_at),
+              functionName: entry.session?.function_name || null,
+              tickets: entry.formattedTickets,
+              saleId: entry.sale.id,
+              totalAmount: entry.sale.total_amount,
+              paymentMethod: payment_method,
+              subtotal: validDiscount ? entry.formattedTickets.reduce((sum, t) => sum + Number(t.price || 0), 0) : null,
+              discountCode: validDiscount ? validDiscount.code : null,
+              discountAmount: validDiscount ? entry.discountAmount : null
+            });
+          } catch (emailError) {
+            console.error('[BOX_OFFICE_PACK_SALE] Error sending email for sale', entry.sale.id, emailError);
+          }
+        }
+      } catch (emailError) {
+        console.error('[BOX_OFFICE_PACK_SALE] Error loading email modules:', emailError);
+      }
+    }
 
     const io = req.app.get('io');
     if (io) {

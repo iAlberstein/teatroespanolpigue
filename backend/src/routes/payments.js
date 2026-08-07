@@ -357,8 +357,8 @@ router.post('/sipago-pack-intent', optionalAuth, async (req, res) => {
       service_items
     } = req.body || {};
 
-    if (!Array.isArray(reservation_ids) || reservation_ids.length < 2) {
-      return res.status(400).json({ error: 'At least 2 reservations are required for a pack' });
+    if (!Array.isArray(reservation_ids) || reservation_ids.length < 1) {
+      return res.status(400).json({ error: 'At least 1 reservation is required' });
     }
 
     const { reservations: Reservation, sessions: Session, shows: Show, discounts: Discount, pack_sales: PackSale } = sequelize.models;
