@@ -22,14 +22,10 @@ export function generateBordereauxPDF(doc, data) {
     neto1,
     totalServices,
     neto2,
-    // Contrato: en la vista de UNA fecha (individual) viene ya resuelto/calculado en
-    // `contractItems` + `contractTotal`. En la vista GENERAL (consolidada, multi-fecha)
-    // viene el desglose por fecha en `contractBySession` + `contractGrandTotal`, y
-    // `contractItems` trae la lista "default" del show (solo informativa en ese caso).
-    contractItems = [],
-    contractTotal,
-    contractBySession,
-    contractGrandTotal,
+    theaterPercentage,
+    userPercentage,
+    theaterAmount,
+    userAmount,
     deductionsB,
     totalDeductionsB,
     userCash,
@@ -414,65 +410,36 @@ export function generateBordereauxPDF(doc, data) {
   }
 
   // ========== CONTRATO ==========
-  const contractRowLabel = (item) => item.mode === 'fixed' ? 'Fijo' : `${Math.round(parseFloat(item.percentage || 0))}%`;
-
-  const drawContractTable = (items) => {
-    doc.fontSize(8).font('Helvetica-Bold');
-    const hY = doc.y;
-    doc.text('PARTE', startX, hY, { width: 100 });
-    doc.text('TIPO', startX + 100, hY, { width: 80, align: 'center' });
-    doc.text('DESCRIPCIÓN', startX + 180, hY, { width: 150 });
-    doc.text('IMPORTE', importeX, hY, { width: importeWidth, align: 'right' });
-    doc.moveDown(0.3);
-    doc.moveTo(startX, doc.y).lineTo(startX + pageWidth, doc.y).stroke();
-    doc.moveDown(0.3);
-
-    doc.font('Helvetica').fontSize(8);
-    for (const item of items) {
-      const y = doc.y;
-      doc.text((item.title || '-').toUpperCase(), startX, y, { width: 100 });
-      doc.text(contractRowLabel(item), startX + 100, y, { width: 80, align: 'center' });
-      doc.text(item.description || '-', startX + 180, y, { width: 150 });
-      doc.text(formatCurrency(parseFloat(item.amount || 0)), importeX, y, { width: importeWidth, align: 'right' });
-      doc.moveDown(0.5);
-    }
-  };
-
+  // Determine base amount description for contract
+  const baseDescription = showNeto2 ? 'del NETO 2' : 'del TOTAL BRUTO';
+  
   doc.fontSize(11).font('Helvetica-Bold').text('CONTRATO', startX);
   doc.moveDown(0.3);
+  
+  doc.fontSize(8).font('Helvetica-Bold');
+  const contHeaderY = doc.y;
+  doc.text('PARTE', startX, contHeaderY, { width: 100 });
+  doc.text('PORCENTAJE', startX + 100, contHeaderY, { width: 80, align: 'center' });
+  doc.text('DESCRIPCIÓN', startX + 180, contHeaderY, { width: 150 });
+  doc.text('IMPORTE', importeX, contHeaderY, { width: importeWidth, align: 'right' });
+  doc.moveDown(0.3);
+  doc.moveTo(startX, doc.y).lineTo(startX + pageWidth, doc.y).stroke();
+  doc.moveDown(0.3);
+  
+  doc.font('Helvetica').fontSize(8);
+  const teatroY = doc.y;
+  doc.text('TEATRO', startX, teatroY, { width: 100 });
+  doc.text(`${Math.round(theaterPercentage)}%`, startX + 100, teatroY, { width: 80, align: 'center' });
+  doc.text(baseDescription, startX + 180, teatroY, { width: 150 });
+  doc.text(formatCurrency(theaterAmount), importeX, teatroY, { width: importeWidth, align: 'right' });
+  doc.moveDown(0.5);
 
-  if (Array.isArray(contractBySession) && contractBySession.length > 1) {
-    // Vista consolidada (pack / múltiples fechas): un bloque por función, con su propia
-    // distribución de contrato, y un total general al final.
-    for (const slot of contractBySession) {
-      doc.fontSize(9).font('Helvetica-Bold').fillColor('#1f2937');
-      doc.text(`${fmtDateTime(slot.starts_at)}${slot.function_name ? ' — ' + slot.function_name : ''}${slot.is_override ? ' (distribución propia)' : ''}`, startX, doc.y);
-      doc.fillColor('#000000');
-      doc.moveDown(0.2);
-      drawContractTable(slot.items);
-      doc.font('Helvetica-Bold').fontSize(8);
-      const subTotY = doc.y;
-      doc.text('SUBTOTAL FECHA', startX, subTotY, { width: 330 });
-      doc.text(formatCurrency(parseFloat(slot.total || 0)), importeX, subTotY, { width: importeWidth, align: 'right' });
-      doc.moveDown(0.7);
-    }
-    doc.moveTo(startX, doc.y).lineTo(startX + pageWidth, doc.y).lineWidth(1.5).stroke();
-    doc.moveDown(0.3);
-    doc.font('Helvetica-Bold').fontSize(9);
-    const grandTotY = doc.y;
-    doc.text('TOTAL CONTRATO (TODAS LAS FECHAS)', startX, grandTotY, { width: 330 });
-    doc.text(formatCurrency(parseFloat(contractGrandTotal || 0)), importeX, grandTotY, { width: importeWidth, align: 'right' });
-    doc.moveDown(1);
-  } else {
-    // Vista de una sola fecha (individual, o show con una sola función)
-    drawContractTable(contractItems);
-    doc.moveDown(0.2);
-    doc.font('Helvetica-Bold').fontSize(8);
-    const totY = doc.y;
-    doc.text('TOTAL CONTRATO', startX, totY, { width: 330 });
-    doc.text(formatCurrency(parseFloat((contractTotal ?? contractGrandTotal) || 0)), importeX, totY, { width: importeWidth, align: 'right' });
-    doc.moveDown(1);
-  }
+  const usuarioY = doc.y;
+  doc.text('USUARIO', startX, usuarioY, { width: 100 });
+  doc.text(`${Math.round(userPercentage)}%`, startX + 100, usuarioY, { width: 80, align: 'center' });
+  doc.text(baseDescription, startX + 180, usuarioY, { width: 150 });
+  doc.text(formatCurrency(userAmount), importeX, usuarioY, { width: importeWidth, align: 'right' });
+  doc.moveDown(1);
   
   // ========== DEDUCCIONES B ==========
   // Only show if there are deductions B items
@@ -507,9 +474,7 @@ export function generateBordereauxPDF(doc, data) {
   }
   
   // ========== LIQUIDACIÓN FINAL ==========
-  // Suma de lo que corresponde en efectivo (boletería, ya neto de Deducciones B) + lo que
-  // corresponde por transferencia (online), de las partes de contrato marcadas "a liquidar".
-  const userTotal = Math.max(0, (userCash || 0) + (userTransfer || 0));
+  const userTotal = Math.max(0, userAmount - totalDeductionsB);
   doc.rect(startX, doc.y, pageWidth, 40).fill('#e8e8e8').stroke('#999999');
   const liqY = doc.y + 12;
   doc.fillColor('#000000').font('Helvetica-Bold').fontSize(12);
@@ -544,7 +509,7 @@ export function generateBordereauxPDF(doc, data) {
 }
 
 export function calculatePDFHeight(data) {
-  const { onlineSales, boleteriaSales, onlineServices, boleteriaServices, deductionsACalculated, deductionsB, isClosed, neto2, sessionDates, contractItems, contractBySession } = data;
+  const { onlineSales, boleteriaSales, onlineServices, boleteriaServices, deductionsACalculated, deductionsB, isClosed, neto2, sessionDates } = data;
 
   const baseHeight = 120;
   const extraSessionLines = sessionDates && sessionDates.length > 1 ? (sessionDates.length - 1) * 14 : 0;
@@ -571,10 +536,7 @@ export function calculatePDFHeight(data) {
   const showNeto2 = hasDeductionsA || hasServices;
   const neto2Height = (showNeto2 && neto2) ? 30 : 0;
   
-  // Contrato height: variable según cantidad de items (y de fechas, en la vista consolidada)
-  const contratoHeight = (Array.isArray(contractBySession) && contractBySession.length > 1)
-    ? 40 + contractBySession.reduce((sum, slot) => sum + 30 + (slot.items?.length || 0) * 14, 0) + 30
-    : 60 + ((contractItems?.length || 2) * 14);
+  const contratoHeight = 80;
   
   // Deducciones B height (conditional - only if there are items)
   const hasDeductionsB = deductionsB && deductionsB.length > 0;

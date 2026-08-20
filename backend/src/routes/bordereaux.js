@@ -35,54 +35,6 @@ function calculateRealPeople(tickets) {
 }
 
 /**
- * Resuelve la lista de items de "Contrato" a aplicar para un bordereaux, opcionalmente
- * para una sesión/fecha puntual:
- *  1. Si la sesión tiene un override propio (session_contract_overrides[session_id]) -> ese.
- *  2. Si el bordereaux tiene contract_items propios -> esos (aplican a todas las fechas).
- *  3. Si no hay nada configurado (bordereaux legado, nunca migrado) -> esquema legado de
- *     2 filas fijas (Teatro / Usuario) usando contract_theater_percentage/contract_user_percentage,
- *     para no alterar la visualización de bordereaux ya cerrados.
- */
-function resolveContractItems(bordereaux, sessionId) {
-  const overrides = bordereaux.session_contract_overrides || {};
-  if (sessionId && Array.isArray(overrides[sessionId]) && overrides[sessionId].length > 0) {
-    return { items: overrides[sessionId], isOverride: true };
-  }
-  const items = bordereaux.contract_items;
-  if (Array.isArray(items) && items.length > 0) {
-    return { items, isOverride: false };
-  }
-  const theaterPct = parseFloat(bordereaux.contract_theater_percentage || 0);
-  const userPct = parseFloat(bordereaux.contract_user_percentage || 0);
-  return {
-    items: [
-      { title: 'Teatro', mode: 'percentage', percentage: theaterPct, fixedAmount: 0, description: 'del Neto 2', settle: false },
-      { title: 'Usuario', mode: 'percentage', percentage: userPct, fixedAmount: 0, description: 'del Neto 2', settle: true }
-    ],
-    isOverride: false
-  };
-}
-
-/**
- * Calcula el importe de cada item de contrato sobre un NETO 2 dado.
- * Devuelve también el total general y el total de los items marcados settle=true
- * (lo que se liquida en efectivo/transferencia, equivalente al "USUARIO" del esquema legado).
- */
-function calculateContractItems(items, neto2) {
-  let total = 0;
-  let settleTotal = 0;
-  const calculated = items.map(item => {
-    const amount = item.mode === 'fixed'
-      ? parseFloat(item.fixedAmount || 0)
-      : Number(neto2) * (parseFloat(item.percentage || 0) / 100);
-    total += amount;
-    if (item.settle) settleTotal += amount;
-    return { ...item, amount: amount.toFixed(2) };
-  });
-  return { items: calculated, total, settleTotal };
-}
-
-/**
  * GET /api/bordereaux/show/:show_id
  * Obtener o generar bordereaux para un show
  */
@@ -191,23 +143,6 @@ router.get('/show/:show_id', authenticateToken, async (req, res) => {
     let totalOnline = 0;
     let totalBoleteria = 0;
 
-    // Totales por sesión (fecha/función), usados para poder aplicar el "Contrato" por fecha
-    // en shows con múltiples sesiones (packs). Las Deducciones A/B siguen calculándose una
-    // sola vez sobre el total del show (no cambian por fecha); su efecto se prorratea entre
-    // fechas según la recaudación bruta de cada una, solo para poder mostrar un NETO 2 por fecha.
-    const perSessionTotals = {};
-    for (const session of show.sessions) {
-      perSessionTotals[session.id] = {
-        session_id: session.id,
-        starts_at: session.starts_at,
-        function_name: session.function_name || null,
-        bruto: 0,
-        online: 0,
-        boleteria: 0,
-        servicesTotal: 0
-      };
-    }
-
     // Crear mapa de servicios con include_in_bordereaux
     const serviceMap = {};
     if (show.services && Array.isArray(show.services)) {
@@ -303,12 +238,6 @@ router.get('/show/:show_id', authenticateToken, async (req, res) => {
             (ticket.type === 'pullman' ? (ticket.capacity || 1) : 1)
           );
           salesByLocationPriceChannel[key].total += effectivePrice;
-          perSessionTotals[session.id].bruto += effectivePrice;
-          if (isOnline) {
-            perSessionTotals[session.id].online += effectivePrice;
-          } else {
-            perSessionTotals[session.id].boleteria += effectivePrice;
-          }
           
           if (isOnline) {
             totalOnline += effectivePrice;
@@ -363,9 +292,6 @@ router.get('/show/:show_id', authenticateToken, async (req, res) => {
           }
           targetMap[key].quantity += qty;
           targetMap[key].total += qty * price;
-          if (includeInBordereaux) {
-            perSessionTotals[session.id].servicesTotal += qty * price;
-          }
 
           // NO sumar servicios al totalBruto (se agregan debajo de deducciones A)
           // if (isOnline) {
@@ -710,41 +636,11 @@ router.get('/show/:show_id', authenticateToken, async (req, res) => {
     // Calcular NETO 2 (NETO 1 + servicios)
     const neto2 = neto1 + totalServices;
 
-    // Calcular distribución por contrato, POR FECHA/FUNCIÓN, y sumar el total.
-    // Las Deducciones A se calcularon una sola vez sobre el total del show (arriba); su
-    // efecto se prorratea entre fechas según la recaudación bruta de cada una para poder
-    // obtener un NETO 2 por fecha (sin duplicar ni perder nada: la suma de los NETO 2 por
-    // fecha es exactamente igual al NETO 2 total del show).
-    const contractBySession = [];
-    let contractGrandTotal = 0;
-    let settleGrandTotal = 0;
-    let userBoleteriaShare = 0;
-    let userOnlineShare = 0;
-    const sessionIdsSorted = Object.values(perSessionTotals).sort((a, b) => new Date(a.starts_at) - new Date(b.starts_at));
-    for (const st of sessionIdsSorted) {
-      const dedAShare = totalBruto > 0 ? (st.bruto / totalBruto) * totalDeductionsA : 0;
-      const sessionNeto1 = st.bruto - dedAShare;
-      const sessionNeto2 = sessionNeto1 + st.servicesTotal;
-      const { items: resolvedItems, isOverride } = resolveContractItems(bordereaux, st.session_id);
-      const { items: calculatedItems, total: sessionContractTotal, settleTotal: sessionSettleTotal } = calculateContractItems(resolvedItems, sessionNeto2);
-      contractGrandTotal += sessionContractTotal;
-      settleGrandTotal += sessionSettleTotal;
-      // Fracción de neto2 que corresponde a las partes "a liquidar" en esta fecha,
-      // aplicada proporcionalmente a lo recaudado en boletería/online de esa misma fecha.
-      const settleFraction = sessionNeto2 > 0 ? (sessionSettleTotal / sessionNeto2) : 0;
-      userBoleteriaShare += st.boleteria * settleFraction;
-      userOnlineShare += st.online * settleFraction;
-      contractBySession.push({
-        session_id: st.session_id,
-        starts_at: st.starts_at,
-        function_name: st.function_name,
-        is_override: isOverride,
-        bruto: st.bruto.toFixed(2),
-        neto2: sessionNeto2.toFixed(2),
-        items: calculatedItems,
-        total: sessionContractTotal.toFixed(2)
-      });
-    }
+    // Calcular distribución por contrato (usando NETO 2)
+    const theaterPercentage = bordereaux.contract_theater_percentage || 0;
+    const userPercentage = bordereaux.contract_user_percentage || 0;
+    const theaterAmount = neto2 * (theaterPercentage / 100);
+    const userAmount = neto2 * (userPercentage / 100);
     
     // Calcular deducciones B
     let deductionsB = bordereaux.deductions_b || [];
@@ -761,11 +657,17 @@ router.get('/show/:show_id', authenticateToken, async (req, res) => {
     }
     const totalDeductionsB = deductionsB.reduce((sum, item) => sum + parseFloat(item.amount || 0), 0);
     
-    // Liquidación final: se liquida la suma de los items de contrato marcados settle=true
-    // (equivalente al "USUARIO" del esquema legado), ya prorrateada por fecha arriba.
-    // Efectivo: su parte de boletería - deducciones B (gastos que el teatro adelantó)
-    // Transferencia: su parte de online - ya le llega directo
+    // Liquidación final - CORREGIDO:
+    // El usuario recibe su porcentaje de cada canal
+    // Efectivo: (porcentaje usuario de boletería) - deducciones B
+    // Transferencia: (porcentaje usuario de online) - ya le llega directo
+    const userBoleteriaShare = totalBoleteria * (userPercentage / 100);
+    const userOnlineShare = totalOnline * (userPercentage / 100);
+    
+    // El efectivo es lo que el teatro debe entregarle al usuario de la boletería
+    // = su porcentaje de boletería - deducciones B (gastos que el teatro adelantó)
     const userCashAmount = Math.max(0, userBoleteriaShare - totalDeductionsB);
+    // La transferencia es lo que el usuario ya recibió de venta online (su porcentaje)
     const userTransferAmount = userOnlineShare;
     
     const response = {
@@ -773,8 +675,7 @@ router.get('/show/:show_id', authenticateToken, async (req, res) => {
         id: bordereaux.id,
         status: bordereaux.status,
         closed_at: bordereaux.closed_at,
-        closed_by: bordereaux.closed_by,
-        session_contract_overrides: bordereaux.session_contract_overrides || {}
+        closed_by: bordereaux.closed_by
       },
       show: {
         id: show.id,
@@ -837,12 +738,10 @@ router.get('/show/:show_id', authenticateToken, async (req, res) => {
       },
       neto2: neto2.toFixed(2),
       contract: {
-        // Items "default" del show (se usan en cualquier fecha sin override propio)
-        items: resolveContractItems(bordereaux, null).items,
-        by_session: contractBySession,
-        total: contractGrandTotal.toFixed(2),
-        settle_total: settleGrandTotal.toFixed(2),
-        has_multiple_sessions: contractBySession.length > 1
+        theater_percentage: bordereaux.contract_theater_percentage,
+        user_percentage: bordereaux.contract_user_percentage,
+        theater_amount: theaterAmount.toFixed(2),
+        user_amount: userAmount.toFixed(2)
       },
       deductions_b: {
         items: deductionsB,
@@ -1070,22 +969,18 @@ router.get('/show/:show_id/session/:session_id', authenticateToken, async (req, 
     const totalServices = onlineServices.reduce((sum, s) => sum + s.total, 0) + boleteriaServices.reduce((sum, s) => sum + s.total, 0);
     const neto2 = neto1 + totalServices;
 
-    // Contrato resuelto para ESTA fecha específica: usa el override de la sesión si existe,
-    // si no la lista "default" del show, si no existe ninguna el esquema legado de 2 filas.
-    const { items: resolvedContractItems, isOverride: contractIsOverride } = resolveContractItems(bordereaux, session_id);
-    const { items: contractItemsCalculated, total: contractTotal, settleTotal: contractSettleTotal } = calculateContractItems(resolvedContractItems, neto2);
+    const theaterPercentage = bordereaux.contract_theater_percentage || 0;
+    const userPercentage = bordereaux.contract_user_percentage || 0;
+    const theaterAmount = neto2 * (theaterPercentage / 100);
+    const userAmount = neto2 * (userPercentage / 100);
 
     let deductionsB = bordereaux.deductions_b || [];
     if (typeof deductionsB === 'string') { try { deductionsB = JSON.parse(deductionsB); } catch { deductionsB = []; } }
     if (!Array.isArray(deductionsB)) deductionsB = [];
     const totalDeductionsB = deductionsB.reduce((sum, item) => sum + parseFloat(item.amount || 0), 0);
 
-    // Liquidación de esta fecha: suma de los items marcados settle=true sobre el NETO 2 de
-    // esta sesión, prorrateada entre efectivo (boletería) y transferencia (online) según lo
-    // recaudado en cada canal para esta misma fecha.
-    const settleFraction = neto2 > 0 ? (contractSettleTotal / neto2) : 0;
-    const userBoleteriaShare = totalBoleteria * settleFraction;
-    const userOnlineShare = totalOnline * settleFraction;
+    const userBoleteriaShare = totalBoleteria * (userPercentage / 100);
+    const userOnlineShare = totalOnline * (userPercentage / 100);
     const userCashAmount = Math.max(0, userBoleteriaShare - totalDeductionsB);
     const userTransferAmount = userOnlineShare;
 
@@ -1129,12 +1024,7 @@ router.get('/show/:show_id/session/:session_id', authenticateToken, async (req, 
         total: totalServices.toFixed(2)
       },
       neto2: neto2.toFixed(2),
-      contract: {
-        items: contractItemsCalculated,
-        total: contractTotal.toFixed(2),
-        settle_total: contractSettleTotal.toFixed(2),
-        is_override: contractIsOverride
-      },
+      contract: { theater_percentage: bordereaux.contract_theater_percentage, user_percentage: bordereaux.contract_user_percentage, theater_amount: theaterAmount.toFixed(2), user_amount: userAmount.toFixed(2) },
       deductions_b: { items: deductionsB, total: totalDeductionsB.toFixed(2) },
       liquidacion: { user_cash: userCashAmount.toFixed(2), user_transfer: userTransferAmount.toFixed(2), user_total: (userCashAmount + userTransferAmount).toFixed(2) }
     };
@@ -1154,16 +1044,7 @@ router.get('/show/:show_id/session/:session_id', authenticateToken, async (req, 
 router.put('/:id', authenticateToken, async (req, res) => {
   try {
     const { id } = req.params;
-    const {
-      deductions_a,
-      contract_theater_percentage,
-      contract_user_percentage,
-      contract_items,
-      session_contract_overrides,
-      deductions_b,
-      notes,
-      author_name
-    } = req.body;
+    const { deductions_a, contract_theater_percentage, contract_user_percentage, deductions_b, notes, author_name } = req.body;
     const { bordereaux: Bordereaux } = sequelize.models;
     
     // Verificar que el usuario es admin
@@ -1177,27 +1058,11 @@ router.put('/:id', authenticateToken, async (req, res) => {
       return res.status(404).json({ error: 'Bordereaux not found' });
     }
     
-    if (bordereaux.status === 'cerrado') {
-      return res.status(409).json({ error: 'El bordereaux ya está cerrado y no puede modificarse' });
-    }
-    
     // Actualizar campos
     const updates = {};
     if (deductions_a !== undefined) updates.deductions_a = deductions_a;
     if (contract_theater_percentage !== undefined) updates.contract_theater_percentage = contract_theater_percentage;
     if (contract_user_percentage !== undefined) updates.contract_user_percentage = contract_user_percentage;
-    if (contract_items !== undefined) {
-      if (!Array.isArray(contract_items)) {
-        return res.status(400).json({ error: 'contract_items debe ser un array' });
-      }
-      updates.contract_items = contract_items;
-    }
-    if (session_contract_overrides !== undefined) {
-      if (typeof session_contract_overrides !== 'object' || session_contract_overrides === null || Array.isArray(session_contract_overrides)) {
-        return res.status(400).json({ error: 'session_contract_overrides debe ser un objeto { session_id: [items] }' });
-      }
-      updates.session_contract_overrides = session_contract_overrides;
-    }
     if (deductions_b !== undefined) updates.deductions_b = deductions_b;
     if (notes !== undefined) updates.notes = notes;
     if (author_name !== undefined) updates.author_name = author_name;
@@ -1315,20 +1180,6 @@ router.get('/show/:show_id/pdf', authenticateToken, async (req, res) => {
     let totalCortesias = 0;
     let totalOnline = 0;
     let totalBoleteria = 0;
-
-    // Totales por sesión (fecha/función), para poder aplicar el "Contrato" por fecha en el PDF
-    const perSessionTotals = {};
-    for (const session of show.sessions) {
-      perSessionTotals[session.id] = {
-        session_id: session.id,
-        starts_at: session.starts_at,
-        function_name: session.function_name || null,
-        bruto: 0,
-        online: 0,
-        boleteria: 0,
-        servicesTotal: 0
-      };
-    }
     
     const locationNameMap = {
       'palco': 'Palco',
@@ -1414,14 +1265,11 @@ router.get('/show/:show_id/pdf', authenticateToken, async (req, res) => {
             (ticket.type === 'pullman' ? (ticket.capacity || 1) : 1)
           );
           salesByLocationPriceChannel[key].total += effectivePrice;
-          perSessionTotals[session.id].bruto += effectivePrice;
           
           if (isOnline) {
             totalOnline += effectivePrice;
-            perSessionTotals[session.id].online += effectivePrice;
           } else {
             totalBoleteria += effectivePrice;
-            perSessionTotals[session.id].boleteria += effectivePrice;
           }
         }
       }
@@ -1468,7 +1316,6 @@ router.get('/show/:show_id/pdf', authenticateToken, async (req, res) => {
           if (!servicesByNameChannelPDF[key]) servicesByNameChannelPDF[key] = { name, price, channel: ch, quantity: 0, total: 0 };
           servicesByNameChannelPDF[key].quantity += qty;
           servicesByNameChannelPDF[key].total += qty * price;
-          perSessionTotals[session.id].servicesTotal += qty * price;
           // NO sumar servicios al totalBruto (se agregan debajo de deducciones A)
           // if (isOnlinePDF) totalOnline += qty * price;
           // else totalBoleteria += qty * price;
@@ -1582,37 +1429,11 @@ router.get('/show/:show_id/pdf', authenticateToken, async (req, res) => {
     // Calcular NETO 2 (NETO 1 + servicios)
     const neto2 = neto1 + totalServices;
 
-    // Contrato por fecha (igual criterio que GET /show/:show_id): se resuelve y calcula el
-    // contrato de cada sesión sobre su propio NETO 2 (deducciones A prorrateadas por bruto),
-    // y se suma el importe de cada item incorporado para el total general.
-    const contractBySession = [];
-    let contractGrandTotal = 0;
-    let settleGrandTotal = 0;
-    let userBoleteriaShare = 0;
-    let userOnlineShare = 0;
-    const sessionIdsSortedPDF = Object.values(perSessionTotals).sort((a, b) => new Date(a.starts_at) - new Date(b.starts_at));
-    for (const st of sessionIdsSortedPDF) {
-      const dedAShare = totalBruto > 0 ? (st.bruto / totalBruto) * totalDeductionsA : 0;
-      const sessionNeto1 = st.bruto - dedAShare;
-      const sessionNeto2 = sessionNeto1 + st.servicesTotal;
-      const { items: resolvedItems, isOverride } = resolveContractItems(bordereaux, st.session_id);
-      const { items: calculatedItems, total: sessionContractTotal, settleTotal: sessionSettleTotal } = calculateContractItems(resolvedItems, sessionNeto2);
-      contractGrandTotal += sessionContractTotal;
-      settleGrandTotal += sessionSettleTotal;
-      const settleFraction = sessionNeto2 > 0 ? (sessionSettleTotal / sessionNeto2) : 0;
-      userBoleteriaShare += st.boleteria * settleFraction;
-      userOnlineShare += st.online * settleFraction;
-      contractBySession.push({
-        session_id: st.session_id,
-        starts_at: st.starts_at,
-        function_name: st.function_name,
-        is_override: isOverride,
-        neto2: sessionNeto2,
-        items: calculatedItems,
-        total: sessionContractTotal
-      });
-    }
-    const defaultContractItems = resolveContractItems(bordereaux, null).items;
+    // Contract (usando NETO 2)
+    const theaterPercentage = bordereaux.contract_theater_percentage || 0;
+    const userPercentage = bordereaux.contract_user_percentage || 0;
+    const theaterAmount = neto2 * (theaterPercentage / 100);
+    const userAmount = neto2 * (userPercentage / 100);
     
     // Deductions B
     let deductionsB = bordereaux.deductions_b || [];
@@ -1622,7 +1443,11 @@ router.get('/show/:show_id/pdf', authenticateToken, async (req, res) => {
     if (!Array.isArray(deductionsB)) deductionsB = [];
     const totalDeductionsB = deductionsB.reduce((sum, item) => sum + parseFloat(item.amount || 0), 0);
     
-    // Final liquidation: suma de los items marcados settle=true por fecha (ya prorrateada arriba)
+    // Final liquidation
+    const boleteriaProportion = totalBruto > 0 ? totalBoleteria / totalBruto : 0;
+    const userShare = neto1 * (userPercentage / 100);
+    const userBoleteriaShare = userShare * boleteriaProportion;
+    const userOnlineShare = userShare * (totalBruto > 0 ? totalOnline / totalBruto : 0);
     const userCash = Math.max(0, userBoleteriaShare - totalDeductionsB);
     const userTransfer = userOnlineShare;
     
@@ -1652,10 +1477,10 @@ router.get('/show/:show_id/pdf', authenticateToken, async (req, res) => {
       neto1,
       totalServices,
       neto2,
-      contractItems: defaultContractItems,
-      contractBySession,
-      contractGrandTotal,
-      settleGrandTotal,
+      theaterPercentage,
+      userPercentage,
+      theaterAmount,
+      userAmount,
       deductionsB,
       totalDeductionsB,
       userCash,
@@ -1877,18 +1702,18 @@ router.get('/show/:show_id/session/:session_id/pdf', authenticateToken, async (r
     const totalServices = onlineServicesPDF.reduce((sum, s) => sum + s.total, 0) + boleteriaServicesPDF.reduce((sum, s) => sum + s.total, 0);
     const neto2 = neto1 + totalServices;
 
-    // Contrato resuelto para ESTA fecha (override de la sesión, o default del show, o legado)
-    const { items: resolvedContractItems, isOverride: contractIsOverride } = resolveContractItems(bordereaux, session_id);
-    const { items: contractItemsCalculated, total: contractTotal, settleTotal: contractSettleTotal } = calculateContractItems(resolvedContractItems, neto2);
+    const theaterPercentage = bordereaux.contract_theater_percentage || 0;
+    const userPercentage = bordereaux.contract_user_percentage || 0;
+    const theaterAmount = neto2 * (theaterPercentage / 100);
+    const userAmount = neto2 * (userPercentage / 100);
 
     let deductionsB = bordereaux.deductions_b || [];
     if (typeof deductionsB === 'string') { try { deductionsB = JSON.parse(deductionsB); } catch { deductionsB = []; } }
     if (!Array.isArray(deductionsB)) deductionsB = [];
     const totalDeductionsB = deductionsB.reduce((sum, item) => sum + parseFloat(item.amount || 0), 0);
 
-    const settleFraction = neto2 > 0 ? (contractSettleTotal / neto2) : 0;
-    const userBoleteriaShare = totalBoleteria * settleFraction;
-    const userOnlineShare = totalOnline * settleFraction;
+    const userBoleteriaShare = totalBoleteria * (userPercentage / 100);
+    const userOnlineShare = totalOnline * (userPercentage / 100);
     const userCash = Math.max(0, userBoleteriaShare - totalDeductionsB);
     const userTransfer = userOnlineShare;
 
@@ -1910,10 +1735,10 @@ router.get('/show/:show_id/session/:session_id/pdf', authenticateToken, async (r
       neto1,
       totalServices,
       neto2,
-      contractItems: contractItemsCalculated,
-      contractTotal,
-      contractSettleTotal,
-      contractIsOverride,
+      theaterPercentage,
+      userPercentage,
+      theaterAmount,
+      userAmount,
       deductionsB,
       totalDeductionsB,
       userCash,

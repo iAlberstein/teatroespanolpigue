@@ -14,11 +14,8 @@ export default function BordereauxModal({ showId, sessionId, onClose }) {
   
   // Estados del formulario
   const [deductionsA, setDeductionsA] = useState([]);
-  // Contrato: lista de items "default" (aplica a toda fecha sin override propio)
-  const [contractItems, setContractItems] = useState([]);
-  // Overrides por fecha: { [session_id]: [items] }. Solo relevante en la vista general
-  // (consolidada) de shows con más de una función/fecha.
-  const [sessionContractOverrides, setSessionContractOverrides] = useState({});
+  const [theaterPercentage, setTheaterPercentage] = useState(20);
+  const [userPercentage, setUserPercentage] = useState(80);
   const [deductionsB, setDeductionsB] = useState([]);
   const [authorName, setAuthorName] = useState('');
   const [saving, setSaving] = useState(false);
@@ -51,10 +48,8 @@ export default function BordereauxModal({ showId, sessionId, onClose }) {
       
       // Inicializar formulario con datos existentes
       setDeductionsA(response.deductions_a.items || []);
-      // En la vista general viene en response.contract.items (default del show);
-      // en la vista de sesión individual viene ya resuelto para esa fecha (override o default).
-      setContractItems(response.contract?.items || []);
-      setSessionContractOverrides(response.bordereaux?.session_contract_overrides || {});
+      setTheaterPercentage(response.contract?.theater_percentage || 20);
+      setUserPercentage(response.contract?.user_percentage || 80);
       setDeductionsB(response.deductions_b?.items || []);
       setAuthorName(response.show?.author_name || '');
     } catch (error) {
@@ -80,8 +75,8 @@ export default function BordereauxModal({ showId, sessionId, onClose }) {
         method: 'PUT',
         body: JSON.stringify({
           deductions_a: deductionsA,
-          contract_items: contractItems,
-          session_contract_overrides: sessionContractOverrides,
+          contract_theater_percentage: theaterPercentage,
+          contract_user_percentage: userPercentage,
           deductions_b: deductionsB,
           author_name: authorName
         })
@@ -148,56 +143,6 @@ export default function BordereauxModal({ showId, sessionId, onClose }) {
     const updated = [...deductionsA];
     updated[index][field] = value;
     setDeductionsA(updated);
-  };
-
-  const addContractItem = () => {
-    setContractItems([...contractItems, { title: '', mode: 'percentage', percentage: 0, fixedAmount: 0, description: 'del Neto 2', settle: false }]);
-  };
-
-  const removeContractItem = (index) => {
-    setContractItems(contractItems.filter((_, i) => i !== index));
-  };
-
-  const updateContractItem = (index, field, value) => {
-    const updated = [...contractItems];
-    updated[index] = { ...updated[index], [field]: value };
-    setContractItems(updated);
-  };
-
-  // Overrides de contrato por fecha (solo vista general, shows con más de una función)
-  const getSessionItems = (sessionId) => sessionContractOverrides[sessionId] || null;
-
-  const toggleSessionOverride = (sessionId, enabled) => {
-    const updated = { ...sessionContractOverrides };
-    if (enabled) {
-      // Al activar, arrancar con una copia de la distribución default como punto de partida
-      updated[sessionId] = contractItems.map(it => ({ ...it }));
-    } else {
-      delete updated[sessionId];
-    }
-    setSessionContractOverrides(updated);
-  };
-
-  const addSessionContractItem = (sessionId) => {
-    const current = sessionContractOverrides[sessionId] || [];
-    setSessionContractOverrides({
-      ...sessionContractOverrides,
-      [sessionId]: [...current, { title: '', mode: 'percentage', percentage: 0, fixedAmount: 0, description: 'del Neto 2', settle: false }]
-    });
-  };
-
-  const removeSessionContractItem = (sessionId, index) => {
-    const current = sessionContractOverrides[sessionId] || [];
-    setSessionContractOverrides({
-      ...sessionContractOverrides,
-      [sessionId]: current.filter((_, i) => i !== index)
-    });
-  };
-
-  const updateSessionContractItem = (sessionId, index, field, value) => {
-    const current = sessionContractOverrides[sessionId] || [];
-    const updated = current.map((it, i) => i === index ? { ...it, [field]: value } : it);
-    setSessionContractOverrides({ ...sessionContractOverrides, [sessionId]: updated });
   };
 
   const addDeductionB = () => {
@@ -853,231 +798,77 @@ export default function BordereauxModal({ showId, sessionId, onClose }) {
           )}
 
           {/* Contrato */}
-          {(() => {
-            const hasMultipleSessions = !sessionId && Array.isArray(data.show?.session_dates) && data.show.session_dates.length > 1;
-
-            const calcItemAmount = (item, neto2) => item.mode === 'fixed'
-              ? (parseFloat(item.fixedAmount) || 0)
-              : (parseFloat(neto2) || 0) * ((parseFloat(item.percentage) || 0) / 100);
-
-            // Tabla editable/de solo lectura para una lista de items de contrato.
-            const ContractItemsTable = ({ items, neto2, editable, onUpdate, onRemove, onAdd, readonlyAmounts }) => (
-              <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: theme.typography.small }}>
-                <thead>
-                  <tr style={{ borderBottom: `2px solid ${theme.colors.border}` }}>
-                    <th style={{ padding: theme.spacing.xs, textAlign: 'left' }}>PARTE</th>
-                    <th style={{ padding: theme.spacing.xs, textAlign: 'center' }}>TIPO</th>
-                    <th style={{ padding: theme.spacing.xs, textAlign: 'left' }}>DESCRIPCIÓN</th>
-                    <th style={{ padding: theme.spacing.xs, textAlign: 'center' }}>LIQUIDAR</th>
-                    <th style={{ padding: theme.spacing.xs, textAlign: 'right' }}>IMPORTE</th>
-                    {editable && <th style={{ padding: theme.spacing.xs }}></th>}
-                  </tr>
-                </thead>
-                <tbody>
-                  {items.map((item, idx) => (
-                    <tr key={idx}>
-                      <td style={{ padding: theme.spacing.xs }}>
-                        {editable ? (
-                          <input
-                            type="text"
-                            value={item.title || ''}
-                            placeholder="Ej: Teatro, Autor..."
-                            onChange={(e) => onUpdate(idx, 'title', e.target.value)}
-                            style={{ width: '100%', padding: '4px' }}
-                          />
-                        ) : (item.title || '-')}
-                      </td>
-                      <td style={{ padding: theme.spacing.xs, textAlign: 'center' }}>
-                        {editable ? (
-                          <div style={{ display: 'flex', alignItems: 'center', gap: '4px', justifyContent: 'center' }}>
-                            <select
-                              value={item.mode || 'percentage'}
-                              onChange={(e) => onUpdate(idx, 'mode', e.target.value)}
-                              style={{ padding: '4px', borderRadius: '4px', border: '1px solid #ccc' }}
-                            >
-                              <option value="percentage">%</option>
-                              <option value="fixed">Fijo</option>
-                            </select>
-                            {(item.mode || 'percentage') === 'percentage' ? (
-                              <input
-                                type="number"
-                                value={item.percentage}
-                                onChange={(e) => onUpdate(idx, 'percentage', parseFloat(e.target.value) || 0)}
-                                style={{ width: '55px', padding: '4px', textAlign: 'center' }}
-                              />
-                            ) : (
-                              <input
-                                type="number"
-                                value={item.fixedAmount || 0}
-                                onChange={(e) => onUpdate(idx, 'fixedAmount', parseFloat(e.target.value) || 0)}
-                                style={{ width: '90px', padding: '4px', textAlign: 'right' }}
-                              />
-                            )}
-                          </div>
-                        ) : (
-                          item.mode === 'fixed' ? 'Fijo' : `${Math.round(parseFloat(item.percentage) || 0)}%`
-                        )}
-                      </td>
-                      <td style={{ padding: theme.spacing.xs }}>
-                        {editable ? (
-                          <input
-                            type="text"
-                            value={item.description || ''}
-                            onChange={(e) => onUpdate(idx, 'description', e.target.value)}
-                            style={{ width: '100%', padding: '4px' }}
-                          />
-                        ) : (item.description || '-')}
-                      </td>
-                      <td style={{ padding: theme.spacing.xs, textAlign: 'center' }}>
-                        {editable ? (
-                          <input
-                            type="checkbox"
-                            checked={!!item.settle}
-                            onChange={(e) => onUpdate(idx, 'settle', e.target.checked)}
-                            title="Marca la/s parte/s cuyo importe se liquida en efectivo/transferencia"
-                          />
-                        ) : (item.settle ? '✓' : '')}
-                      </td>
-                      <td style={{ padding: theme.spacing.xs, textAlign: 'right' }}>
-                        {readonlyAmounts ? formatCurrency(parseFloat(item.amount) || 0) : formatCurrency(calcItemAmount(item, neto2))}
-                      </td>
-                      {editable && (
-                        <td style={{ padding: theme.spacing.xs, textAlign: 'center' }}>
-                          <button onClick={() => onRemove(idx)} style={{ color: theme.colors.danger, border: 'none', background: 'none', cursor: 'pointer' }}>✕</button>
-                        </td>
-                      )}
-                    </tr>
-                  ))}
-                  {editable && (
-                    <tr>
-                      <td colSpan="6" style={{ padding: theme.spacing.xs }}>
-                        <Button variant="secondary" size="sm" onClick={onAdd}>+ Agregar parte</Button>
-                      </td>
-                    </tr>
-                  )}
-                  <tr style={{ borderTop: `2px solid ${theme.colors.border}`, fontWeight: 'bold' }}>
-                    <td colSpan="4" style={{ padding: theme.spacing.xs }}>TOTAL</td>
-                    <td style={{ padding: theme.spacing.xs, textAlign: 'right' }}>
-                      {formatCurrency(readonlyAmounts
-                        ? items.reduce((sum, it) => sum + (parseFloat(it.amount) || 0), 0)
-                        : items.reduce((sum, it) => sum + calcItemAmount(it, neto2), 0))}
-                    </td>
-                    {editable && <td></td>}
-                  </tr>
-                </tbody>
-              </table>
-            );
-
-            if (sessionId) {
-              // Vista de sesión individual: solo lectura, contrato ya resuelto para esta fecha.
-              return (
-                <div style={{ marginBottom: theme.spacing.lg }}>
-                  <h3>
-                    CONTRATO
-                    {data.contract?.is_override && (
-                      <span style={{ marginLeft: theme.spacing.sm, fontSize: theme.typography.small, fontWeight: 'normal', color: theme.colors.primary }}>
-                        (distribución propia para esta fecha)
-                      </span>
+          <div style={{ marginBottom: theme.spacing.lg }}>
+            <h3>CONTRATO</h3>
+            <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: theme.typography.small }}>
+              <thead>
+                <tr style={{ borderBottom: `2px solid ${theme.colors.border}` }}>
+                  <th style={{ padding: theme.spacing.xs, textAlign: 'left' }}>PARTE</th>
+                  <th style={{ padding: theme.spacing.xs, textAlign: 'center' }}>PORCENTAJE</th>
+                  <th style={{ padding: theme.spacing.xs, textAlign: 'left' }}>DESCRIPCIÓN</th>
+                  <th style={{ padding: theme.spacing.xs, textAlign: 'right' }}>IMPORTE</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr>
+                  <td style={{ padding: theme.spacing.xs }}>TEATRO</td>
+                  <td style={{ padding: theme.spacing.xs, textAlign: 'center' }}>
+                    {editMode ? (
+                      <>
+                        <input
+                          type="number"
+                          value={Math.round(theaterPercentage)}
+                          onChange={(e) => {
+                            const val = parseInt(e.target.value) || 0;
+                            setTheaterPercentage(val);
+                            setUserPercentage(100 - val);
+                          }}
+                          style={{ width: '60px', padding: '4px', textAlign: 'center', MozAppearance: 'textfield', appearance: 'textfield' }}
+                        />%
+                      </>
+                    ) : (
+                      `${Math.round(data.contract.theater_percentage)}%`
                     )}
-                  </h3>
-                  <ContractItemsTable items={data.contract?.items || []} readonlyAmounts editable={false} />
-                </div>
-              );
-            }
-
-            if (!hasMultipleSessions) {
-              // Show de una sola función: un único editor, igual que antes pero con lista abierta de items.
-              return (
-                <div style={{ marginBottom: theme.spacing.lg }}>
-                  <h3>CONTRATO</h3>
-                  <ContractItemsTable
-                    items={editMode ? contractItems : (data.contract?.items || [])}
-                    neto2={data.neto2}
-                    editable={editMode}
-                    onUpdate={(idx, field, value) => updateContractItem(idx, field, value)}
-                    onRemove={removeContractItem}
-                    onAdd={addContractItem}
-                  />
-                </div>
-              );
-            }
-
-            // Show con múltiples funciones (pack): distribución default + override por fecha.
-            const bySession = data.contract?.by_session || [];
-            return (
-              <div style={{ marginBottom: theme.spacing.lg }}>
-                <h3>CONTRATO</h3>
-                <div style={{ marginBottom: theme.spacing.sm, fontSize: theme.typography.small, color: theme.colors.textSecondary }}>
-                  Distribución por defecto (se aplica a toda fecha sin distribución propia):
-                </div>
-                <ContractItemsTable
-                  items={editMode ? contractItems : (data.contract?.items || [])}
-                  neto2={data.neto2}
-                  editable={editMode}
-                  onUpdate={(idx, field, value) => updateContractItem(idx, field, value)}
-                  onRemove={removeContractItem}
-                  onAdd={addContractItem}
-                />
-
-                <div style={{ marginTop: theme.spacing.md }}>
-                  {(editMode
-                    ? [...bySession].sort((a, b) => new Date(a.starts_at) - new Date(b.starts_at))
-                    : bySession
-                  ).map((slot) => {
-                    const hasOverride = editMode ? !!sessionContractOverrides[slot.session_id] : slot.is_override;
-                    const overrideItems = sessionContractOverrides[slot.session_id] || [];
-                    return (
-                      <div key={slot.session_id} style={{ marginTop: theme.spacing.md, padding: theme.spacing.sm, border: `1px solid ${theme.colors.border}`, borderRadius: theme.borderRadius.md }}>
-                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: theme.spacing.xs }}>
-                          <strong style={{ fontSize: theme.typography.small }}>
-                            {formatDateLong(slot.starts_at)} {formatTime(slot.starts_at)}{slot.function_name ? ` — ${slot.function_name}` : ''}
-                          </strong>
-                          {editMode && (
-                            <label style={{ fontSize: theme.typography.small, display: 'flex', alignItems: 'center', gap: '4px' }}>
-                              <input
-                                type="checkbox"
-                                checked={hasOverride}
-                                onChange={(e) => toggleSessionOverride(slot.session_id, e.target.checked)}
-                              />
-                              Usar distribución propia para esta fecha
-                            </label>
-                          )}
-                        </div>
-                        {editMode ? (
-                          hasOverride ? (
-                            <ContractItemsTable
-                              items={overrideItems}
-                              neto2={slot.neto2}
-                              editable
-                              onUpdate={(idx, field, value) => updateSessionContractItem(slot.session_id, idx, field, value)}
-                              onRemove={(idx) => removeSessionContractItem(slot.session_id, idx)}
-                              onAdd={() => addSessionContractItem(slot.session_id)}
-                            />
-                          ) : (
-                            <div style={{ fontSize: theme.typography.small, color: theme.colors.textSecondary, fontStyle: 'italic' }}>
-                              Usa la distribución por defecto.
-                            </div>
-                          )
-                        ) : (
-                          <ContractItemsTable items={slot.items || []} readonlyAmounts editable={false} />
-                        )}
-                      </div>
-                    );
-                  })}
-                </div>
-
-                <div style={{ marginTop: theme.spacing.md, display: 'flex', justifyContent: 'space-between', alignItems: 'center', fontWeight: 'bold', fontSize: theme.typography.h4, padding: theme.spacing.sm, background: '#f3f4f6', borderRadius: theme.borderRadius.md }}>
-                  <span>TOTAL CONTRATO (TODAS LAS FECHAS):</span>
-                  <span>{formatCurrency(data.contract?.total || 0)}</span>
-                </div>
-                {editMode && (
-                  <div style={{ marginTop: theme.spacing.xs, fontSize: theme.typography.small, color: theme.colors.textSecondary }}>
-                    Este total se recalcula al guardar los cambios.
-                  </div>
-                )}
-              </div>
-            );
-          })()}
+                  </td>
+                  <td style={{ padding: theme.spacing.xs }}>del NETO 2</td>
+                  <td style={{ padding: theme.spacing.xs, textAlign: 'right' }}>
+                    {(() => {
+                      const neto2 = parseFloat(data.neto2) || 0;
+                      return formatCurrency(neto2 * (theaterPercentage / 100));
+                    })()}
+                  </td>
+                </tr>
+                <tr>
+                  <td style={{ padding: theme.spacing.xs }}>USUARIO</td>
+                  <td style={{ padding: theme.spacing.xs, textAlign: 'center' }}>
+                    {editMode ? (
+                      <>
+                        <input
+                          type="number"
+                          value={Math.round(userPercentage)}
+                          onChange={(e) => {
+                            const val = parseInt(e.target.value) || 0;
+                            setUserPercentage(val);
+                            setTheaterPercentage(100 - val);
+                          }}
+                          style={{ width: '60px', padding: '4px', textAlign: 'center', MozAppearance: 'textfield', appearance: 'textfield' }}
+                        />%
+                      </>
+                    ) : (
+                      `${Math.round(data.contract.user_percentage)}%`
+                    )}
+                  </td>
+                  <td style={{ padding: theme.spacing.xs }}>del NETO 2</td>
+                  <td style={{ padding: theme.spacing.xs, textAlign: 'right' }}>
+                    {(() => {
+                      const neto2 = parseFloat(data.neto2) || 0;
+                      return formatCurrency(neto2 * (userPercentage / 100));
+                    })()}
+                  </td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
 
           {/* Deducciones B */}
           <div style={{ marginBottom: theme.spacing.lg }}>
@@ -1149,47 +940,40 @@ export default function BordereauxModal({ showId, sessionId, onClose }) {
           {/* Liquidación Final */}
           <div style={{ padding: theme.spacing.md, background: theme.colors.primaryLight, borderRadius: theme.borderRadius.md }}>
             {(() => {
-              const hasMultipleSessions = !sessionId && Array.isArray(data.show?.session_dates) && data.show.session_dates.length > 1;
-
-              // Para shows con múltiples funciones, el desglose por fecha (con overrides propios
-              // por fecha) solo se recalcula en el servidor; se muestra el último valor guardado.
-              if (hasMultipleSessions) {
-                return (
-                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', fontSize: theme.typography.h4, fontWeight: 'bold' }}>
-                    <span>TOTAL A LIQUIDAR (partes marcadas "Liquidar"):</span>
-                    <span>{formatCurrency(data.liquidacion?.user_total || 0)}</span>
-                  </div>
-                );
-              }
-
-              // Calcular valores en tiempo real considerando deducciones/contrato editados
+              // Calcular valores en tiempo real considerando deducciones editadas
               const bruto = parseFloat(data.recaudacion.bruto) || 0;
-
+              
+              // Calcular total deducciones A (considerando tipo % o fijo)
               const currentDeductionsA = editMode ? deductionsA : (data.deductions_a?.items || []);
               const totalDeductionsA = currentDeductionsA.reduce((sum, ded) => {
-                if (ded.type === 'fixed') return sum + (parseFloat(ded.fixedAmount) || 0);
+                if (ded.type === 'fixed') {
+                  return sum + (parseFloat(ded.fixedAmount) || 0);
+                }
                 return sum + (bruto * ((parseFloat(ded.percentage) || 0) / 100));
               }, 0);
-
+              
+              // NETO 1 = Bruto - Deducciones A
               const neto1 = bruto - totalDeductionsA;
+
+              // NETO 2 = NETO 1 + Servicios
               const neto2 = parseFloat(data.neto2) || neto1;
 
+              // Calcular total deducciones B
               const currentDeductionsB = editMode ? deductionsB : (data.deductions_b?.items || []);
               const totalDeductionsB = currentDeductionsB.reduce((sum, ded) => sum + (parseFloat(ded.amount) || 0), 0);
 
-              // Suma de los items de contrato marcados "Liquidar" (settle), sobre el NETO 2
-              const currentContractItems = editMode ? contractItems : (data.contract?.items || []);
-              const settleTotal = currentContractItems.reduce((sum, item) => {
-                if (!item.settle) return sum;
-                const amount = item.mode === 'fixed' ? (parseFloat(item.fixedAmount) || 0) : neto2 * ((parseFloat(item.percentage) || 0) / 100);
-                return sum + amount;
-              }, 0);
+              // Porcentajes del contrato
+              const currentUserPercentage = editMode ? userPercentage : (data.contract?.user_percentage || 0);
 
-              const userTotal = Math.max(0, settleTotal - totalDeductionsB);
-
+              // Parte del usuario del NETO 2
+              const userShare = neto2 * (currentUserPercentage / 100);
+              
+              // Total a liquidar = parte del usuario - deducciones B
+              const userTotal = Math.max(0, userShare - totalDeductionsB);
+              
               return (
                 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', fontSize: theme.typography.h4, fontWeight: 'bold' }}>
-                  <span>TOTAL A LIQUIDAR (partes marcadas "Liquidar"):</span>
+                  <span>TOTAL A LIQUIDAR AL USUARIO:</span>
                   <span>{formatCurrency(userTotal)}</span>
                 </div>
               );

@@ -44,8 +44,7 @@ export default function defineBordereauxModel(sequelize) {
       ]
     },
     
-    // Contrato (porcentajes del neto 2) - esquema legado, se mantiene por compatibilidad
-    // con bordereaux ya cerrados que nunca se migraron a `contract_items`.
+    // Contrato (porcentajes del neto 1)
     contract_theater_percentage: {
       type: DataTypes.DECIMAL(5, 2),
       defaultValue: 30.00,
@@ -55,44 +54,6 @@ export default function defineBordereauxModel(sequelize) {
       type: DataTypes.DECIMAL(5, 2),
       defaultValue: 70.00,
       allowNull: false
-    },
-
-    // Contrato como lista de items: [{ title, mode: 'percentage'|'fixed', percentage,
-    // fixedAmount, description, settle }]. `settle: true` marca el/los items cuyo importe
-    // se liquida en efectivo/transferencia (equivalente al "USUARIO" del esquema legado).
-    // NULL/vacío => se usa el esquema legado (contract_theater_percentage/contract_user_percentage).
-    contract_items: {
-      type: DataTypes.JSON,
-      allowNull: true,
-      defaultValue: [
-        { title: 'Teatro', mode: 'percentage', percentage: 30, fixedAmount: 0, description: 'del Neto 2', settle: false },
-        { title: 'Usuario', mode: 'percentage', percentage: 70, fixedAmount: 0, description: 'del Neto 2', settle: true }
-      ],
-      get() {
-        const raw = this.getDataValue('contract_items');
-        if (!raw) return null;
-        if (typeof raw === 'string') {
-          try { return JSON.parse(raw); } catch { return null; }
-        }
-        return raw;
-      }
-    },
-
-    // Override de contract_items por función/fecha (session_id -> array de items),
-    // para shows con múltiples sesiones (packs) donde cada fecha necesita una distribución
-    // de contrato distinta (ej: 10/30/60 en una fecha, 30/70 en otra).
-    session_contract_overrides: {
-      type: DataTypes.JSON,
-      allowNull: true,
-      defaultValue: {},
-      get() {
-        const raw = this.getDataValue('session_contract_overrides');
-        if (!raw) return {};
-        if (typeof raw === 'string') {
-          try { return JSON.parse(raw) || {}; } catch { return {}; }
-        }
-        return raw;
-      }
     },
     
     // Deducciones B (items adicionales con montos fijos)
