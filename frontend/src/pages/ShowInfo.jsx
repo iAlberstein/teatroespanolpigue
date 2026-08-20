@@ -706,7 +706,7 @@ function SessionPricingDisplay({ seatPricing, pricing, palcosIndividualSeats, ve
       <div style={{ flex: 1 }}>
         <div style={{ fontSize: 12, color: '#64748b', fontWeight: 600 }}>{title}</div>
         {localidades && <div style={{ fontSize: 11, color: '#94a3b8' }}>{localidades}</div>}
-        {location && location.split('\n').map((line, i) => (
+        {location && (typeof location === 'string' ? location.split('\n') : [String(location)]).map((line, i) => (
           <div key={i} style={{ fontSize: 11, color: '#94a3b8' }}>{line}</div>
         ))}
       </div>
@@ -792,7 +792,7 @@ function SessionPricingDisplay({ seatPricing, pricing, palcosIndividualSeats, ve
           borderRadius: 8,
           border: '1px solid #e5e7eb'
         }}>
-          {renderPriceRow('General', '#94a3b8', 'Entrada General', 'Sin ubicación fija', pricing.general)}
+          {renderPriceRow('General', '#94a3b8', 'Entrada General', 'Sin ubicación fija', 'Sin ubicación fija', pricing.general)}
         </div>
       )}
     </div>

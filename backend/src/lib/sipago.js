@@ -51,28 +51,29 @@ export async function getSipagoToken(forceRefresh = false) {
   return cachedToken;
 }
 
-export async function createSipagoOrder({ total, redirect_urls, items, webhookUrl, currency = '032' }) {
+export async function createSipagoOrder({ total, redirect_urls, items, webhookUrl, currency = '032', expireLimitMinutes }) {
   const token = await getSipagoToken();
   const config = getConfig();
-  const body = {
-    data: {
-      attributes: {
-        redirect_urls,
-        currency,
-        items: Array.isArray(items) && items.length > 0
-          ? items
-          : [
-              {
-                id: 'venta',
-                name: 'Entradas Teatro',
-                unitPrice: { currency, amount: total },
-                quantity: 1
-              }
-            ],
-        webhookUrl
-      }
-    }
+  const attributes = {
+    redirect_urls,
+    currency,
+    items: Array.isArray(items) && items.length > 0
+      ? items
+      : [
+          {
+            id: 'venta',
+            name: 'Entradas Teatro',
+            unitPrice: { currency, amount: total },
+            quantity: 1
+          }
+        ],
+    webhookUrl
   };
+  // Si se especifica, Sipago rechaza el pago una vez pasado ese tiempo (en minutos)
+  // desde la creación de la orden. Lo usamos para que el checkout de Sipago nunca
+  // acepte un pago después de que nuestra reserva interna ya haya expirado.
+  if (Number.isFinite(expireLimitMinutes)) attributes.expireLimitMinutes = expireLimitMinutes;
+  const body = { data: { attributes } };
   const res = await fetch(`${config.baseUrl}/api/v2/orders`, {
     method: 'POST',
     headers: {

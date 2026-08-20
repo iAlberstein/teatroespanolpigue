@@ -22,6 +22,7 @@ const FONT_SIZES = [
 
 export default function Mailing() {
   const { token } = useAuth();
+  const [mailingMode, setMailingMode] = useState('newsletter'); // 'newsletter' | 'session'
   const [totalSubscribers, setTotalSubscribers] = useState(0);
   const [loading, setLoading] = useState(true);
   const [sending, setSending] = useState(false);
@@ -32,7 +33,18 @@ export default function Mailing() {
   const [result, setResult] = useState(null);
   const [error, setError] = useState('');
   const [isMobile, setIsMobile] = useState(() => typeof window !== 'undefined' && window.innerWidth < 768);
-  
+
+  // Estado para envío dirigido a una función pasada
+  const [pastSessions, setPastSessions] = useState([]);
+  const [sessionsLoading, setSessionsLoading] = useState(false);
+  const [sessionsLoaded, setSessionsLoaded] = useState(false);
+  const [sessionSearch, setSessionSearch] = useState('');
+  const [showSessionDropdown, setShowSessionDropdown] = useState(false);
+  const [selectedSession, setSelectedSession] = useState(null); // objeto completo
+  const [sessionRecipients, setSessionRecipients] = useState(null); // { total, recipients }
+  const [recipientsLoading, setRecipientsLoading] = useState(false);
+  const sessionDropdownRef = useRef(null);
+
   const editorRef = useRef(null);
   const fileInputRef = useRef(null);
 
@@ -52,6 +64,17 @@ export default function Mailing() {
     }
   }, [loading]);
 
+  // Cerrar el desplegable de sesiones al hacer click fuera
+  useEffect(() => {
+    const handleClickOutside = (e) => {
+      if (sessionDropdownRef.current && !sessionDropdownRef.current.contains(e.target)) {
+        setShowSessionDropdown(false);
+      }
+    };
+    document.addEventListener('mousedown', handleClickOutside);
+    return () => document.removeEventListener('mousedown', handleClickOutside);
+  }, []);
+
   const loadSubscribersCount = async () => {
     setLoading(true);
     try {
@@ -64,6 +87,62 @@ export default function Mailing() {
       console.error('Error loading subscribers:', err);
     } finally {
       setLoading(false);
+    }
+  };
+
+  const loadPastSessions = async () => {
+    if (sessionsLoaded) return;
+    setSessionsLoading(true);
+    try {
+      const res = await apiAuthFetch('/api/mailing/past-sessions', { method: 'GET' }, token);
+      if (res.ok) {
+        const data = await res.json();
+        setPastSessions(data.sessions || []);
+        setSessionsLoaded(true);
+      }
+    } catch (err) {
+      console.error('Error loading past sessions:', err);
+      setError('Error al cargar las funciones pasadas');
+    } finally {
+      setSessionsLoading(false);
+    }
+  };
+
+  const loadSessionRecipients = async (sessionId) => {
+    setRecipientsLoading(true);
+    setSessionRecipients(null);
+    try {
+      const res = await apiAuthFetch(`/api/mailing/session-recipients?sessionId=${encodeURIComponent(sessionId)}`, { method: 'GET' }, token);
+      if (res.ok) {
+        const data = await res.json();
+        setSessionRecipients({ total: data.total, recipients: data.recipients });
+      } else {
+        const data = await res.json().catch(() => ({}));
+        setError(data.error || 'Error al obtener destinatarios');
+      }
+    } catch (err) {
+      console.error('Error loading session recipients:', err);
+      setError('Error al obtener destinatarios');
+    } finally {
+      setRecipientsLoading(false);
+    }
+  };
+
+  const handleSelectSession = (session) => {
+    setSelectedSession(session);
+    setShowSessionDropdown(false);
+    setSessionSearch(formatSessionLabel(session));
+    setSessionRecipients(null);
+    loadSessionRecipients(session.id);
+  };
+
+  const handleSwitchMode = (mode) => {
+    if (mode === mailingMode) return;
+    setMailingMode(mode);
+    setError('');
+    setResult(null);
+    if (mode === 'session') {
+      loadPastSessions();
     }
   };
 
@@ -222,8 +301,26 @@ export default function Mailing() {
       return;
     }
 
+    const isSessionMode = mailingMode === 'session';
+    const targetCount = isSessionMode
+      ? (sessionRecipients?.total ?? 0)
+      : totalSubscribers;
+
+    if (isSessionMode && !selectedSession) {
+      setError('Seleccioná una función pasada');
+      return;
+    }
+    if (isSessionMode && targetCount === 0) {
+      setError('La función seleccionada no tiene destinatarios con email');
+      return;
+    }
+
+    const targetLabel = isSessionMode
+      ? `${targetCount} compradores de la función`
+      : `${totalSubscribers} suscriptores`;
+
     const confirmed = window.confirm(
-      `¿Estás seguro de enviar este email a ${totalSubscribers} suscriptores?\n\nEsta acción no se puede deshacer.`
+      `¿Estás seguro de enviar este email a ${targetLabel}?\n\nEsta acción no se puede deshacer.`
     );
 
     if (!confirmed) return;
@@ -233,10 +330,15 @@ export default function Mailing() {
     setResult(null);
 
     try {
+      const payload = { subject, htmlContent };
+      if (isSessionMode) {
+        payload.sessionId = selectedSession.id;
+      }
+
       const res = await apiAuthFetch('/api/mailing/send', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ subject, htmlContent })
+        body: JSON.stringify(payload)
       }, token);
 
       const data = await res.json();
@@ -258,6 +360,30 @@ export default function Mailing() {
   if (loading) {
     return <div style={{ padding: 24, textAlign: 'center' }}>Cargando...</div>;
   }
+
+  const formatSessionLabel = (session) => {
+    if (!session) return '';
+    const date = new Date(session.starts_at);
+    const dateStr = date.toLocaleDateString('es-AR', {
+      day: '2-digit', month: '2-digit', year: 'numeric'
+    });
+    const timeStr = date.toLocaleTimeString('es-AR', { hour: '2-digit', minute: '2-digit' });
+    const fnName = session.function_name ? ` — ${session.function_name}` : '';
+    return `${session.show_title} — ${dateStr} ${timeStr}${fnName}`;
+  };
+
+  // Filtrado en tiempo real de funciones pasadas
+  const filteredSessions = (() => {
+    const q = sessionSearch.trim().toLowerCase();
+    if (!q) return pastSessions;
+    return pastSessions.filter(s => {
+      const label = formatSessionLabel(s).toLowerCase();
+      return label.includes(q);
+    });
+  })();
+
+  const isSessionMode = mailingMode === 'session';
+  const sessionTargetCount = sessionRecipients?.total ?? 0;
 
   const toolbarButtonStyle = {
     padding: '8px 12px',
@@ -288,9 +414,9 @@ export default function Mailing() {
         color: 'white'
       }}>
         <div>
-          <h2 style={{ margin: 0, fontSize: 24, fontWeight: 700 }}>📧 Mailing Masivo</h2>
+          <h2 style={{ margin: 0, fontSize: 24, fontWeight: 700 }}>📧 Mailing</h2>
           <p style={{ margin: '8px 0 0 0', opacity: 0.9 }}>
-            Enviá emails personalizados a tu lista de newsletter
+            Enviá emails personalizados a tu lista de newsletter o a los compradores de una función
           </p>
         </div>
         <div style={{
@@ -303,6 +429,147 @@ export default function Mailing() {
           <div style={{ fontSize: 14, opacity: 0.9 }}>Suscriptores activos</div>
         </div>
       </div>
+
+      {/* Selector de modo */}
+      <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+        <button
+          type="button"
+          onClick={() => handleSwitchMode('newsletter')}
+          style={{
+            padding: '10px 18px',
+            background: mailingMode === 'newsletter' ? '#3b82f6' : 'white',
+            color: mailingMode === 'newsletter' ? 'white' : '#374151',
+            border: `1px solid ${mailingMode === 'newsletter' ? '#3b82f6' : '#d1d5db'}`,
+            borderRadius: 8,
+            fontWeight: 600,
+            fontSize: 14,
+            cursor: 'pointer'
+          }}
+        >
+          📰 Newsletter (todos)
+        </button>
+        <button
+          type="button"
+          onClick={() => handleSwitchMode('session')}
+          style={{
+            padding: '10px 18px',
+            background: mailingMode === 'session' ? '#7c3aed' : 'white',
+            color: mailingMode === 'session' ? 'white' : '#374151',
+            border: `1px solid ${mailingMode === 'session' ? '#7c3aed' : '#d1d5db'}`,
+            borderRadius: 8,
+            fontWeight: 600,
+            fontSize: 14,
+            cursor: 'pointer'
+          }}
+        >
+          🎟️ Función específica
+        </button>
+      </div>
+
+      {/* Selector de función pasada (solo modo sesión) */}
+      {isSessionMode && (
+        <div style={{ position: 'relative' }} ref={sessionDropdownRef}>
+          <label style={{ display: 'block', marginBottom: 8, fontWeight: 600 }}>
+            Función pasada
+          </label>
+          <input
+            type="text"
+            value={sessionSearch}
+            onChange={(e) => {
+              setSessionSearch(e.target.value);
+              setShowSessionDropdown(true);
+              if (selectedSession && e.target.value !== formatSessionLabel(selectedSession)) {
+                setSelectedSession(null);
+                setSessionRecipients(null);
+              }
+            }}
+            onFocus={() => {
+              setShowSessionDropdown(true);
+              if (!sessionsLoaded) loadPastSessions();
+            }}
+            placeholder={sessionsLoading ? 'Cargando funciones...' : 'Escribí para filtrar (obra, fecha, función)...'}
+            style={{
+              width: '100%',
+              padding: 12,
+              borderRadius: 8,
+              border: '1px solid #d1d5db',
+              fontSize: 14,
+              boxSizing: 'border-box'
+            }}
+          />
+
+          {showSessionDropdown && (
+            <div style={{
+              position: 'absolute',
+              top: '100%',
+              left: 0,
+              right: 0,
+              marginTop: 4,
+              background: 'white',
+              border: '1px solid #d1d5db',
+              borderRadius: 8,
+              maxHeight: 280,
+              overflowY: 'auto',
+              zIndex: 50,
+              boxShadow: '0 4px 12px rgba(0,0,0,0.1)'
+            }}>
+              {sessionsLoading && (
+                <div style={{ padding: 12, color: '#6b7280', fontSize: 14 }}>Cargando funciones...</div>
+              )}
+              {!sessionsLoading && filteredSessions.length === 0 && (
+                <div style={{ padding: 12, color: '#6b7280', fontSize: 14 }}>
+                  {pastSessions.length === 0 ? 'No hay funciones pasadas' : `No se encontraron funciones con "${sessionSearch}"`}
+                </div>
+              )}
+              {!sessionsLoading && filteredSessions.slice(0, 50).map(session => (
+                <div
+                  key={session.id}
+                  onClick={() => handleSelectSession(session)}
+                  style={{
+                    padding: '10px 12px',
+                    cursor: 'pointer',
+                    fontSize: 14,
+                    borderBottom: '1px solid #f3f4f6',
+                    transition: 'background 0.1s'
+                  }}
+                  onMouseEnter={(e) => { e.currentTarget.style.background = '#f3f4f6'; }}
+                  onMouseLeave={(e) => { e.currentTarget.style.background = 'white'; }}
+                >
+                  {formatSessionLabel(session)}
+                </div>
+              ))}
+              {!sessionsLoading && filteredSessions.length > 50 && (
+                <div style={{ padding: 8, color: '#6b7280', fontSize: 12, textAlign: 'center' }}>
+                  Mostrando 50 de {filteredSessions.length} resultados. Seguí filtrando para acotar.
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* Conteo de destinatarios de la función seleccionada */}
+          {selectedSession && (
+            <div style={{
+              marginTop: 12,
+              padding: 12,
+              background: '#ede9fe',
+              border: '1px solid #c4b5fd',
+              borderRadius: 8,
+              color: '#5b21b6',
+              fontSize: 14
+            }}>
+              {recipientsLoading ? (
+                <span>Contando destinatarios...</span>
+              ) : sessionRecipients ? (
+                <span>
+                  Se enviará a <strong>{sessionRecipients.total}</strong> comprador{sessionRecipients.total === 1 ? '' : 'es'} con email asociado a esta función.
+                </span>
+              ) : (
+                <span>No se pudo obtener el conteo de destinatarios.</span>
+              )}
+            </div>
+          )}
+        </div>
+      )}
 
       {/* Mensajes */}
       {error && (
@@ -597,37 +864,49 @@ export default function Mailing() {
             </div>
           </div>
 
-          {/* Enviar a todos */}
+          {/* Enviar a todos / a compradores de la función */}
           <div style={{
             padding: 16,
-            background: '#dcfce7',
+            background: isSessionMode ? '#ede9fe' : '#dcfce7',
             borderRadius: 8,
-            border: '1px solid #86efac'
+            border: `1px solid ${isSessionMode ? '#c4b5fd' : '#86efac'}`
           }}>
-            <h4 style={{ margin: '0 0 12px 0', color: '#166534' }}>
+            <h4 style={{ margin: '0 0 12px 0', color: isSessionMode ? '#5b21b6' : '#166534' }}>
               🚀 Enviar campaña
             </h4>
-            <p style={{ margin: '0 0 12px 0', fontSize: 14, color: '#166534' }}>
-              Se enviará a <strong>{totalSubscribers} suscriptores</strong> activos
+            <p style={{ margin: '0 0 12px 0', fontSize: 14, color: isSessionMode ? '#5b21b6' : '#166534' }}>
+              {isSessionMode ? (
+                selectedSession
+                  ? (recipientsLoading
+                      ? 'Contando destinatarios...'
+                      : <>Se enviará a <strong>{sessionTargetCount}</strong> comprador{sessionTargetCount === 1 ? '' : 'es'} de la función seleccionada</>)
+                  : 'Seleccioná una función pasada para ver los destinatarios'
+              ) : (
+                <>Se enviará a <strong>{totalSubscribers} suscriptores</strong> activos</>
+              )}
             </p>
             <button
               type="button"
               onClick={handleSendAll}
-              disabled={sending || totalSubscribers === 0}
+              disabled={sending || (isSessionMode ? (!selectedSession || sessionTargetCount === 0 || recipientsLoading) : totalSubscribers === 0)}
               style={{
                 width: '100%',
                 padding: '14px 20px',
-                background: '#16a34a',
+                background: isSessionMode ? '#7c3aed' : '#16a34a',
                 color: 'white',
                 border: 'none',
                 borderRadius: 8,
                 fontSize: 16,
                 fontWeight: 700,
-                cursor: (sending || totalSubscribers === 0) ? 'not-allowed' : 'pointer',
-                opacity: (sending || totalSubscribers === 0) ? 0.7 : 1
+                cursor: 'pointer',
+                opacity: sending ? 0.7 : 1
               }}
             >
-              {sending ? 'Enviando...' : `Enviar a ${totalSubscribers} suscriptores`}
+              {sending ? 'Enviando...' : (
+                isSessionMode
+                  ? `Enviar a ${sessionTargetCount} comprador${sessionTargetCount === 1 ? '' : 'es'}`
+                  : `Enviar a ${totalSubscribers} suscriptores`
+              )}
             </button>
           </div>
         </div>

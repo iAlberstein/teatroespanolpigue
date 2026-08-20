@@ -1,4 +1,5 @@
 import express from 'express';
+import { Op } from 'sequelize';
 import { authenticateToken, requireRole } from '../middleware/auth.js';
 import { sequelize } from '../lib/sequelize.js';
 import nodemailer from 'nodemailer';
@@ -84,6 +85,83 @@ router.get(
   }
 );
 
+// List past sessions (with show title) for targeted mailing
+router.get(
+  '/past-sessions',
+  authenticateToken,
+  requireRole('admin'),
+  async (req, res) => {
+    try {
+      const { sessions: Session, shows: Show } = sequelize.models;
+
+      // Sesiones finalizadas: starts_at anterior a hoy
+      const today = new Date();
+      today.setHours(0, 0, 0, 0);
+
+      const sessions = await Session.findAll({
+        where: {
+          starts_at: { [Op.lt]: today }
+        },
+        include: [{ model: Show, as: 'show', attributes: ['id', 'title'] }],
+        attributes: ['id', 'show_id', 'starts_at', 'ends_at', 'function_name'],
+        order: [['starts_at', 'DESC']],
+        limit: 500
+      });
+
+      const result = sessions.map(s => ({
+        id: s.id,
+        show_id: s.show_id,
+        show_title: s.show?.title || 'Sin título',
+        starts_at: s.starts_at,
+        ends_at: s.ends_at,
+        function_name: s.function_name
+      }));
+
+      return res.json({ sessions: result });
+    } catch (error) {
+      console.error('[MAILING] Error fetching past sessions:', error);
+      return res.status(500).json({ error: 'Error al obtener funciones pasadas' });
+    }
+  }
+);
+
+// Get recipients (users with email) who bought tickets for a given session
+router.get(
+  '/session-recipients',
+  authenticateToken,
+  requireRole('admin'),
+  async (req, res) => {
+    try {
+      const { sessionId } = req.query;
+      if (!sessionId) {
+        return res.status(400).json({ error: 'sessionId es requerido' });
+      }
+
+      // DISTINCT users con email que tengan una venta para la sesión.
+      // Raw query para evitar problemas de GROUP BY con ONLY_FULL_GROUP_BY en MySQL.
+      const [rows] = await sequelize.query(`
+        SELECT DISTINCT
+          u.name,
+          u.email
+        FROM sales AS s
+        INNER JOIN users AS u ON u.id = s.user_id
+        WHERE s.session_id = :sessionId
+          AND u.email IS NOT NULL
+          AND u.email <> ''
+      `, { replacements: { sessionId } });
+
+      const list = rows;
+      return res.json({
+        total: list.length,
+        recipients: list
+      });
+    } catch (error) {
+      console.error('[MAILING] Error fetching session recipients:', error);
+      return res.status(500).json({ error: 'Error al obtener destinatarios' });
+    }
+  }
+);
+
 // Send bulk email to all active subscribers
 router.post(
   '/send',
@@ -91,7 +169,7 @@ router.post(
   requireRole('admin'),
   async (req, res) => {
     try {
-      const { subject, htmlContent, testEmail } = req.body;
+      const { subject, htmlContent, testEmail, sessionId } = req.body;
 
       if (!subject || !htmlContent) {
         return res.status(400).json({ error: 'Asunto y contenido son requeridos' });
@@ -106,8 +184,23 @@ router.post(
 
       // If testEmail is provided, only send to that email
       let recipients;
+      let isSessionMailing = false;
       if (testEmail) {
         recipients = [{ name: 'Test User', email: testEmail }];
+      } else if (sessionId) {
+        // Envío dirigido a compradores de una función específica (raw query)
+        isSessionMailing = true;
+        const [rows] = await sequelize.query(`
+          SELECT DISTINCT
+            u.name,
+            u.email
+          FROM sales AS s
+          INNER JOIN users AS u ON u.id = s.user_id
+          WHERE s.session_id = :sessionId
+            AND u.email IS NOT NULL
+            AND u.email <> ''
+        `, { replacements: { sessionId } });
+        recipients = rows;
       } else {
         recipients = await NewsletterSubscriber.findAll({
           where: { active: true },
@@ -134,10 +227,18 @@ router.post(
             .replace(/\{\{nombre\}\}/gi, recipient.name || 'Amigo/a')
             .replace(/\{\{email\}\}/gi, recipient.email);
 
-          // Add unsubscribe footer
+          // Add footer (unsubscribe solo aplica a newsletter, no a envíos por función)
           const baseUrl = process.env.FRONTEND_URL || 'http://localhost:5173';
           const unsubscribeUrl = `${baseUrl}/unsubscribe?email=${encodeURIComponent(recipient.email)}`;
-          
+          const footerHtml = isSessionMailing
+            ? `<div style="margin-top: 32px; padding-top: 16px; border-top: 1px solid #e5e7eb; text-align: center; font-size: 12px; color: #6b7280;">
+                <p>Recibiste este email porque adquiriste entradas para esta función en el Teatro Español Pigüé.</p>
+              </div>`
+            : `<div style="margin-top: 32px; padding-top: 16px; border-top: 1px solid #e5e7eb; text-align: center; font-size: 12px; color: #6b7280;">
+                <p>Recibiste este email porque estás suscripto al newsletter del Teatro Español Pigüé.</p>
+                <p><a href="${unsubscribeUrl}" style="color: #6b7280;">Desuscribirse</a></p>
+              </div>`;
+
           const rawHtml = `
             <!DOCTYPE html>
             <html>
@@ -147,10 +248,7 @@ router.post(
             </head>
             <body style="margin: 0; padding: 0; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;">
               ${personalizedHtml}
-              <div style="margin-top: 32px; padding-top: 16px; border-top: 1px solid #e5e7eb; text-align: center; font-size: 12px; color: #6b7280;">
-                <p>Recibiste este email porque estás suscripto al newsletter del Teatro Español Pigüé.</p>
-                <p><a href="${unsubscribeUrl}" style="color: #6b7280;">Desuscribirse</a></p>
-              </div>
+              ${footerHtml}
             </body>
             </html>
           `;

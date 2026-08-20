@@ -11,6 +11,14 @@ import { createSipagoOrder, getSipagoOrder } from '../lib/sipago.js';
 
 const packFinalizationPromises = new Map();
 
+// Cuánto extendemos internamente la reserva (desde "ahora") mientras el usuario paga en Sipago,
+// y con cuántos minutos le indicamos a Sipago que rechace el pago si se pasó ese tiempo.
+// SIPAGO_CHECKOUT_EXPIRE_MINUTES debe ser SIEMPRE menor a RESERVATION_PAYMENT_EXTENSION_MINUTES
+// para garantizar que Sipago rechace el pago antes de que nuestra reserva expire, evitando
+// que se le cobre a un cliente por una reserva que el sistema ya liberó.
+const RESERVATION_PAYMENT_EXTENSION_MINUTES = Number(process.env.SIPAGO_RESERVATION_EXTENSION_MINUTES || 5);
+const SIPAGO_CHECKOUT_EXPIRE_MINUTES = Number(process.env.SIPAGO_CHECKOUT_EXPIRE_MINUTES || 4);
+
 function getSipagoOrderStatus(order) {
   return (order?.data?.order?.status || order?.data?.attributes?.status || order?.attributes?.status || '').toString().toUpperCase();
 }
@@ -247,8 +255,11 @@ router.post('/sipago-intent', optionalAuth, async (req, res) => {
     const reservation = await Reservation.findByPk(reservation_id);
     if (!reservation) return res.status(404).json({ error: 'reservation not found' });
     if (reservation.status !== 'active') return res.status(409).json({ error: 'reservation_not_active' });
-    // Extender la reserva mientras el usuario está activamente pagando en SiPago (+5 min)
-    await reservation.update({ expires_at: dayjs(reservation.expires_at).add(5, 'minute').toDate() });
+    // Extender la reserva mientras el usuario está activamente pagando en SiPago.
+    // Se extiende desde "ahora" (no sobre el expires_at vigente) para garantizar siempre
+    // el margen frente a SIPAGO_CHECKOUT_EXPIRE_MINUTES, sin depender de cuánto tiempo le
+    // quedaba a la reserva en el momento de iniciar el pago.
+    await reservation.update({ expires_at: dayjs().add(RESERVATION_PAYMENT_EXTENSION_MINUTES, 'minute').toDate() });
     // Calcular total a partir de los items + descuento + cargo por servicio
     const items = Array.isArray(reservation.items) ? reservation.items : [];
     let subtotal = items.reduce((sum, it) => {
@@ -331,7 +342,7 @@ router.post('/sipago-intent', optionalAuth, async (req, res) => {
     if (process.env.SIPAGO_WEBHOOK_SECRET) hookParams.set('secret', process.env.SIPAGO_WEBHOOK_SECRET);
     const webhookUrl = `${BASE_URL}/api/payments/sipago-webhook?${hookParams.toString()}`;
     console.log('[SIPAGO_INTENT] Webhook URL:', webhookUrl);
-    const order = await createSipagoOrder({ total: totalCentavos, redirect_urls, items: sipagoItems, webhookUrl });
+    const order = await createSipagoOrder({ total: totalCentavos, redirect_urls, items: sipagoItems, webhookUrl, expireLimitMinutes: SIPAGO_CHECKOUT_EXPIRE_MINUTES });
     const checkoutUrl = order?.data?.attributes?.links?.checkout || order?.data?.links?.checkout;
     if (!checkoutUrl) return res.status(500).json({ error: 'sipago_checkout_missing', debug: order });
     return res.json({ checkout_url: checkoutUrl, order });
@@ -495,7 +506,7 @@ router.post('/sipago-pack-intent', optionalAuth, async (req, res) => {
     const webhookUrl = `${BASE_URL}/api/payments/sipago-pack-webhook?${hookParams.toString()}`;
     console.log('[SIPAGO_PACK_INTENT] Webhook URL:', webhookUrl);
 
-    const order = await createSipagoOrder({ total: totalCentavos, redirect_urls, items: sipagoItems, webhookUrl });
+    const order = await createSipagoOrder({ total: totalCentavos, redirect_urls, items: sipagoItems, webhookUrl, expireLimitMinutes: 14 });
     const checkoutUrl = order?.data?.attributes?.links?.checkout || order?.data?.links?.checkout;
     if (!checkoutUrl) {
       await packSale.update({ payment_status: 'rejected' });
@@ -594,15 +605,19 @@ router.post('/sipago-webhook', async (req, res) => {
       }
     }
 
-    // Re-fetch reservation fresh to catch race condition with /sipago-confirm
-    const freshReservation = await Reservation.findByPk(reservationId);
-    if (freshReservation?.sale_id) {
-      console.log('[SIPAGO_WEBHOOK] /sipago-confirm already processed this reservation, sale_id:', freshReservation.sale_id);
-      return res.status(200).json({ ok: true, already_confirmed: true, sale_id: freshReservation.sale_id });
-    }
-
+    // PROTECCIÓN ANTI-RACE-CONDITION: reclamar la reserva de forma atómica.
+    // Solo un request (este webhook o /sipago-confirm) puede ganar este UPDATE
+    // condicional; el resto debe abortar sin crear una venta ni mandar un mail duplicados.
     const tempSaleId = crypto.randomUUID();
-    await reservation.update({ status: 'confirmed', sale_id: tempSaleId });
+    const [claimedCount] = await Reservation.update(
+      { status: 'confirmed', sale_id: tempSaleId },
+      { where: { id: reservationId, status: 'active', sale_id: null } }
+    );
+    if (claimedCount === 0) {
+      const winner = await Reservation.findByPk(reservationId);
+      console.log('[SIPAGO_WEBHOOK] Reserva ya reclamada por otro request (/sipago-confirm u otra llamada), evitando duplicado. sale_id:', winner?.sale_id);
+      return res.status(200).json({ ok: true, already_confirmed: true, sale_id: winner?.sale_id || null });
+    }
 
     // items ya fue declarado arriba para la validación
     const { generateContainerQR } = await import('../lib/qrGenerator.js');
@@ -618,8 +633,7 @@ router.post('/sipago-webhook', async (req, res) => {
     let webhookServiceItems = [];
     try {
       // Try to get service_items from reservation first (SiPago strips them from query params)
-      // Use freshReservation for service_items (re-fetched after race condition check)
-      const rawServiceItems = freshReservation?.service_items ?? reservation.service_items;
+      const rawServiceItems = reservation.service_items;
       console.log('[SIPAGO_WEBHOOK] service_items type:', typeof rawServiceItems, 'value:', rawServiceItems);
       if (rawServiceItems) {
         if (typeof rawServiceItems === 'string') {
@@ -929,7 +943,7 @@ router.post('/sipago-webhook', async (req, res) => {
       console.error('[SIPAGO_WEBHOOK] Email error:', emailErr);
     }
 
-    return res.status(200).json({ ok: true, sale_id: reservation.sale_id });
+    return res.status(200).json({ ok: true, sale_id: sale.id });
   } catch (e) {
     console.error('[SIPAGO_WEBHOOK] unexpected error', e);
     return res.status(200).json({ ok: true });
@@ -1650,13 +1664,34 @@ router.post('/sipago-confirm', optionalAuth, async (req, res) => {
       }
     }
     
-    // Idempotency by reservation status
-    if (reservation.status === 'confirmed') {
-      console.log('[SIPAGO_CONFIRM] ✓ Already confirmed by webhook, skipping email');
-      return res.json({ ok: true, already_confirmed: true });
+    // Idempotency by reservation status: si el webhook (u otra llamada previa a este
+    // mismo endpoint) ya confirmó esta reserva y ya tiene tickets, no hacer nada más.
+    if (reservation.status === 'confirmed' && reservation.sale_id) {
+      const existingTicketsCount = await Ticket.count({ where: { sale_id: reservation.sale_id } });
+      if (existingTicketsCount > 0) {
+        console.log('[SIPAGO_CONFIRM] ✓ Already confirmed with tickets, skipping duplicate email');
+        return res.json({ ok: true, already_confirmed: true, sale_id: reservation.sale_id });
+      }
+      console.log('[SIPAGO_CONFIRM] Sale exists without tickets (intento previo falló antes de crearlos). Resumiendo venta:', reservation.sale_id);
+    } else {
+      // PROTECCIÓN ANTI-RACE-CONDITION: reclamar la reserva de forma atómica.
+      // Solo un request (este endpoint o el webhook de Sipago) puede ganar este UPDATE
+      // condicional; el resto debe abortar sin crear una venta ni mandar un mail duplicados.
+      const claimedSaleId = crypto.randomUUID();
+      const [claimedCount] = await Reservation.update(
+        { status: 'confirmed', sale_id: claimedSaleId },
+        { where: { id: reservation.id, status: 'active', sale_id: null } }
+      );
+      if (claimedCount === 0) {
+        const winner = await Reservation.findByPk(reservation.id);
+        console.log('[SIPAGO_CONFIRM] Reserva ya reclamada por otro request (webhook u otra llamada), evitando duplicado.');
+        return res.json({ ok: true, already_confirmed: true, sale_id: winner?.sale_id || null });
+      }
+      reservation.set('sale_id', claimedSaleId);
+      reservation.set('status', 'confirmed');
     }
 
-    console.log('[SIPAGO_CONFIRM] Creating sale and tickets...');
+    console.log('[SIPAGO_CONFIRM] Creating sale and tickets for sale_id:', reservation.sale_id);
     
     // Determine effective user to link sale/tickets
     // Priority: JWT user > reservation.user_id > header > body
@@ -1671,9 +1706,8 @@ router.post('/sipago-confirm', optionalAuth, async (req, res) => {
     const items = Array.isArray(reservation.items) ? reservation.items : [];
     console.log('[SIPAGO_CONFIRM] Items:', items.length);
     
-    const tempSaleId = crypto.randomUUID();
     const { generateContainerQR } = await import('../lib/qrGenerator.js');
-    const containerQR = await generateContainerQR(tempSaleId, items);
+    const containerQR = await generateContainerQR(reservation.sale_id, items);
     console.log('[SIPAGO_CONFIRM] Container QR generated, capacity:', containerQR.total_capacity);
 
     // Safety net: if no customer data but user_id exists, look up user profile
@@ -1734,37 +1768,12 @@ router.post('/sipago-confirm', optionalAuth, async (req, res) => {
     const confirmSubtotalAfterDiscount = confirmBaseSubtotal - confirmDiscountAmount;
     const confirmServicesSubtotal = Array.isArray(service_items) ? service_items.reduce((sum, s) => sum + (Number(s.price || 0) * Number(s.quantity || 1)), 0) : 0;
 
-    // Check if sale already exists (webhook may have created it)
-    // Use reservation.sale_id first (set by webhook), fallback to tempSaleId match
-    let existingSale = null;
-    if (reservation.sale_id) {
-      existingSale = await Sale.findByPk(reservation.sale_id);
-      console.log('[SIPAGO_CONFIRM] Found sale via reservation.sale_id:', existingSale?.id);
-    }
-    
-    let sale;
-    if (existingSale) {
-      // Check if sale has tickets (webhook may have failed after creating sale)
-      const { tickets: Ticket } = sequelize.models;
-      const existingTickets = await Ticket.findAll({
-        where: { sale_id: existingSale.id }
-      });
-      console.log('[SIPAGO_CONFIRM] Sale already exists from webhook. Tickets count:', existingTickets.length);
-
-      if (existingTickets.length > 0) {
-        // Webhook already processed everything - skip email (webhook sends it)
-        console.log('[SIPAGO_CONFIRM] Sale already has tickets, webhook already processed. Skipping.');
-        await reservation.update({ status: 'confirmed', sale_id: existingSale.id });
-        return res.json({ ok: true, already_confirmed: true, sale_id: existingSale.id });
-      }
-      
-      // Sale exists but no tickets - webhook failed after creating sale
-      console.log('[SIPAGO_CONFIRM] Sale exists but has no tickets, webhook failed. Using existing sale');
-      sale = existingSale;
-    } else {
-      // Sale doesn't exist, create it
+    // A esta altura ya somos dueños exclusivos de reservation.sale_id (recién reclamado
+    // arriba, o retomado porque quedó sin tickets de un intento previo fallido).
+    let sale = await Sale.findByPk(reservation.sale_id);
+    if (!sale) {
       sale = await Sale.create({
-        id: tempSaleId,
+        id: reservation.sale_id,
         session_id: reservation.session_id,
         user_id: finalUserId,
         cashier_id: null,
@@ -1784,6 +1793,8 @@ router.post('/sipago-confirm', optionalAuth, async (req, res) => {
         service_items: Array.isArray(service_items) && service_items.length > 0 ? service_items : null,
       });
       console.log('[SIPAGO_CONFIRM] ✅ Sale created:', sale.id);
+    } else {
+      console.log('[SIPAGO_CONFIRM] Reutilizando venta existente sin tickets (reintento tras fallo previo):', sale.id);
     }
 
     // Increment discount used_count by number of discounted tickets
@@ -1839,6 +1850,7 @@ router.post('/sipago-confirm', optionalAuth, async (req, res) => {
         createdTickets.push(t);
       } else if (it.type === 'pullman' && it.quantity > 0) {
         const qty = Number(it.quantity) || 0;
+        const ticketPrice = Number(it.unit_price || it.price || 0);
         for (let i = 0; i < qty; i++) {
           const t = await Ticket.create({
             session_id: reservation.session_id,
@@ -1847,7 +1859,7 @@ router.post('/sipago-confirm', optionalAuth, async (req, res) => {
             seat_code: null,
             section: 'pullman',
             type: 'pullman',
-            price: Number(it.price || 0),
+            price: ticketPrice,
             qr_code: null,
             status: 'sold',
           });
@@ -1857,7 +1869,9 @@ router.post('/sipago-confirm', optionalAuth, async (req, res) => {
         }
       } else if (it.type === 'general' && it.quantity > 0) {
         // General admission tickets (for el_tablado, las_gemelas)
+        // El precio para este tipo viene en `unit_price` (ver reservations.js), no en `price`.
         const qty = Number(it.quantity) || 0;
+        const ticketPrice = Number(it.unit_price || it.price || 0);
         for (let i = 0; i < qty; i++) {
           const t = await Ticket.create({
             session_id: reservation.session_id,
@@ -1866,7 +1880,7 @@ router.post('/sipago-confirm', optionalAuth, async (req, res) => {
             seat_code: null,
             section: 'general',
             type: 'general',
-            price: Number(it.price || 0),
+            price: ticketPrice,
             qr_code: null,
             status: 'sold',
             capacity: 1,
@@ -1901,12 +1915,12 @@ router.post('/sipago-confirm', optionalAuth, async (req, res) => {
     }
     console.log('[SIPAGO_CONFIRM] ✅ Created', createdTickets.length, 'tickets');
 
-    // Update reservation as confirmed and persist user if was null
-    console.log('[SIPAGO_CONFIRM] Updating reservation status to confirmed...');
-    const patch = { status: 'confirmed', sale_id: sale.id };
-    if (!reservation.user_id && effUserId) patch.user_id = effUserId;
-    await reservation.update(patch);
-    console.log('[SIPAGO_CONFIRM] ✅ Reservation confirmed');
+    // status/sale_id ya quedaron confirmados por el UPDATE atómico de más arriba;
+    // solo falta persistir el user_id si la reserva no lo tenía.
+    if (!reservation.user_id && effUserId) {
+      await reservation.update({ user_id: effUserId });
+      console.log('[SIPAGO_CONFIRM] ✅ user_id persistido en la reserva');
+    }
 
     try {
       const io = req.app.get('io');
