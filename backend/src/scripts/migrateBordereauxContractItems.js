@@ -1,7 +1,7 @@
 import dotenv from 'dotenv';
 dotenv.config();
 
-import { sequelize } from '../lib/sequelize.js';
+import { sequelize, initSequelize } from '../lib/sequelize.js';
 import registerModels from '../models/registerModels.js';
 
 /**
@@ -14,7 +14,9 @@ import registerModels from '../models/registerModels.js';
  */
 async function migrateBordereauxContractItems() {
   try {
+    initSequelize();
     registerModels(sequelize);
+    await sequelize.authenticate();
     const { bordereaux: Bordereaux } = sequelize.models;
 
     const pending = await Bordereaux.findAll({
