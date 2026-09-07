@@ -159,7 +159,7 @@ const BoxOfficeSessionPicker = ({
           <div style={{ marginBottom: 16, padding: 14, background: '#f0fdf4', border: '1px solid #86efac', borderRadius: 10 }}>
             <div style={{ fontWeight: 700, color: '#166534', marginBottom: 4 }}>Venta de pack disponible</div>
             <div style={{ fontSize: 13, color: '#166534', marginBottom: 10 }}>Elegí varias funciones y aplicá automáticamente el precio especial del pack.</div>
-            <button onClick={onStartPack} style={{ padding: '9px 14px', background: '#16a34a', color: '#fff', border: 'none', borderRadius: 6, cursor: 'pointer', fontWeight: 600 }}>Vender pack</button>
+            <button onClick={onStartPack} style={{ padding: '9px 14px', background: '#000000', color: '#fff', border: 'none', borderRadius: 6, cursor: 'pointer', fontWeight: 600 }}>Vender pack</button>
           </div>
         )}
 

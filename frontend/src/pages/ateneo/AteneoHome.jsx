@@ -43,7 +43,8 @@ export default function AteneoHome() {
   const [authLoading, setAuthLoading] = useState(false);
   const pendingInscripcionRef = useRef(null);
   const [esMenor, setEsMenor] = useState(false);
-  const [menorForm, setMenorForm] = useState({ nombre: '', apellido: '', dni: '', fecha_nacimiento: '' });
+  const [menorForm, setMenorForm] = useState({ nombre: '', apellido: '', dni: '', fecha_nacimiento: '', nombre_tutor: '', telefono_tutor: '' });
+  const [guestForm, setGuestForm] = useState({ name: '', email: '', phone: '', dni: '' });
 
   useEffect(() => {
     loadClases();
@@ -83,13 +84,22 @@ export default function AteneoHome() {
         body.apellido_menor = menorForm.apellido;
         body.dni_menor = menorForm.dni;
         body.fecha_nacimiento_menor = menorForm.fecha_nacimiento;
+        body.nombre_tutor = menorForm.nombre_tutor;
+        body.telefono_tutor = menorForm.telefono_tutor;
       }
-      const res = await apiAuthFetch('/api/ateneo/inscripciones', {
-        method: 'POST', body: JSON.stringify(body)
-      }, token);
+      if (!isAuthenticated) {
+        body.guest = guestForm;
+      }
+      const res = isAuthenticated
+        ? await apiAuthFetch('/api/ateneo/inscripciones', { method: 'POST', body: JSON.stringify(body) }, token)
+        : await apiFetch('/api/ateneo/inscripciones', { method: 'POST', body: JSON.stringify(body) });
       const data = await res.json();
       if (res.ok) {
-        setInscripcionMsg({ id: claseId, msg: 'Inscripcion registrada! Queda pendiente de confirmacion.', ok: true });
+        if (data.checkout_url) {
+          window.location.href = data.checkout_url;
+          return;
+        }
+        setInscripcionMsg({ id: claseId, msg: data.mensaje || 'Inscripcion registrada! Queda pendiente de confirmacion.', ok: true });
         loadClases();
       } else {
         setInscripcionMsg({ id: claseId, msg: data.error || 'Error al inscribirse', ok: false });
@@ -135,7 +145,7 @@ export default function AteneoHome() {
         <div style={{ display: 'flex', gap: theme.spacing.md, justifyContent: 'center', flexWrap: 'wrap' }}>
           <Link to="/ateneo/sobre" style={{
             padding: `${theme.spacing.sm} ${theme.spacing.xl}`,
-            background: '#7c3aed',
+            background: '#000000',
             color: '#fff',
             borderRadius: theme.borderRadius.md,
             textDecoration: 'none',
@@ -160,7 +170,7 @@ export default function AteneoHome() {
           {isAuthenticated && hasRole('docente_ateneo') && (
             <Link to="/ateneo/docente" style={{
               padding: `${theme.spacing.sm} ${theme.spacing.xl}`,
-              background: '#059669',
+              background: '#000000',
               color: '#fff',
               borderRadius: theme.borderRadius.md,
               textDecoration: 'none',
@@ -414,7 +424,7 @@ export default function AteneoHome() {
                     {inscripcionMsg.ok && (
                       <Link to="/ateneo/alumno?tab=pagos" style={{
                         display: 'block', marginTop: 8, padding: '8px 16px',
-                        background: '#7c3aed', color: '#fff', borderRadius: 6,
+                        background: '#000000', color: '#fff', borderRadius: 6,
                         textDecoration: 'none', fontWeight: 600, fontSize: 13, textAlign: 'center'
                       }}>
                         Completar pagos
@@ -460,7 +470,7 @@ export default function AteneoHome() {
                 </p>
               )}
               <button onClick={() => setShowDocenteModal(null)} style={{
-                marginTop: 16, padding: '8px 20px', background: '#7c3aed', color: '#fff',
+                marginTop: 16, padding: '8px 20px', background: '#000000', color: '#fff',
                 border: 'none', borderRadius: 6, cursor: 'pointer', fontWeight: 600, fontSize: 13
               }}>Cerrar</button>
             </div>
@@ -475,7 +485,7 @@ export default function AteneoHome() {
           background: 'rgba(0,0,0,0.5)', display: 'flex', alignItems: 'flex-start',
           justifyContent: 'center', zIndex: 1000, padding: 16,
           overflowY: 'auto', WebkitOverflowScrolling: 'touch'
-        }} onClick={() => { setConfirmInscripcionModal(null); setEsMenor(false); setMenorForm({ nombre: '', apellido: '', dni: '', fecha_nacimiento: '' }); }}>
+        }} onClick={() => { setConfirmInscripcionModal(null); setEsMenor(false); setMenorForm({ nombre: '', apellido: '', dni: '', fecha_nacimiento: '', nombre_tutor: '', telefono_tutor: '' }); setGuestForm({ name: '', email: '', phone: '', dni: '' }); }}>
           <div style={{
             background: '#fff', borderRadius: 12, padding: 24, maxWidth: 480, width: '100%',
             boxShadow: '0 20px 60px rgba(0,0,0,0.3)', margin: 'auto 0'
@@ -484,20 +494,34 @@ export default function AteneoHome() {
             <p style={{ fontSize: 13, color: '#7c3aed', fontWeight: 500, marginBottom: 16 }}>
               {confirmInscripcionModal.nombre}
             </p>
-            <div style={{
-              background: '#f5f3ff', border: '1px solid #ede9fe', borderRadius: 8,
-              padding: 16, marginBottom: 20
-            }}>
-              <p style={{ margin: '0 0 10px', fontSize: 14, color: '#374151', lineHeight: 1.6 }}>
-                Al inscribirte, tu solicitud quedara <strong>pendiente de confirmacion</strong> por parte del Ateneo.
-              </p>
-              <p style={{ margin: '0 0 10px', fontSize: 14, color: '#374151', lineHeight: 1.6 }}>
-                Una vez confirmada tu inscripcion, se generaran automaticamente los pagos correspondientes a la <strong>matricula</strong> y la <strong>primera cuota mensual</strong>.
-              </p>
-              <p style={{ margin: 0, fontSize: 14, color: '#374151', lineHeight: 1.6 }}>
-                Podras consultar el estado de tu inscripcion y realizar los pagos desde tu <strong>panel de alumno</strong>.
-              </p>
-            </div>
+            {confirmInscripcionModal.taller_corto ? (
+              <div style={{
+                background: '#f5f3ff', border: '1px solid #ede9fe', borderRadius: 8,
+                padding: 16, marginBottom: 20
+              }}>
+                <p style={{ margin: '0 0 10px', fontSize: 14, color: '#374151', lineHeight: 1.6 }}>
+                  Al confirmar seras redirigido al checkout de <strong>SiPago</strong> para abonar el taller.
+                </p>
+                <p style={{ margin: 0, fontSize: 14, color: '#374151', lineHeight: 1.6 }}>
+                  Monto a abonar: <strong>${Number(confirmInscripcionModal.costo_cuota || 0).toLocaleString('es-AR')}</strong>
+                </p>
+              </div>
+            ) : (
+              <div style={{
+                background: '#f5f3ff', border: '1px solid #ede9fe', borderRadius: 8,
+                padding: 16, marginBottom: 20
+              }}>
+                <p style={{ margin: '0 0 10px', fontSize: 14, color: '#374151', lineHeight: 1.6 }}>
+                  Al inscribirte, tu solicitud quedara <strong>pendiente de confirmacion</strong> por parte del Ateneo.
+                </p>
+                <p style={{ margin: '0 0 10px', fontSize: 14, color: '#374151', lineHeight: 1.6 }}>
+                  Una vez confirmada tu inscripcion, se generaran automaticamente los pagos correspondientes a la <strong>matricula</strong> y la <strong>primera cuota mensual</strong>.
+                </p>
+                <p style={{ margin: 0, fontSize: 14, color: '#374151', lineHeight: 1.6 }}>
+                  Podras consultar el estado de tu inscripcion y realizar los pagos desde tu <strong>panel de alumno</strong>.
+                </p>
+              </div>
+            )}
 
             {/* Pregunta menor de edad */}
             <div style={{
@@ -505,7 +529,7 @@ export default function AteneoHome() {
               padding: 16, marginBottom: 20
             }}>
               <label style={{ display: 'flex', alignItems: 'center', gap: 10, cursor: 'pointer', fontSize: 14, color: '#92400e', fontWeight: 500 }}>
-                <input type="checkbox" checked={esMenor} onChange={e => { setEsMenor(e.target.checked); if (!e.target.checked) setMenorForm({ nombre: '', apellido: '', dni: '', fecha_nacimiento: '' }); }}
+                <input type="checkbox" checked={esMenor} onChange={e => { setEsMenor(e.target.checked); if (!e.target.checked) setMenorForm({ nombre: '', apellido: '', dni: '', fecha_nacimiento: '', nombre_tutor: '', telefono_tutor: '' }); }}
                   style={{ width: 18, height: 18, accentColor: '#7c3aed', cursor: 'pointer' }} />
                 La inscripcion es para un/a menor de edad
               </label>
@@ -531,6 +555,16 @@ export default function AteneoHome() {
                     <DateInputMask value={menorForm.fecha_nacimiento} onChange={e => setMenorForm(f => ({...f, fecha_nacimiento: e.target.value}))}
                       style={{ width: '100%', padding: '7px 10px', border: '1px solid #d1d5db', borderRadius: 6, fontSize: 13, boxSizing: 'border-box' }} />
                   </div>
+                  <div style={{ gridColumn: '1 / -1' }}>
+                    <label style={{ display: 'block', fontSize: 11, fontWeight: 500, color: '#374151', marginBottom: 3 }}>Nombre y apellido de padre/madre/tutor <span style={{ color: '#dc2626' }}>*</span></label>
+                    <input type="text" value={menorForm.nombre_tutor} onChange={e => setMenorForm(f => ({...f, nombre_tutor: e.target.value}))}
+                      placeholder="Nombre y apellido" style={{ width: '100%', padding: '7px 10px', border: '1px solid #d1d5db', borderRadius: 6, fontSize: 13, boxSizing: 'border-box' }} />
+                  </div>
+                  <div style={{ gridColumn: '1 / -1' }}>
+                    <label style={{ display: 'block', fontSize: 11, fontWeight: 500, color: '#374151', marginBottom: 3 }}>Telefono de padre/madre/tutor <span style={{ color: '#dc2626' }}>*</span></label>
+                    <input type="tel" value={menorForm.telefono_tutor} onChange={e => setMenorForm(f => ({...f, telefono_tutor: e.target.value}))}
+                      placeholder="Ej: 2923456789" style={{ width: '100%', padding: '7px 10px', border: '1px solid #d1d5db', borderRadius: 6, fontSize: 13, boxSizing: 'border-box' }} />
+                  </div>
                   <div style={{ gridColumn: '1 / -1', fontSize: 11, color: '#6b7280', marginTop: 2 }}>
                     Estos datos figuraran en el perfil del alumno inscripto.
                   </div>
@@ -538,20 +572,56 @@ export default function AteneoHome() {
               )}
             </div>
 
+            {!isAuthenticated && confirmInscripcionModal.taller_corto && (
+              <div style={{
+                background: '#eff6ff', border: '1px solid #dbeafe', borderRadius: 8,
+                padding: 16, marginBottom: 20
+              }}>
+                <h4 style={{ margin: '0 0 12px', fontSize: 14, color: '#1e40af', fontWeight: 600 }}>Tus datos de contacto</h4>
+                <div style={{ display: 'grid', gridTemplateColumns: isMobile ? '1fr' : '1fr 1fr', gap: 10 }}>
+                  <div style={{ gridColumn: '1 / -1' }}>
+                    <label style={{ display: 'block', fontSize: 11, fontWeight: 500, color: '#374151', marginBottom: 3 }}>Nombre completo <span style={{ color: '#dc2626' }}>*</span></label>
+                    <input type="text" value={guestForm.name} onChange={e => setGuestForm(f => ({...f, name: e.target.value}))}
+                      placeholder="Tu nombre" style={{ width: '100%', padding: '7px 10px', border: '1px solid #d1d5db', borderRadius: 6, fontSize: 13, boxSizing: 'border-box' }} />
+                  </div>
+                  <div style={{ gridColumn: '1 / -1' }}>
+                    <label style={{ display: 'block', fontSize: 11, fontWeight: 500, color: '#374151', marginBottom: 3 }}>Email <span style={{ color: '#dc2626' }}>*</span></label>
+                    <input type="email" value={guestForm.email} onChange={e => setGuestForm(f => ({...f, email: e.target.value}))}
+                      placeholder="tu@email.com" style={{ width: '100%', padding: '7px 10px', border: '1px solid #d1d5db', borderRadius: 6, fontSize: 13, boxSizing: 'border-box' }} />
+                  </div>
+                  <div>
+                    <label style={{ display: 'block', fontSize: 11, fontWeight: 500, color: '#374151', marginBottom: 3 }}>Telefono</label>
+                    <input type="tel" value={guestForm.phone} onChange={e => setGuestForm(f => ({...f, phone: e.target.value}))}
+                      placeholder="Ej: 2923456789" style={{ width: '100%', padding: '7px 10px', border: '1px solid #d1d5db', borderRadius: 6, fontSize: 13, boxSizing: 'border-box' }} />
+                  </div>
+                  <div>
+                    <label style={{ display: 'block', fontSize: 11, fontWeight: 500, color: '#374151', marginBottom: 3 }}>DNI</label>
+                    <input type="text" value={guestForm.dni} onChange={e => setGuestForm(f => ({...f, dni: e.target.value.replace(/\D/g, '')}))}
+                      placeholder="Ej: 12345678" maxLength={8} style={{ width: '100%', padding: '7px 10px', border: '1px solid #d1d5db', borderRadius: 6, fontSize: 13, boxSizing: 'border-box' }} />
+                  </div>
+                </div>
+                <p style={{ margin: '10px 0 0', fontSize: 11, color: '#6b7280' }}>No es necesario crear una contraseña. Te contactaremos por email.</p>
+              </div>
+            )}
+
             <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8 }}>
-              <button onClick={() => { setConfirmInscripcionModal(null); setEsMenor(false); setMenorForm({ nombre: '', apellido: '', dni: '', fecha_nacimiento: '' }); }} style={{
+              <button onClick={() => { setConfirmInscripcionModal(null); setEsMenor(false); setMenorForm({ nombre: '', apellido: '', dni: '', fecha_nacimiento: '', nombre_tutor: '', telefono_tutor: '' }); setGuestForm({ name: '', email: '', phone: '', dni: '' }); }} style={{
                 padding: '8px 16px', background: '#f3f4f6', color: '#374151',
                 border: 'none', borderRadius: 6, cursor: 'pointer', fontWeight: 500, fontSize: 13
               }}>Cancelar</button>
               <button
                 onClick={() => {
-                  if (esMenor && (!menorForm.nombre.trim() || !menorForm.apellido.trim() || !menorForm.dni.trim() || !menorForm.fecha_nacimiento)) {
-                    alert('Completa todos los datos del menor para continuar.');
+                  if (esMenor && (!menorForm.nombre.trim() || !menorForm.apellido.trim() || !menorForm.dni.trim() || !menorForm.fecha_nacimiento || !menorForm.nombre_tutor.trim() || !menorForm.telefono_tutor.trim())) {
+                    alert('Completa todos los datos del menor y del tutor para continuar.');
+                    return;
+                  }
+                  if (!isAuthenticated && confirmInscripcionModal.taller_corto && (!guestForm.name.trim() || !guestForm.email.trim())) {
+                    alert('Completa tu nombre y email para continuar.');
                     return;
                   }
                   const claseId = confirmInscripcionModal.id;
                   setConfirmInscripcionModal(null);
-                  if (!isAuthenticated) {
+                  if (!isAuthenticated && !confirmInscripcionModal.taller_corto) {
                     pendingInscripcionRef.current = claseId;
                     setAuthModal({ claseId, mode: 'login' });
                     setAuthForm({ email: '', password: '', confirmPassword: '', name: '', phone: '', dni: '', provincia: '', localidad: '' });
@@ -562,10 +632,10 @@ export default function AteneoHome() {
                 }}
                 disabled={inscribiendo === confirmInscripcionModal.id}
                 style={{
-                  padding: '8px 16px', background: '#7c3aed', color: '#fff',
+                  padding: '8px 16px', background: '#000000', color: '#fff',
                   border: 'none', borderRadius: 6, cursor: 'pointer', fontWeight: 600, fontSize: 13
                 }}
-              >Confirmar mi inscripcion</button>
+              >{confirmInscripcionModal.taller_corto ? 'Confirmar y abonar' : 'Confirmar mi inscripcion'}</button>
             </div>
           </div>
         </div>
@@ -684,7 +754,7 @@ export default function AteneoHome() {
                   border: 'none', borderRadius: 6, cursor: 'pointer', fontWeight: 500, fontSize: 13
                 }}>Cancelar</button>
                 <button type="submit" disabled={authLoading} style={{
-                  padding: '8px 16px', background: '#7c3aed', color: '#fff',
+                  padding: '8px 16px', background: '#000000', color: '#fff',
                   border: 'none', borderRadius: 6, cursor: 'pointer', fontWeight: 600, fontSize: 13,
                   opacity: authLoading ? 0.6 : 1
                 }}>{authLoading ? 'Procesando...' : (authModal.mode === 'login' ? 'Iniciar sesion' : 'Registrarme')}</button>

@@ -390,7 +390,7 @@ function ClasesTab({ token }) {
                   <label style={{...labelStyle, marginBottom: 0, fontWeight: 600}}>
                     {form.taller_corto ? 'Fechas del taller *' : 'Horarios *'}
                   </label>
-                  <button type="button" onClick={addHorario} style={{...btnSmall, background: '#059669'}}>
+                  <button type="button" onClick={addHorario} style={{...btnSmall, background: '#000000'}}>
                     + Agregar {form.taller_corto ? 'fecha' : 'dia'}
                   </button>
                 </div>
@@ -1068,7 +1068,7 @@ function AlumnosTab({ token }) {
           {/* Inscripciones + Cuotas */}
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 10 }}>
             <h4 style={{ margin: 0, fontSize: 14 }}>Inscripciones ({detailAlumno.inscripciones?.length || 0})</h4>
-            <button onClick={() => { setShowInscribirModal(true); setInscribirClaseId(''); setError(''); }} style={{...btnSmall, background: '#059669'}}>
+            <button onClick={() => { setShowInscribirModal(true); setInscribirClaseId(''); setError(''); }} style={{...btnSmall, background: '#000000'}}>
               + Inscribir en clase
             </button>
           </div>
@@ -1512,8 +1512,8 @@ function AlumnosTab({ token }) {
               <div style={{ fontSize: 12, color: '#6b7280', marginBottom: 2 }}>{a.usuario?.email || a.user?.email || '-'}</div>
               <div style={{ fontSize: 12, color: '#9ca3af', marginBottom: 6 }}>DNI: {a.dni || '-'} · Clases: {a.clases_activas || 0}</div>
               <div style={{ display: 'flex', gap: 6 }}>
-                <button onClick={() => handleOpenDetail(a)} style={{...btnSmall, background: '#6366f1', flex: 1}}>Ver</button>
-                <button onClick={() => { setShowEstadoModal(a); setEstadoForm({ estado: a.estado_academico || 'pendiente', motivo: '' }); }} style={{...btnSmall, background: '#d97706', flex: 1}}>Estado</button>
+                <button onClick={() => handleOpenDetail(a)} style={{...btnSmall, background: '#000000', flex: 1}}>Ver</button>
+                <button onClick={() => { setShowEstadoModal(a); setEstadoForm({ estado: a.estado_academico || 'pendiente', motivo: '' }); }} style={{...btnSmall, background: '#000000', flex: 1}}>Estado</button>
               </div>
             </div>
           ))}
@@ -1552,8 +1552,8 @@ function AlumnosTab({ token }) {
                   </td>
                   <td style={{...tdCell, textAlign: 'center'}}>
                     <div style={{ display: 'flex', gap: 4, justifyContent: 'center' }}>
-                      <button onClick={() => handleOpenDetail(a)} style={{...btnSmall, background: '#6366f1'}}>Ver</button>
-                      <button onClick={() => { setShowEstadoModal(a); setEstadoForm({ estado: a.estado_academico || 'pendiente', motivo: '' }); }} style={{...btnSmall, background: '#d97706'}}>Estado</button>
+                      <button onClick={() => handleOpenDetail(a)} style={{...btnSmall, background: '#000000'}}>Ver</button>
+                      <button onClick={() => { setShowEstadoModal(a); setEstadoForm({ estado: a.estado_academico || 'pendiente', motivo: '' }); }} style={{...btnSmall, background: '#000000'}}>Estado</button>
                     </div>
                   </td>
                 </tr>
@@ -1803,7 +1803,7 @@ function InscripcionesTab({ token }) {
                   {i.seguimiento ? 'Seguimiento' : '+ Seguimiento'}
                 </button>
                 {i.estado === 'pendiente' && (
-                  <button onClick={() => handleConfirmar(i.id)} style={{...btnSmall, background: '#059669', flex: 1}}>Confirmar</button>
+                  <button onClick={() => handleConfirmar(i.id)} style={{...btnSmall, background: '#000000', flex: 1}}>Confirmar</button>
                 )}
                 {(i.estado === 'pendiente' || i.estado === 'confirmada') && (
                   <button onClick={() => setShowBajaModal(i)} style={{...btnSmall, background: '#dc2626', flex: 1}}>Baja</button>
@@ -1844,7 +1844,7 @@ function InscripcionesTab({ token }) {
                   <td style={{...tdCell, textAlign: 'center'}}>
                     <div style={{ display: 'flex', gap: 4, justifyContent: 'center' }}>
                       {i.estado === 'pendiente' && (
-                        <button onClick={() => handleConfirmar(i.id)} style={{...btnSmall, background: '#059669'}}>Confirmar</button>
+                        <button onClick={() => handleConfirmar(i.id)} style={{...btnSmall, background: '#000000'}}>Confirmar</button>
                       )}
                       {(i.estado === 'pendiente' || i.estado === 'confirmada') && (
                         <button onClick={() => setShowBajaModal(i)} style={{...btnSmall, background: '#dc2626'}}>Baja</button>
@@ -2315,16 +2315,16 @@ function PagosTab({ token }) {
               {(p.estado === 'pendiente' || p.estado === 'vencido') && extendingPagoId === p.id && (
                 <div style={{ display: 'flex', gap: 6, alignItems: 'center', marginBottom: 6 }}>
                   <DateInput value={extendFecha} onChange={e => setExtendFecha(e.target.value)} style={{ ...inputStyle, fontSize: 11, padding: '4px 6px', flex: 1 }} />
-                  <button onClick={() => handleExtenderVencimiento(p.id)} style={{ ...btnSmall, background: '#7c3aed', fontSize: 11, padding: '4px 8px' }}>Guardar</button>
+                  <button onClick={() => handleExtenderVencimiento(p.id)} style={{ ...btnSmall, background: '#000000', fontSize: 11, padding: '4px 8px' }}>Guardar</button>
                   <button onClick={() => { setExtendingPagoId(null); setExtendFecha(''); }} style={{ ...btnSmall, background: '#6b7280', fontSize: 11, padding: '4px 8px' }}>Cancelar</button>
                 </div>
               )}
               {(p.estado === 'pendiente' || p.estado === 'vencido') && (
                 <div style={{ display: 'flex', gap: 6 }}>
-                  <button onClick={() => { setShowPagoManual(p); setPagoManualForm({ origen: 'efectivo', notas: '' }); setError(''); }} style={{...btnSmall, background: '#059669', flex: 1, padding: '6px 12px'}}>
+                  <button onClick={() => { setShowPagoManual(p); setPagoManualForm({ origen: 'efectivo', notas: '' }); setError(''); }} style={{...btnSmall, background: '#000000', flex: 1, padding: '6px 12px'}}>
                     Cobrar
                   </button>
-                  <button onClick={() => { setShowAjustarMonto(p); setAjustarForm({ monto_final: p.monto_final, notas: '' }); setError(''); }} style={{...btnSmall, background: '#6366f1', flex: 1, padding: '6px 12px'}}>
+                  <button onClick={() => { setShowAjustarMonto(p); setAjustarForm({ monto_final: p.monto_final, notas: '' }); setError(''); }} style={{...btnSmall, background: '#000000', flex: 1, padding: '6px 12px'}}>
                     Ajustar
                   </button>
                 </div>
@@ -2381,7 +2381,7 @@ function PagosTab({ token }) {
                         <div style={{ marginTop: 4, display: 'flex', flexDirection: 'column', gap: 4 }}>
                           <DateInput value={extendFecha} onChange={e => setExtendFecha(e.target.value)} style={{ ...inputStyle, fontSize: 11, padding: '3px 6px' }} />
                           <div style={{ display: 'flex', gap: 4 }}>
-                            <button onClick={() => handleExtenderVencimiento(p.id)} style={{ ...btnSmall, background: '#7c3aed', fontSize: 10, padding: '2px 6px' }}>Guardar</button>
+                            <button onClick={() => handleExtenderVencimiento(p.id)} style={{ ...btnSmall, background: '#000000', fontSize: 10, padding: '2px 6px' }}>Guardar</button>
                             <button onClick={() => { setExtendingPagoId(null); setExtendFecha(''); }} style={{ ...btnSmall, background: '#6b7280', fontSize: 10, padding: '2px 6px' }}>Cancelar</button>
                           </div>
                         </div>
@@ -2395,10 +2395,10 @@ function PagosTab({ token }) {
                   <td style={{...tdCell, textAlign: 'center'}}>
                     {(p.estado === 'pendiente' || p.estado === 'vencido') && (
                       <div style={{ display: 'flex', gap: 4, justifyContent: 'center' }}>
-                        <button onClick={() => { setShowPagoManual(p); setPagoManualForm({ origen: 'efectivo', notas: '' }); setError(''); }} style={{...btnSmall, background: '#059669'}}>
+                        <button onClick={() => { setShowPagoManual(p); setPagoManualForm({ origen: 'efectivo', notas: '' }); setError(''); }} style={{...btnSmall, background: '#000000'}}>
                           Cobrar
                         </button>
-                        <button onClick={() => { setShowAjustarMonto(p); setAjustarForm({ monto_final: p.monto_final, notas: '' }); setError(''); }} style={{...btnSmall, background: '#6366f1'}}>
+                        <button onClick={() => { setShowAjustarMonto(p); setAjustarForm({ monto_final: p.monto_final, notas: '' }); setError(''); }} style={{...btnSmall, background: '#000000'}}>
                           Ajustar
                         </button>
                       </div>
@@ -2745,8 +2745,8 @@ function AsistenciaTab({ token }) {
 
       {/* Tabs */}
       <div style={{ display: 'flex', gap: 8, marginBottom: 16 }}>
-        <button onClick={() => setView('registrar')} style={{ ...btnSecondary, ...(view === 'registrar' ? { background: '#7c3aed', color: '#fff', borderColor: '#7c3aed' } : {}) }}>Registrar</button>
-        <button onClick={() => { setView('historial'); if (claseId) loadHistorial(); }} style={{ ...btnSecondary, ...(view === 'historial' ? { background: '#7c3aed', color: '#fff', borderColor: '#7c3aed' } : {}) }}>Historial</button>
+        <button onClick={() => setView('registrar')} style={{ ...btnSecondary, ...(view === 'registrar' ? { background: '#000000', color: '#fff', borderColor: '#000000' } : {}) }}>Registrar</button>
+        <button onClick={() => { setView('historial'); if (claseId) loadHistorial(); }} style={{ ...btnSecondary, ...(view === 'historial' ? { background: '#000000', color: '#fff', borderColor: '#000000' } : {}) }}>Historial</button>
       </div>
 
       {/* Selector clase + fecha */}
@@ -2770,7 +2770,7 @@ function AsistenciaTab({ token }) {
       {view === 'registrar' && alumnos.length > 0 && (
         <div>
           <div style={{ display: 'flex', gap: 8, marginBottom: 12 }}>
-            <button onClick={() => marcarTodos(true)} style={{...btnSmall, background: '#059669'}}>Todos presentes</button>
+            <button onClick={() => marcarTodos(true)} style={{...btnSmall, background: '#000000'}}>Todos presentes</button>
             <button onClick={() => marcarTodos(false)} style={{...btnSmall, background: '#dc2626'}}>Todos ausentes</button>
           </div>
           {isMobile ? (
@@ -2866,7 +2866,7 @@ function AsistenciaTab({ token }) {
                     <div style={{ fontSize: 13, fontWeight: 600 }}>{formatDate(h.fecha)}</div>
                     <div style={{ fontSize: 12, color: '#6b7280' }}>{presentes}/{total} presentes · <span style={{ fontWeight: 600, color: pct >= 80 ? '#059669' : pct >= 50 ? '#d97706' : '#dc2626' }}>{pct}%</span></div>
                   </div>
-                  <button onClick={() => loadDetalle(h.fecha)} style={{...btnSmall, background: '#7c3aed'}}>Detalle</button>
+                  <button onClick={() => loadDetalle(h.fecha)} style={{...btnSmall, background: '#000000'}}>Detalle</button>
                 </div>
               );
             })}
@@ -2897,7 +2897,7 @@ function AsistenciaTab({ token }) {
                         <span style={{ fontWeight: 600, color: pct >= 80 ? '#059669' : pct >= 50 ? '#d97706' : '#dc2626' }}>{pct}%</span>
                       </td>
                       <td style={tdCell}>
-                        <button onClick={() => loadDetalle(h.fecha)} style={{...btnSmall, background: '#7c3aed'}}>Ver detalle</button>
+                        <button onClick={() => loadDetalle(h.fecha)} style={{...btnSmall, background: '#000000'}}>Ver detalle</button>
                       </td>
                     </tr>
                   );
@@ -3288,7 +3288,7 @@ function CumpleanosTab({ token, onNavigateToAlumnos }) {
                     {esHoy(a.dia) && <span style={{ color: '#7c3aed', fontWeight: 600, marginLeft: 8 }}>¡Hoy!</span>}
                   </div>
                 </div>
-                <button onClick={() => setSelectedAlumno(a)} style={{...btnSmall, background: '#7c3aed'}}>Ver</button>
+                <button onClick={() => setSelectedAlumno(a)} style={{...btnSmall, background: '#000000'}}>Ver</button>
               </div>
             ))}
           </div>
@@ -3315,7 +3315,7 @@ function CumpleanosTab({ token, onNavigateToAlumnos }) {
                     <td style={tdCell}>{a.dni || '-'}</td>
                     <td style={tdCell}>{a.telefono || '-'}</td>
                     <td style={tdCell}>
-                      <button onClick={() => setSelectedAlumno(a)} style={{...btnSmall, background: '#7c3aed'}}>Ver perfil</button>
+                      <button onClick={() => setSelectedAlumno(a)} style={{...btnSmall, background: '#000000'}}>Ver perfil</button>
                     </td>
                   </tr>
                 ))}
@@ -3366,7 +3366,7 @@ function CumpleanosTab({ token, onNavigateToAlumnos }) {
                   setSelectedAlumno(null);
                   onNavigateToAlumnos?.();
                 }}
-                style={{...btnPrimary, background: '#7c3aed'}}
+                style={{...btnPrimary, background: '#000000'}}
               >
                 Ir a Alumnos
               </button>
@@ -3561,7 +3561,7 @@ function ReportesTab({ token }) {
               setFiltroDesde(new Date(now.getFullYear(), now.getMonth(), 1).toISOString().split('T')[0]);
               setFiltroHasta(now.toISOString().split('T')[0]);
               setTimeout(() => loadIngresos(), 50);
-            }} style={{...btnSecondary, background: '#7c3aed', color: '#fff', border: '1px solid #7c3aed'}}>Este mes</button>
+            }} style={{...btnSecondary, background: '#000000', color: '#fff', border: '1px solid #000000'}}>Este mes</button>
             <button onClick={() => exportCSV('ingresos')} style={btnSecondary}>Exportar CSV</button>
           </div>
 
@@ -3778,7 +3778,7 @@ function ReportesTab({ token }) {
 // ============================================================
 const btnPrimary = {
   padding: '8px 16px',
-  background: '#8B5CF6',
+  background: '#000000',
   color: '#fff',
   border: 'none',
   borderRadius: '6px',
@@ -3799,7 +3799,7 @@ const btnSecondary = {
 
 const btnSmall = {
   padding: '4px 12px',
-  background: '#8B5CF6',
+  background: '#000000',
   color: '#fff',
   border: 'none',
   borderRadius: '4px',

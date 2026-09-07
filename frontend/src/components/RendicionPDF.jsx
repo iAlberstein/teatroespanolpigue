@@ -42,7 +42,7 @@ const labelSt = {
 
 const btnPrimary = {
   padding: '8px 18px',
-  background: '#7c3aed',
+  background: '#000000',
   color: '#fff',
   border: 'none',
   borderRadius: 6,

@@ -116,7 +116,7 @@ export default function ShowList({ shows, onEdit, onDelete, onManageSessions, on
           onClick={onCreateNew}
           style={{
             padding: isMobile ? '12px 16px' : '10px 20px',
-            background: '#28a745',
+            background: '#000000',
             color: '#fff',
             border: 'none',
             borderRadius: 6,
@@ -292,7 +292,7 @@ export default function ShowList({ shows, onEdit, onDelete, onManageSessions, on
                     onClick={() => onManageSessions(show)}
                     style={{
                       padding: isMobile ? '10px 12px' : '8px 16px',
-                      background: '#007bff',
+                      background: '#000000',
                       color: '#fff',
                       border: 'none',
                       borderRadius: 4,
@@ -307,8 +307,8 @@ export default function ShowList({ shows, onEdit, onDelete, onManageSessions, on
                     onClick={() => onEdit(show)}
                     style={{
                       padding: isMobile ? '10px 12px' : '8px 16px',
-                      background: '#ffc107',
-                      color: '#000',
+                      background: '#000000',
+                      color: '#fff',
                       border: 'none',
                       borderRadius: 4,
                       cursor: 'pointer',

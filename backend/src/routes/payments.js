@@ -18,9 +18,59 @@ const packFinalizationPromises = new Map();
 // que se le cobre a un cliente por una reserva que el sistema ya liberó.
 const RESERVATION_PAYMENT_EXTENSION_MINUTES = Number(process.env.SIPAGO_RESERVATION_EXTENSION_MINUTES || 5);
 const SIPAGO_CHECKOUT_EXPIRE_MINUTES = Number(process.env.SIPAGO_CHECKOUT_EXPIRE_MINUTES || 4);
+if (!Number.isFinite(RESERVATION_PAYMENT_EXTENSION_MINUTES) || !Number.isFinite(SIPAGO_CHECKOUT_EXPIRE_MINUTES) || RESERVATION_PAYMENT_EXTENSION_MINUTES <= SIPAGO_CHECKOUT_EXPIRE_MINUTES) {
+  throw new Error('SIPAGO_RESERVATION_EXTENSION_MINUTES must be greater than SIPAGO_CHECKOUT_EXPIRE_MINUTES');
+}
+
+const SIPAGO_CURRENCY = '032';
+const SIPAGO_FINAL_STATES = new Set(['SUCCESS', 'REJECTED', 'FAILED', 'EXPIRED', 'CANCELLED', 'CANCELED']);
+const SIPAGO_RECONCILE_INTERVAL_MS = Number(process.env.SIPAGO_RECONCILE_INTERVAL_MS || 120000);
+const SIPAGO_EXPIRY_VERIFICATION_GRACE_MS = Number(process.env.SIPAGO_EXPIRY_VERIFICATION_GRACE_MINUTES || 2) * 60 * 1000;
 
 function getSipagoOrderStatus(order) {
   return (order?.data?.order?.status || order?.data?.attributes?.status || order?.attributes?.status || '').toString().toUpperCase();
+}
+
+function getSipagoOrderUuid(order) {
+  return String(order?.data?.id || order?.data?.order?.uuid || order?.data?.attributes?.uuid || order?.data?.attributes?.id || '').split('/').filter(Boolean).pop();
+}
+
+function getSipagoOrderAmount(order) {
+  const value = order?.data?.attributes?.price?.amount ?? order?.data?.order?.total?.amount ?? order?.data?.order?.amount ?? order?.data?.attributes?.total?.amount ?? order?.data?.attributes?.amount;
+  return Number.isFinite(Number(value)) ? Number(value) : null;
+}
+
+function getSipagoOrderCurrency(order) {
+  return String(order?.data?.attributes?.price?.currency ?? order?.data?.order?.total?.currency ?? order?.data?.order?.currency ?? order?.data?.attributes?.total?.currency ?? order?.data?.attributes?.currency ?? '');
+}
+
+function normalizeSipagoStatus(status) {
+  const s = String(status || '').toUpperCase();
+  if (s === 'SUCCESS') return 'success';
+  if (['REJECTED', 'FAILED', 'CANCELLED', 'CANCELED'].includes(s)) return 'rejected';
+  if (s === 'EXPIRED') return 'expired';
+  if (s === 'CREATION_FAILED') return 'creation_failed';
+  return 'pending';
+}
+
+async function verifyIndividualSipagoAttempt(attempt) {
+  if (!attempt?.provider_order_uuid) throw new Error('missing_provider_order_uuid');
+  const order = await getSipagoOrder(attempt.provider_order_uuid);
+  const providerUuid = getSipagoOrderUuid(order);
+  const status = getSipagoOrderStatus(order);
+  const amount = getSipagoOrderAmount(order);
+  const currency = getSipagoOrderCurrency(order);
+  if (!providerUuid || providerUuid !== attempt.provider_order_uuid) throw new Error('provider_order_uuid_mismatch');
+  if (!status) throw new Error('missing_provider_status');
+  if (amount === null || amount !== Number(attempt.expected_amount)) throw new Error('provider_amount_mismatch');
+  if (!currency || currency !== attempt.expected_currency) throw new Error('provider_currency_mismatch');
+  await attempt.update({
+    status: normalizeSipagoStatus(status),
+    provider_status: status,
+    provider_response: order,
+    verification_error: null
+  });
+  return { order, status };
 }
 
 async function verifyPackSipagoSuccess(packSale) {
@@ -55,6 +105,361 @@ async function getServiceFeePercent() {
     console.error('[PAYMENTS] Error getting service fee:', e);
     return 10; // Default fallback
   }
+}
+
+// Finalize an individual SiPago attempt once the provider reports SUCCESS.
+// Shared by the webhook, the periodic reconciliation worker and the reservation
+// expiry worker so the browser-less finalization paths reuse the same logic.
+export async function finalizeIndividualSipagoAttempt(attempt, { io, userId } = {}) {
+  const { reservations: Reservation, tickets: Ticket, sales: Sale, users: User, discounts: Discount, sessions: Session, shows: Show } = sequelize.models;
+  const reservation = await Reservation.findByPk(attempt.reservation_id);
+  if (!reservation) throw new Error('reservation_not_found');
+
+  // Idempotency: already finalized
+  if (attempt.status === 'success' && attempt.sale_id) {
+    const existingSale = await Sale.findByPk(attempt.sale_id);
+    if (existingSale) return { sale: existingSale, already_confirmed: true, created_count: 0 };
+  }
+
+  if (reservation.status === 'expired' || reservation.status === 'canceled') throw new Error('reservation_expired');
+  if (reservation.status !== 'active' && reservation.status !== 'confirmed') throw new Error('reservation_not_active');
+
+  const items = Array.isArray(reservation.items) ? reservation.items : [];
+  const seatCodes = items.filter(it => it.type === 'butaca' && it.seat_code).map(it => it.seat_code);
+  const palcoCodes = items.filter(it => it.type === 'palco' && it.seat_code).map(it => it.seat_code);
+
+  if (seatCodes.length > 0 || palcoCodes.length > 0) {
+    const orConditions = [];
+    if (seatCodes.length > 0) orConditions.push({ seat_code: { [Op.in]: seatCodes }, type: 'butaca' });
+    if (palcoCodes.length > 0) orConditions.push({ seat_code: { [Op.in]: palcoCodes }, type: 'palco' });
+    const existingTickets = await Ticket.findAll({
+      where: { session_id: reservation.session_id, status: 'sold', [Op.or]: orConditions }
+    });
+    if (existingTickets.length > 0) throw new Error('seats_already_sold');
+  }
+
+  // Atomically claim the reservation; if already confirmed, reuse its sale_id.
+  let saleId;
+  let isNewSale = false;
+  if (reservation.status === 'confirmed' && reservation.sale_id) {
+    saleId = reservation.sale_id;
+  } else {
+    const tempSaleId = crypto.randomUUID();
+    const [claimedCount] = await Reservation.update(
+      { status: 'confirmed', sale_id: tempSaleId },
+      { where: { id: reservation.id, status: 'active', sale_id: null } }
+    );
+    if (claimedCount === 0) {
+      const winner = await Reservation.findByPk(reservation.id);
+      if (winner?.status === 'confirmed' && winner?.sale_id) {
+        saleId = winner.sale_id;
+      } else {
+        throw new Error('reservation_claim_failed');
+      }
+    } else {
+      saleId = tempSaleId;
+      isNewSale = true;
+    }
+  }
+
+  reservation.set('status', 'confirmed');
+  reservation.set('sale_id', saleId);
+
+  const attemptCustomer = attempt.customer_metadata || {};
+  const serviceItems = parseServiceItems(attempt.service_items) || parseServiceItems(reservation.service_items) || [];
+
+  // Resolve user
+  let finalUserId = userId || reservation.user_id || null;
+  if (finalUserId) {
+    const exists = await User.findByPk(finalUserId);
+    if (!exists) finalUserId = null;
+  }
+  if (!finalUserId && attemptCustomer.dni) {
+    try {
+      const byDni = await User.findOne({ where: { dni: attemptCustomer.dni } });
+      if (byDni) finalUserId = byDni.id;
+    } catch (e) { console.warn('[SIPAGO_FINALIZE] Could not find user by DNI:', e.message); }
+  }
+
+  let customerName = attemptCustomer.name || null;
+  let customerEmail = attemptCustomer.email || null;
+  let customerPhone = attemptCustomer.phone || null;
+  let customerDni = attemptCustomer.dni || null;
+  let customerProvincia = attemptCustomer.provincia || null;
+  let customerLocalidad = attemptCustomer.localidad || null;
+
+  if (!customerName && finalUserId) {
+    try {
+      const u = await User.findByPk(finalUserId, { attributes: ['name', 'email', 'phone', 'dni', 'provincia', 'localidad'], raw: true });
+      if (u) {
+        customerName = u.name || customerName;
+        customerEmail = u.email || customerEmail;
+        customerPhone = u.phone || customerPhone;
+        customerDni = u.dni || customerDni;
+        customerProvincia = u.provincia || customerProvincia;
+        customerLocalidad = u.localidad || customerLocalidad;
+      }
+    } catch (e) { console.warn('[SIPAGO_FINALIZE] Could not fetch user data:', e.message); }
+  }
+
+  // Compute sale totals
+  let discountAmount = 0;
+  let discountedTicketCount = 0;
+  let baseSubtotal = items.reduce((sum, it) => {
+    if (it.type === 'butaca' || it.type === 'palco') return sum + Number(it.price || 0);
+    if (it.type === 'pullman' || it.type === 'general') return sum + (Number(it.unit_price || it.price || 0) * Number(it.quantity || 1));
+    return sum;
+  }, 0);
+  const metaDiscountId = attempt.discount_id || null;
+  if (metaDiscountId) {
+    try {
+      const d = await Discount.findByPk(metaDiscountId);
+      if (d && d.active !== false) {
+        const result = computeDiscountAmount(items, d);
+        discountAmount = result.discountAmount;
+        discountedTicketCount = result.discountedTicketCount;
+        baseSubtotal = result.baseSubtotal;
+      }
+    } catch (e) { console.warn('[SIPAGO_FINALIZE] Could not compute discount:', e.message); }
+  }
+
+  const subtotalAfterDiscount = baseSubtotal - discountAmount;
+  const servicesSubtotal = serviceItems.reduce((sum, s) => sum + (Number(s.price || 0) * Number(s.quantity || 1)), 0);
+  const paymentMethod = 'card';
+
+  let sale = await Sale.findByPk(saleId);
+  if (!sale) {
+    isNewSale = true;
+    sale = await Sale.create({
+      id: saleId,
+      session_id: reservation.session_id,
+      user_id: finalUserId,
+      cashier_id: null,
+      payment_method: paymentMethod,
+      discount_id: metaDiscountId,
+      total_amount: (subtotalAfterDiscount || 0) + servicesSubtotal,
+      customer_name: customerName,
+      customer_email: customerEmail,
+      customer_phone: customerPhone,
+      customer_dni: customerDni,
+      customer_provincia: customerProvincia,
+      customer_localidad: customerLocalidad,
+      validated_count: 0,
+      total_capacity: 0,
+      service_items: serviceItems.length > 0 ? serviceItems : null
+    });
+  }
+
+  const { generateContainerQR } = await import('../lib/qrGenerator.js');
+  const containerQR = await generateContainerQR(sale.id, items);
+  if (!sale.container_qr_code) {
+    await sale.update({ container_qr_code: containerQR.qr_code, container_qr_data: containerQR.qr_data, total_capacity: containerQR.total_capacity });
+  }
+
+  if (metaDiscountId && isNewSale) {
+    try {
+      const discount = await Discount.findByPk(metaDiscountId);
+      if (discount) await discount.increment('used_count', { by: discountedTicketCount || 1 });
+    } catch (e) { console.warn('[SIPAGO_FINALIZE] Could not increment discount:', e.message); }
+  }
+
+  const { generateIndividualQR } = await import('../lib/qrGenerator.js');
+  const createdTickets = [];
+  for (const it of items) {
+    if (it.type === 'butaca' && it.seat_code) {
+      const t = await Ticket.create({
+        session_id: reservation.session_id,
+        sale_id: sale.id,
+        user_id: finalUserId,
+        seat_code: it.seat_code,
+        section: 'platea_general',
+        type: 'butaca',
+        price: Number(it.price || 0),
+        qr_code: null,
+        status: 'sold',
+        capacity: 1,
+        capacity_validated: 0
+      });
+      const { qr_code, qr_data } = await generateIndividualQR(t.id, it.seat_code, 'butaca');
+      await t.update({ qr_code, qr_data });
+      createdTickets.push(t);
+    } else if (it.type === 'palco' && it.seat_code) {
+      const isPB = /^PB/i.test(it.seat_code);
+      const palcoSection = isPB ? 'palcos_bajos' : 'palcos_altos';
+      const palcoCapacity = isPB ? 4 : 2;
+      const t = await Ticket.create({
+        session_id: reservation.session_id,
+        sale_id: sale.id,
+        user_id: finalUserId,
+        seat_code: it.seat_code,
+        section: palcoSection,
+        type: 'palco',
+        price: Number(it.price || 0),
+        qr_code: null,
+        status: 'sold',
+        capacity: palcoCapacity,
+        capacity_validated: 0
+      });
+      const { qr_code, qr_data } = await generateIndividualQR(t.id, it.seat_code, 'palco');
+      await t.update({ qr_code, qr_data });
+      createdTickets.push(t);
+    } else if (it.type === 'pullman' && it.quantity > 0) {
+      const qty = Number(it.quantity) || 0;
+      const ticketPrice = Number(it.unit_price || it.price || 0);
+      for (let i = 0; i < qty; i++) {
+        const t = await Ticket.create({
+          session_id: reservation.session_id,
+          sale_id: sale.id,
+          user_id: finalUserId,
+          seat_code: null,
+          section: 'pullman',
+          type: 'pullman',
+          price: ticketPrice,
+          qr_code: null,
+          status: 'sold'
+        });
+        const { qr_code, qr_data } = await generateIndividualQR(t.id, null, 'pullman');
+        await t.update({ qr_code, qr_data });
+        createdTickets.push(t);
+      }
+    } else if (it.type === 'general' && it.quantity > 0) {
+      const qty = Number(it.quantity) || 0;
+      const ticketPrice = Number(it.unit_price || it.price || 0);
+      for (let i = 0; i < qty; i++) {
+        const t = await Ticket.create({
+          session_id: reservation.session_id,
+          sale_id: sale.id,
+          user_id: finalUserId,
+          seat_code: null,
+          section: 'general',
+          type: 'general',
+          price: ticketPrice,
+          qr_code: null,
+          status: 'sold',
+          capacity: 1,
+          capacity_validated: 0
+        });
+        const { qr_code, qr_data } = await generateIndividualQR(t.id, null, 'general');
+        await t.update({ qr_code, qr_data });
+        createdTickets.push(t);
+      }
+    }
+  }
+
+  for (const svc of serviceItems) {
+    const svcT = await Ticket.create({
+      session_id: reservation.session_id,
+      sale_id: sale.id,
+      user_id: finalUserId,
+      seat_code: svc.name,
+      section: 'service',
+      type: 'service',
+      price: Number(svc.price || 0),
+      qr_code: null,
+      status: 'sold',
+      capacity: Number(svc.quantity || 1),
+      capacity_validated: 0
+    });
+    const { qr_code: sQr, qr_data: sQd } = await generateIndividualQR(svcT.id, svc.name, 'service');
+    await svcT.update({ qr_code: sQr, qr_data: sQd });
+    createdTickets.push(svcT);
+  }
+
+  if (io) {
+    try {
+      io.soldSeats = io.soldSeats || new Map();
+      io.soldPalcos = io.soldPalcos || new Map();
+      io.pullmanSold = io.pullmanSold || new Map();
+      const seatSet = io.soldSeats.get(reservation.session_id) || new Set();
+      const palcoSet = io.soldPalcos.get(reservation.session_id) || new Set();
+      let pullmanCount = io.pullmanSold.get(reservation.session_id) || 0;
+      let generalCount = 0;
+      for (const it of items) {
+        if (it.type === 'butaca' && it.seat_code) seatSet.add(it.seat_code);
+        if (it.type === 'palco' && it.seat_code) palcoSet.add(it.seat_code);
+        if (it.type === 'pullman' && it.quantity > 0) pullmanCount += Number(it.quantity) || 0;
+        if (it.type === 'general' && it.quantity > 0) generalCount += Number(it.quantity) || 0;
+      }
+      io.soldSeats.set(reservation.session_id, seatSet);
+      io.soldPalcos.set(reservation.session_id, palcoSet);
+      io.pullmanSold.set(reservation.session_id, pullmanCount);
+      for (const it of items) {
+        if (it.type === 'butaca' && it.seat_code) io.to(`session:${reservation.session_id}`).emit('seat_sold', { seatId: it.seat_code });
+        if (it.type === 'palco' && it.seat_code) io.to(`session:${reservation.session_id}`).emit('palco_sold', { palco: it.seat_code });
+        if (it.type === 'pullman' && it.quantity > 0) io.to(`session:${reservation.session_id}`).emit('pullman_sold', { sold: Number(it.quantity) || 0 });
+      }
+      if (generalCount > 0) {
+        const session = await Session.findByPk(reservation.session_id, { include: [{ model: Show, as: 'show' }] });
+        if (session && session.show) {
+          const capacity = session.capacity_override || session.show.general_capacity;
+          const soldCount = await Ticket.count({ where: { session_id: reservation.session_id, type: 'general', status: { [Op.in]: ['sold', 'validated'] } } });
+          const available = Math.max(0, capacity - soldCount);
+          io.to(`session:${reservation.session_id}`).emit('general-admission-update', { sessionId: reservation.session_id, sold: soldCount, available });
+        }
+      }
+      io.to(`session:${reservation.session_id}`).emit('purchase_confirmed', { reservation_id: reservation.id });
+    } catch (ioErr) { console.warn('[SIPAGO_FINALIZE] Socket.io error (non-critical):', ioErr.message); }
+  }
+
+  try {
+    const user = finalUserId ? await User.findByPk(finalUserId) : null;
+    const session = await Session.findByPk(reservation.session_id, { include: [{ model: Show, as: 'show' }] });
+    const emailToSend = user?.email || customerEmail;
+    const nameToSend = user?.name || customerName;
+    if (emailToSend && session) {
+      const { formatDateLong, formatTime } = await import('../lib/dateFormatter.js');
+      const { sendPurchaseConfirmation } = await import('../lib/emailService.js');
+      const { formatSeatLocation } = await import('../lib/seatFormatter.js');
+      const formattedTicketsForEmail = createdTickets.map(t => ({
+        ...t.get ? t.get({ plain: true }) : t,
+        location: formatSeatLocation(t.type, t.section, t.seat_code, t.capacity || 1)
+      }));
+
+      const serviceFeePercent = await getServiceFeePercent();
+      const regularTicketsForEmail = formattedTicketsForEmail.filter(t => t.type !== 'service');
+      const ticketsSubtotal = regularTicketsForEmail.reduce((sum, t) => sum + Number(t.price || 0), 0);
+      const servicesSubtotal = serviceItems.reduce((sum, s) => sum + (Number(s.price || 0) * Number(s.quantity || 1)), 0);
+      const serviceFeeAmount = Math.round((ticketsSubtotal + servicesSubtotal) * (serviceFeePercent / 100));
+
+      let discountCode = null;
+      let discountAmountEmail = 0;
+      if (metaDiscountId) {
+        try {
+          const disc = await Discount.findByPk(metaDiscountId);
+          if (disc) {
+            discountCode = disc.alias || disc.code;
+            const dtype = String(disc.type || '').toLowerCase();
+            const dval = Number(disc.value || 0);
+            if (dtype === 'percentage') discountAmountEmail = Math.round(ticketsSubtotal * (dval / 100));
+            else if (dtype === 'fixed') discountAmountEmail = Math.round(dval);
+          }
+        } catch {}
+      }
+
+      await sendPurchaseConfirmation({
+        customerEmail: emailToSend,
+        customerName: nameToSend,
+        showTitle: session.show.title,
+        sessionDate: formatDateLong(session.starts_at),
+        sessionTime: formatTime(session.starts_at),
+        functionName: session.function_name || null,
+        tickets: regularTicketsForEmail,
+        saleId: sale.id,
+        totalAmount: sale.total_amount,
+        paymentMethod: sale.payment_method || 'card',
+        subtotal: ticketsSubtotal,
+        discountCode,
+        discountAmount: discountAmountEmail > 0 ? discountAmountEmail : null,
+        serviceFeePercent,
+        serviceFeeAmount,
+        serviceItems: serviceItems,
+        servicesSubtotal
+      });
+    }
+  } catch (emailErr) { console.error('[SIPAGO_FINALIZE] Email error:', emailErr); }
+
+  await attempt.update({ status: 'success', sale_id: sale.id, finalized_at: new Date() });
+  return { sale, created_count: createdTickets.length };
 }
 
 // Helper: compute discount amount respecting per-ticket usage_limit
@@ -287,11 +692,55 @@ router.post('/sipago-intent', optionalAuth, async (req, res) => {
     // Save service_items to reservation for webhook to retrieve (store as JSON string since column is longtext)
     const serviceItemsToSave = validServiceItems.length > 0 ? JSON.stringify(validServiceItems) : null;
     await reservation.update({ service_items: serviceItemsToSave });
-    console.log('[SIPAGO_INTENT] Saved service_items to reservation:', reservation.id, validServiceItems);
-    console.log('[SIPAGO_INTENT] service_items saved as:', serviceItemsToSave);
     if (!total || total <= 0) return res.status(400).json({ error: 'invalid_total' });
     // Sipago espera montos en centavos (ej: $34 -> 3400)
     const totalCentavos = Math.round(total * 100);
+    const { sipago_payment_attempts: SipagoPaymentAttempt } = sequelize.models;
+    const now = dayjs().toDate();
+
+    // Enforce at most one pending *usable* attempt per reservation; reuse it if it exists.
+    // A usable attempt has a provider order and has not expired yet.
+    const existingUsable = await SipagoPaymentAttempt.findOne({
+      where: {
+        reservation_id: reservation.id,
+        status: 'pending',
+        provider_order_uuid: { [Op.ne]: null },
+        expires_at: { [Op.gt]: now }
+      },
+      order: [['created_at', 'DESC']]
+    });
+    if (existingUsable) {
+      const priorOrder = existingUsable.provider_response || {};
+      const priorCheckoutUrl = priorOrder?.data?.attributes?.links?.checkout || priorOrder?.data?.links?.checkout;
+      if (priorCheckoutUrl) {
+        console.log('[SIPAGO_INTENT] Reusing existing usable attempt', existingUsable.id);
+        return res.json({ checkout_url: priorCheckoutUrl, attempt_id: existingUsable.id, reused: true });
+      }
+    }
+
+    // Any other pending attempt for this reservation (without provider order or expired) is no longer usable
+    await SipagoPaymentAttempt.update(
+      { status: 'creation_failed', verification_error: 'superseded_by_new_intent' },
+      { where: { reservation_id: reservation.id, status: 'pending' } }
+    );
+
+    const attempt = await SipagoPaymentAttempt.create({
+      reservation_id: reservation.id,
+      expected_amount: totalCentavos,
+      expected_currency: SIPAGO_CURRENCY,
+      status: 'pending',
+      expires_at: dayjs().add(SIPAGO_CHECKOUT_EXPIRE_MINUTES, 'minute').toDate(),
+      customer_metadata: {
+        name: customer_name || null,
+        email: customer_email || null,
+        phone: customer_phone || null,
+        dni: customer_dni || null,
+        provincia: customer_provincia || null,
+        localidad: customer_localidad || null
+      },
+      discount_id: discount_id || null,
+      service_items: validServiceItems.length > 0 ? validServiceItems : null
+    });
 
     // Build descriptive items for Sipago checkout
     const { sessions: Session, shows: Show } = sequelize.models;
@@ -321,31 +770,47 @@ router.post('/sipago-intent', optionalAuth, async (req, res) => {
     const reqOrigin = req.headers.origin || '';
     const APP_URL = process.env.APP_URL || reqOrigin || FRONTEND_URL;
     const redirectBaseSuccess = new URL(`${APP_URL}/sipago/success`);
-    redirectBaseSuccess.searchParams.set('reservation_id', String(reservation.id));
-    if (discount_id) redirectBaseSuccess.searchParams.set('discount_id', String(discount_id));
+    redirectBaseSuccess.searchParams.set('attempt_id', attempt.id);
     const redirectBaseFailure = new URL(`${APP_URL}/sipago/failure`);
-    redirectBaseFailure.searchParams.set('reservation_id', String(reservation.id));
-    if (discount_id) redirectBaseFailure.searchParams.set('discount_id', String(discount_id));
+    redirectBaseFailure.searchParams.set('attempt_id', attempt.id);
     const redirect_urls = {
       success: redirectBaseSuccess.toString(),
       failed: redirectBaseFailure.toString()
     };
-    const hookParams = new URLSearchParams({ reservation_id: String(reservation.id) });
-    if (discount_id) hookParams.set('discount_id', String(discount_id));
-    if (customer_name) hookParams.set('customer_name', String(customer_name));
-    if (customer_email) hookParams.set('customer_email', String(customer_email));
-    if (customer_phone) hookParams.set('customer_phone', String(customer_phone));
-    if (customer_dni) hookParams.set('customer_dni', String(customer_dni));
-    if (customer_provincia) hookParams.set('customer_provincia', String(customer_provincia));
-    if (customer_localidad) hookParams.set('customer_localidad', String(customer_localidad));
-    if (validServiceItems.length > 0) hookParams.set('service_items', JSON.stringify(validServiceItems));
-    if (process.env.SIPAGO_WEBHOOK_SECRET) hookParams.set('secret', process.env.SIPAGO_WEBHOOK_SECRET);
-    const webhookUrl = `${BASE_URL}/api/payments/sipago-webhook?${hookParams.toString()}`;
-    console.log('[SIPAGO_INTENT] Webhook URL:', webhookUrl);
-    const order = await createSipagoOrder({ total: totalCentavos, redirect_urls, items: sipagoItems, webhookUrl, expireLimitMinutes: SIPAGO_CHECKOUT_EXPIRE_MINUTES });
+    const webhookUrl = `${BASE_URL}/api/payments/sipago-webhook/${encodeURIComponent(attempt.id)}`;
+
+    let order;
+    try {
+      order = await createSipagoOrder({ total: totalCentavos, redirect_urls, items: sipagoItems, webhookUrl, currency: SIPAGO_CURRENCY, expireLimitMinutes: SIPAGO_CHECKOUT_EXPIRE_MINUTES });
+    } catch (orderErr) {
+      console.error('[SIPAGO_INTENT] Order creation failed after retries:', orderErr);
+      await attempt.update({
+        status: 'creation_failed',
+        verification_error: String(orderErr.message || orderErr).slice(0, 500)
+      });
+      const isValidation = orderErr.status && orderErr.status >= 400 && orderErr.status < 500 && orderErr.status !== 401 && orderErr.status !== 429;
+      return res.status(502).json({
+        error: 'creation_failed',
+        attempt_id: attempt.id,
+        retryable: !isValidation,
+        message: isValidation
+          ? 'La orden no pudo ser creada por datos inválidos. Verificá la información e intentá de nuevo.'
+          : 'No pudimos comunicarnos con SiPago en este momento. Por favor, intentá de nuevo en unos instantes.'
+      });
+    }
     const checkoutUrl = order?.data?.attributes?.links?.checkout || order?.data?.links?.checkout;
-    if (!checkoutUrl) return res.status(500).json({ error: 'sipago_checkout_missing', debug: order });
-    return res.json({ checkout_url: checkoutUrl, order });
+    const providerOrderUuid = getSipagoOrderUuid(order);
+    if (!checkoutUrl || !providerOrderUuid) {
+      await attempt.update({ status: 'creation_failed', verification_error: 'invalid_create_order_response' });
+      return res.status(502).json({
+        error: 'creation_failed',
+        attempt_id: attempt.id,
+        retryable: true,
+        message: 'La respuesta de SiPago no es válida. Por favor, intentá de nuevo.'
+      });
+    }
+    await attempt.update({ provider_order_uuid: providerOrderUuid, provider_response: order });
+    return res.json({ checkout_url: checkoutUrl, attempt_id: attempt.id });
   } catch (e) {
     console.error('[SIPAGO_INTENT] error', e);
     return res.status(500).json({ error: 'internal_error', message: e.message });
@@ -504,7 +969,6 @@ router.post('/sipago-pack-intent', optionalAuth, async (req, res) => {
     const hookParams = new URLSearchParams({ pack_id: packId });
     if (process.env.SIPAGO_WEBHOOK_SECRET) hookParams.set('secret', process.env.SIPAGO_WEBHOOK_SECRET);
     const webhookUrl = `${BASE_URL}/api/payments/sipago-pack-webhook?${hookParams.toString()}`;
-    console.log('[SIPAGO_PACK_INTENT] Webhook URL:', webhookUrl);
 
     const order = await createSipagoOrder({ total: totalCentavos, redirect_urls, items: sipagoItems, webhookUrl, expireLimitMinutes: 14 });
     const checkoutUrl = order?.data?.attributes?.links?.checkout || order?.data?.links?.checkout;
@@ -525,26 +989,60 @@ router.post('/sipago-pack-intent', optionalAuth, async (req, res) => {
 });
 
 
+router.get('/sipago-status/:attempt_id', async (req, res) => {
+  const { sipago_payment_attempts: SipagoPaymentAttempt } = sequelize.models;
+  const attempt = await SipagoPaymentAttempt.findByPk(req.params.attempt_id);
+  if (!attempt) return res.status(404).json({ error: 'attempt_not_found' });
+  if (attempt.status === 'pending' && attempt.provider_order_uuid) {
+    try {
+      await verifyIndividualSipagoAttempt(attempt);
+    } catch (error) {
+      await attempt.update({ verification_error: String(error.message || error).slice(0, 500) });
+    }
+  }
+  await attempt.reload();
+  return res.json({
+    attempt_id: attempt.id,
+    reservation_id: attempt.reservation_id,
+    status: attempt.status,
+    provider_status: attempt.provider_status,
+    sale_id: attempt.sale_id,
+    expires_at: attempt.expires_at,
+    verification_pending: Boolean(attempt.verification_error && attempt.status === 'pending')
+  });
+});
+
 // Webhook Sipago: recibe notificaciones del estado de la orden
-router.post('/sipago-webhook', async (req, res) => {
-  console.log('[SIPAGO_WEBHOOK] 🔔 Received webhook call');
+router.post(['/sipago-webhook', '/sipago-webhook/:attempt_id'], async (req, res) => {
   try {
-    // SiPago puede enviar el secret en query params o en body
-    const secret = req.query?.secret || req.body?.secret;
-    console.log('[SIPAGO_WEBHOOK] Received secret:', secret);
-    console.log('[SIPAGO_WEBHOOK] Expected secret:', process.env.SIPAGO_WEBHOOK_SECRET);
-    if (process.env.SIPAGO_WEBHOOK_SECRET && secret !== process.env.SIPAGO_WEBHOOK_SECRET) {
-      console.warn('[SIPAGO_WEBHOOK] invalid secret');
-      return res.status(200).json({ ignored: true });
+    const { sipago_payment_attempts: SipagoPaymentAttempt } = sequelize.models;
+    const attemptId = req.params?.attempt_id || req.query?.attempt_id || req.body?.attempt_id;
+    const attempt = attemptId ? await SipagoPaymentAttempt.findByPk(attemptId) : null;
+    if (!attempt) return res.status(200).json({ ignored: true });
+    let verified;
+    try {
+      verified = await verifyIndividualSipagoAttempt(attempt);
+    } catch (error) {
+      await attempt.update({ verification_error: String(error.message || error).slice(0, 500) });
+      return res.status(503).json({ ok: false, status: 'verification_error' });
+    }
+    if (verified.status !== 'SUCCESS') {
+      return res.status(200).json({ ok: true, status: normalizeSipagoStatus(verified.status) });
     }
 
-    const reservationId = req.query?.reservation_id || req.body?.reservation_id;
-    console.log('[SIPAGO_WEBHOOK] req.query:', JSON.stringify(req.query));
-    console.log('[SIPAGO_WEBHOOK] req.body:', JSON.stringify(req.body));
-    if (!reservationId) {
-      console.warn('[SIPAGO_WEBHOOK] missing reservation_id');
-      return res.status(200).json({ ignored: true });
-    }
+    const reservationId = attempt.reservation_id;
+    const customerMetadata = attempt.customer_metadata || {};
+    req.query = {
+      ...req.query,
+      reservation_id: reservationId,
+      discount_id: attempt.discount_id || undefined,
+      customer_name: customerMetadata.name || undefined,
+      customer_email: customerMetadata.email || undefined,
+      customer_phone: customerMetadata.phone || undefined,
+      customer_dni: customerMetadata.dni || undefined,
+      customer_provincia: customerMetadata.provincia || undefined,
+      customer_localidad: customerMetadata.localidad || undefined
+    };
 
     const { reservations: Reservation, tickets: Ticket, sales: Sale, discounts: Discount, users: User } = sequelize.models;
     const reservation = await Reservation.findByPk(reservationId);
@@ -553,11 +1051,7 @@ router.post('/sipago-webhook', async (req, res) => {
       return res.status(200).json({ ignored: true });
     }
 
-    console.log('[SIPAGO_WEBHOOK] reservation found, service_items type:', typeof reservation.service_items, 'value:', reservation.service_items);
-
-    const payload = req.body || {};
-    const orderStatus = (payload?.data?.order?.status || '').toString().toUpperCase();
-    console.log('[SIPAGO_WEBHOOK] order.status =', orderStatus);
+    const orderStatus = verified.status;
 
     if (orderStatus !== 'SUCCESS') {
       return res.status(200).json({ ok: true, status: orderStatus });
@@ -634,20 +1128,16 @@ router.post('/sipago-webhook', async (req, res) => {
     try {
       // Try to get service_items from reservation first (SiPago strips them from query params)
       const rawServiceItems = reservation.service_items;
-      console.log('[SIPAGO_WEBHOOK] service_items type:', typeof rawServiceItems, 'value:', rawServiceItems);
       if (rawServiceItems) {
         if (typeof rawServiceItems === 'string') {
           webhookServiceItems = JSON.parse(rawServiceItems);
-          console.log('[SIPAGO_WEBHOOK] Parsed service_items from string:', webhookServiceItems);
         } else if (Array.isArray(rawServiceItems)) {
           webhookServiceItems = rawServiceItems;
-          console.log('[SIPAGO_WEBHOOK] Retrieved service_items from reservation (array):', webhookServiceItems);
         } else {
           console.log('[SIPAGO_WEBHOOK] service_items is neither string nor array:', rawServiceItems);
         }
       } else if (req.query?.service_items) {
         webhookServiceItems = JSON.parse(req.query.service_items);
-        console.log('[SIPAGO_WEBHOOK] Received service_items from query:', webhookServiceItems);
       } else {
         console.log('[SIPAGO_WEBHOOK] No service_items in reservation or request');
       }
@@ -678,7 +1168,6 @@ router.post('/sipago-webhook', async (req, res) => {
         const existingUser = await User.findOne({ where: { dni: customerDni } });
         if (existingUser) {
           finalUserId = existingUser.id;
-          console.log('[SIPAGO_WEBHOOK] Found existing user by DNI:', customerDni, '-> user_id:', finalUserId);
           await reservation.update({ user_id: finalUserId });
         }
       } catch (e) { console.warn('[SIPAGO_WEBHOOK] Could not find user by DNI:', e.message); }
@@ -730,7 +1219,6 @@ router.post('/sipago-webhook', async (req, res) => {
       total_capacity: containerQR.total_capacity,
       service_items: Array.isArray(webhookServiceItems) && webhookServiceItems.length > 0 ? webhookServiceItems : null,
     });
-    console.log('[SIPAGO_WEBHOOK] Sale created with service_items:', sale.service_items);
 
     if (metaDiscountId) {
       try {
@@ -943,6 +1431,7 @@ router.post('/sipago-webhook', async (req, res) => {
       console.error('[SIPAGO_WEBHOOK] Email error:', emailErr);
     }
 
+    await attempt.update({ status: 'success', sale_id: sale.id, finalized_at: new Date() });
     return res.status(200).json({ ok: true, sale_id: sale.id });
   } catch (e) {
     console.error('[SIPAGO_WEBHOOK] unexpected error', e);
@@ -1615,25 +2104,41 @@ router.get('/generate-pdf/:sale_id', async (req, res) => {
 router.post('/sipago-confirm', optionalAuth, async (req, res) => {
   console.log('[SIPAGO_CONFIRM] 📋 Confirm endpoint called');
   try {
-    const { reservation_id, order_uuid, discount_id, service_items, customer_name, customer_email, customer_phone, customer_dni, customer_provincia, customer_localidad } = req.body || {};
-    if (!reservation_id) return res.status(400).json({ error: 'reservation_id required' });
+    const { sipago_payment_attempts: SipagoPaymentAttempt } = sequelize.models;
+    let attempt = req.body?.attempt_id ? await SipagoPaymentAttempt.findByPk(req.body.attempt_id) : null;
+    if (!attempt && req.body?.reservation_id && req.body?.order_uuid) {
+      attempt = await SipagoPaymentAttempt.findOne({
+        where: { reservation_id: req.body.reservation_id, provider_order_uuid: req.body.order_uuid }
+      });
+    }
+    if (!attempt) return res.status(400).json({ error: 'verified_attempt_required' });
+    const customerMetadata = attempt.customer_metadata || {};
+    req.body = {
+      ...req.body,
+      reservation_id: attempt.reservation_id,
+      discount_id: attempt.discount_id || null,
+      service_items: attempt.service_items || [],
+      customer_name: customerMetadata.name || null,
+      customer_email: customerMetadata.email || null,
+      customer_phone: customerMetadata.phone || null,
+      customer_dni: customerMetadata.dni || null,
+      customer_provincia: customerMetadata.provincia || null,
+      customer_localidad: customerMetadata.localidad || null
+    };
+    const { reservation_id, discount_id, service_items, customer_name, customer_email, customer_phone, customer_dni, customer_provincia, customer_localidad } = req.body;
 
     const { reservations: Reservation, tickets: Ticket, sales: Sale, users: User, discounts: Discount } = sequelize.models;
     const reservation = await Reservation.findByPk(reservation_id);
     if (!reservation) return res.status(404).json({ error: 'reservation_not_found' });
 
-    // If we have order_uuid, verify with Sipago that it's SUCCESS
-    if (order_uuid) {
-      try {
-        const order = await getSipagoOrder(order_uuid);
-        const status = (order?.data?.order?.status || '').toString().toUpperCase();
-        if (status !== 'SUCCESS') {
-          return res.status(409).json({ error: 'order_not_success', status });
-        }
-      } catch (err) {
-        console.warn('[SIPAGO_CONFIRM] Could not verify order status:', err?.message || err);
-        // Proceed idempotently without blocking, as fallback
+    try {
+      const verification = await verifyIndividualSipagoAttempt(attempt);
+      if (verification.status !== 'SUCCESS') {
+        return res.status(409).json({ error: 'order_not_success', status: normalizeSipagoStatus(verification.status) });
       }
+    } catch (err) {
+      await attempt.update({ verification_error: String(err.message || err).slice(0, 500) });
+      return res.status(502).json({ error: 'sipago_verification_failed' });
     }
 
     // Reject if the reservation has expired or been canceled
@@ -1694,13 +2199,17 @@ router.post('/sipago-confirm', optionalAuth, async (req, res) => {
     console.log('[SIPAGO_CONFIRM] Creating sale and tickets for sale_id:', reservation.sale_id);
     
     // Determine effective user to link sale/tickets
-    // Priority: JWT user > reservation.user_id > header > body
-    let effUserId = req.user?.userId || reservation.user_id || req.header('x-user-id') || req.body?.user_id || null;
+    // For box office staff (boleteria/admin/productor), do NOT assign their own
+    // user_id as the buyer. Only use reservation.user_id or header/body user_id.
+    const isStaffConfirm = req.user && ['boleteria', 'admin', 'productor'].includes(req.user.role);
+    let effUserId = isStaffConfirm
+      ? (reservation.user_id || req.header('x-user-id') || req.body?.user_id || null)
+      : (req.user?.userId || reservation.user_id || req.header('x-user-id') || req.body?.user_id || null);
     if (effUserId) {
       const exists = await User.findByPk(effUserId);
       if (!exists) effUserId = null;
     }
-    console.log('[SIPAGO_CONFIRM] User ID:', effUserId);
+    console.log('[SIPAGO_CONFIRM] User ID:', effUserId, '(isStaffConfirm:', isStaffConfirm, ')');
 
     // Generate container QR for this sale
     const items = Array.isArray(reservation.items) ? reservation.items : [];
@@ -2036,6 +2545,7 @@ router.post('/sipago-confirm', optionalAuth, async (req, res) => {
     }
 
     console.log('[SIPAGO_CONFIRM] 🎉 SUCCESS! Sale created with', createdTickets.length, 'tickets');
+    await attempt.update({ status: 'success', sale_id: sale.id, finalized_at: new Date() });
     return res.json({ ok: true, sale_id: sale.id, tickets_created: createdTickets.length });
   } catch (e) {
     console.error('[SIPAGO_CONFIRM] ❌ ERROR:', e);
@@ -2111,7 +2621,10 @@ router.post('/free-emission', optionalAuth, async (req, res) => {
     }
 
     // Determine user
-    let effUserId = req.user?.userId || reservation.user_id || null;
+    // For box office staff (boleteria/admin/productor), do NOT assign their own
+    // user_id as the buyer. Only use reservation.user_id or find by DNI.
+    const isStaffSale = req.user && ['boleteria', 'admin', 'productor'].includes(req.user.role);
+    let effUserId = isStaffSale ? (reservation.user_id || null) : (req.user?.userId || reservation.user_id || null);
     if (effUserId) {
       const exists = await User.findByPk(effUserId);
       if (!exists) effUserId = null;
@@ -2717,6 +3230,62 @@ async function finalizePackPaymentInternal({ packId, paymentStatusSource, reqBod
   }
 
   return { ok: true, sales: createdSales.map(c => c.sale.id) };
+}
+
+export async function attemptSipagoFinalizationForReservation(reservation, io) {
+  const { sipago_payment_attempts: SipagoPaymentAttempt } = sequelize.models;
+  const now = dayjs().toDate();
+  const attempt = await SipagoPaymentAttempt.findOne({
+    where: {
+      reservation_id: reservation.id,
+      status: 'pending',
+      provider_order_uuid: { [Op.ne]: null },
+      expires_at: { [Op.gt]: new Date(now.getTime() - SIPAGO_EXPIRY_VERIFICATION_GRACE_MS) }
+    },
+    order: [['created_at', 'DESC']]
+  });
+  if (!attempt) return null;
+  try {
+    const verified = await verifyIndividualSipagoAttempt(attempt);
+    if (verified.status === 'SUCCESS') {
+      const result = await finalizeIndividualSipagoAttempt(attempt, { io });
+      return { finalized: true, sale_id: result.sale.id };
+    }
+    return { finalized: false, status: normalizeSipagoStatus(verified.status) };
+  } catch (err) {
+    const message = String(err.message || err);
+    const isNetwork = !err.status || err.status >= 500 || err.status === 429 || err.message?.includes('Sipago get order failed');
+    return { finalized: false, status: isNetwork ? 'verification_unavailable' : 'finalization_error', error: message.slice(0, 500) };
+  }
+}
+
+export async function reconcileSipagoAttempts(io) {
+  try {
+    const { sipago_payment_attempts: SipagoPaymentAttempt } = sequelize.models;
+    const now = dayjs().toDate();
+    const pending = await SipagoPaymentAttempt.findAll({
+      where: {
+        status: 'pending',
+        provider_order_uuid: { [Op.ne]: null },
+        expires_at: { [Op.gt]: new Date(now.getTime() - SIPAGO_EXPIRY_VERIFICATION_GRACE_MS) }
+      },
+      order: [['created_at', 'ASC']],
+      limit: 100
+    });
+    for (const attempt of pending) {
+      try {
+        const verified = await verifyIndividualSipagoAttempt(attempt);
+        if (verified.status === 'SUCCESS') {
+          console.log('[SIPAGO_RECONCILE] Finalizing SUCCESS for attempt', attempt.id);
+          const result = await finalizeIndividualSipagoAttempt(attempt, { io });
+          console.log('[SIPAGO_RECONCILE] Finalized attempt', attempt.id, 'sale', result.sale.id);
+        }
+      } catch (err) {
+        console.error('[SIPAGO_RECONCILE] Error processing attempt', attempt.id, err.message);
+        try { await attempt.update({ verification_error: String(err.message || err).slice(0, 500) }); } catch {}
+      }
+    }
+  } catch (e) { console.error('[SIPAGO_RECONCILE] unexpected error', e); }
 }
 
 export default router;

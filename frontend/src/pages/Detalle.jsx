@@ -8,7 +8,7 @@ import GuestCheckoutModal from '../components/GuestCheckoutModal.jsx';
 import GuestCheckoutForm from '../components/GuestCheckoutForm.jsx';
 import PackCheckout from '../components/PackCheckout.jsx';
 import { apiFetch, apiAuthFetch } from '../lib/api';
-import { formatSeatLocation } from '../lib/seatFormatter';
+import { formatSeatLocation, validatePlateaBajaRows } from '../lib/seatFormatter';
 import { getShowImageUrl } from '../lib/media';
 import { getSeatPriceTier } from '../lib/seatPriceColors.js';
 import { formatDateLong, formatTime, formatDateShort } from '../lib/dateFormatter.js';
@@ -57,6 +57,7 @@ export default function Detalle(){
   const [showGuestForm, setShowGuestForm] = useState(false);
   const [guestData, setGuestData] = useState(null);
   const [emittingFreeTickets, setEmittingFreeTickets] = useState(false);
+  const [creatingSipagoOrder, setCreatingSipagoOrder] = useState(false);
 
   // Pack multi-function checkout state
   const [showPackCheckout, setShowPackCheckout] = useState(false);
@@ -625,7 +626,8 @@ export default function Detalle(){
         body: JSON.stringify({ 
           code: discountCode.trim(),
           show_id: id,
-          seat_count: seatCount
+          seat_count: seatCount,
+          items
         })
       });
       
@@ -690,8 +692,9 @@ export default function Detalle(){
   };
 
   const payWithSipago = async (customerData = null) => {
-    if (!reservation) return;
+    if (!reservation || creatingSipagoOrder) return;
     let currentReservation = reservation;
+    setCreatingSipagoOrder(true);
     try {
       // CRITICAL: Sync the current selection to the reservation BEFORE creating preference
       // This ensures the DB has all the items the user selected
@@ -794,7 +797,7 @@ export default function Detalle(){
       if (!r.ok) {
         const errorData = await r.json().catch(() => ({}));
         console.error('[SIPAGO] Error creating order:', errorData);
-        alert('Error al crear la orden de pago. Por favor, intentá de nuevo.');
+        alert(errorData.error === 'sipago_creation_failed' ? 'SiPago no pudo iniciar la operación. No se realizó ningún cobro y tus butacas siguen reservadas mientras el contador esté activo. Podés volver a intentarlo.' : 'Error al crear la orden de pago. No se realizó ningún cobro; podés volver a intentarlo.');
         return;
       }
       
@@ -804,13 +807,13 @@ export default function Detalle(){
       try {
         // Clear previous sipago session data first to avoid stale values
         sessionStorage.removeItem('sipago_order_uuid');
+        sessionStorage.removeItem('sipago_attempt_id');
         sessionStorage.removeItem('sipago_reservation_id');
         sessionStorage.removeItem('sipago_discount_id');
         sessionStorage.removeItem('sipago_guest_data');
-        
-        const orderUuid = data?.order?.data?.id || data?.order?.data?.attributes?.uuid || null;
-        if (orderUuid) {
-          sessionStorage.setItem('sipago_order_uuid', String(orderUuid));
+
+        if (data.attempt_id) {
+          sessionStorage.setItem('sipago_attempt_id', String(data.attempt_id));
           sessionStorage.setItem('sipago_reservation_id', String(currentReservation.id));
           // Only set discount_id if there's actually a discount applied to THIS purchase
           if (appliedDiscount?.id) {
@@ -843,7 +846,9 @@ export default function Detalle(){
       }
     } catch (e) {
       console.error('[SIPAGO] Network error:', e);
-      alert('Error de red al crear la orden. Por favor, intentá de nuevo.');
+      alert('No pudimos iniciar el pago en SiPago. No se realizó ningún cobro y tus butacas siguen reservadas mientras el contador esté activo. Podés volver a intentarlo.');
+    } finally {
+      setCreatingSipagoOrder(false);
     }
   };
 
@@ -994,7 +999,7 @@ export default function Detalle(){
     }
     
     // Check if applied discount still meets seat constraints
-    if (appliedDiscount && (appliedDiscount.min_seats || appliedDiscount.max_seats || appliedDiscount.require_even)) {
+    if (appliedDiscount && (appliedDiscount.min_seats || appliedDiscount.max_seats || appliedDiscount.require_even || appliedDiscount.platea_baja_only)) {
       const items = [];
       
       for (const seatId of selection.selectedSeatIds) {
@@ -1027,6 +1032,12 @@ export default function Detalle(){
       } else if (appliedDiscount.require_even && seatCount % 2 !== 0) {
         setDiscountError('Este cupón requiere seleccionar un número par de localidades');
         setAppliedDiscount(null);
+      } else if (appliedDiscount.platea_baja_only) {
+        const rowError = validatePlateaBajaRows(items, appliedDiscount.row_start, appliedDiscount.row_end);
+        if (rowError) {
+          setDiscountError(rowError);
+          setAppliedDiscount(null);
+        }
       }
     }
   }, [appliedDiscount]);
@@ -1457,21 +1468,25 @@ export default function Detalle(){
       {reservation && (
         <div style={{ display:'flex', flexDirection: 'column', gap:8, marginTop:16 }}>
           {cartTotal > 0 ? (
-            <button 
-              onClick={handlePaymentClick} 
-              style={{ 
-                background:'#1e40af', 
-                color:'#fff', 
-                border:'none', 
-                padding:'12px 16px', 
-                borderRadius:6,
-                fontWeight: 600,
-                fontSize: 15,
-                cursor: 'pointer'
-              }}
-            >
-              Pagar ${cartTotal.toLocaleString('es-AR')}
-            </button>
+            <>
+              <div style={{ color: '#6B7280', fontSize: 12, textAlign: 'center' }}>Tené tu tarjeta a mano, tendrás 10 minutos para completar el pago</div>
+              <button
+                onClick={handlePaymentClick}
+                disabled={creatingSipagoOrder}
+                style={{
+                  background: creatingSipagoOrder ? '#9ca3af' : '#000000',
+                  color:'#fff',
+                  border:'none',
+                  padding:'12px 16px',
+                  borderRadius:6,
+                  fontWeight: 600,
+                  fontSize: 15,
+                  cursor: creatingSipagoOrder ? 'not-allowed' : 'pointer'
+                }}
+              >
+                {creatingSipagoOrder ? 'Generando pago seguro...' : `Pagar $${cartTotal.toLocaleString('es-AR')}`}
+              </button>
+            </>
           ) : (
             <>
               <button 
@@ -1665,7 +1680,7 @@ export default function Detalle(){
             onClick={() => setShowPackCheckout(true)}
             style={{
               padding: '12px 24px',
-              background: '#16a34a',
+              background: '#000000',
               color: '#fff',
               border: 'none',
               borderRadius: 8,
@@ -1711,7 +1726,7 @@ export default function Detalle(){
             onClick={() => window.location.href = '/agenda'}
             style={{
               padding: '12px 24px',
-              background: '#3b82f6',
+              background: '#000000',
               color: '#fff',
               border: 'none',
               borderRadius: 8,
@@ -1980,7 +1995,7 @@ export default function Detalle(){
                       setIsMobileCartOpen(true);
                     }}
                     style={{
-                      background: '#1e40af',
+                      background: '#000000',
                       color: '#fff',
                       border: 'none',
                       padding: '10px 20px',
@@ -2249,24 +2264,28 @@ export default function Detalle(){
                 {reservation && (
                   <div style={{ display: 'flex', flexDirection: 'column', gap: 10, marginTop: 16 }}>
                     {cartTotal > 0 ? (
-                      <button 
-                        onClick={() => {
-                          setIsMobileCartOpen(false);
-                          handlePaymentClick();
-                        }} 
-                        style={{ 
-                          background: '#1e40af',
-                          color: '#fff',
-                          border: 'none',
-                          padding: '14px 16px',
-                          borderRadius: 8,
-                          fontWeight: 600,
-                          fontSize: 16,
-                          cursor: 'pointer'
-                        }}
-                      >
-                        Ir a pagar ${cartTotal.toLocaleString('es-AR')}
-                      </button>
+                      <>
+                        <div style={{ color: '#6B7280', fontSize: 12, textAlign: 'center' }}>Tené tu tarjeta a mano, tendrás 10 minutos para completar el pago</div>
+                        <button
+                          onClick={() => {
+                            setIsMobileCartOpen(false);
+                            handlePaymentClick();
+                          }}
+                          disabled={creatingSipagoOrder}
+                          style={{
+                            background: creatingSipagoOrder ? '#9ca3af' : '#000000',
+                            color: '#fff',
+                            border: 'none',
+                            padding: '14px 16px',
+                            borderRadius: 8,
+                            fontWeight: 600,
+                            fontSize: 16,
+                            cursor: creatingSipagoOrder ? 'not-allowed' : 'pointer'
+                          }}
+                        >
+                          {creatingSipagoOrder ? 'Generando pago seguro...' : `Ir a pagar $${cartTotal.toLocaleString('es-AR')}`}
+                        </button>
+                      </>
                     ) : (
                       <>
                         <button 

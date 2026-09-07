@@ -458,12 +458,12 @@ export default function Perfil(){
       {user?.role === 'productor' && (
         <div
           style={{
-            background: 'linear-gradient(135deg, #8b5cf6 0%, #7c3aed 100%)',
+            background: '#000000',
             color: 'white',
             padding: isMobile ? '16px' : '24px',
             borderRadius: '12px',
             marginBottom: '24px',
-            boxShadow: '0 8px 16px rgba(139, 92, 246, 0.3)',
+            boxShadow: '0 8px 16px rgba(0, 0, 0, 0.3)',
             cursor: 'pointer',
             transition: 'transform 0.2s, box-shadow 0.2s'
           }}
@@ -471,12 +471,12 @@ export default function Perfil(){
           onMouseEnter={(e) => {
             if (!isMobile) {
               e.currentTarget.style.transform = 'translateY(-2px)';
-              e.currentTarget.style.boxShadow = '0 12px 24px rgba(139, 92, 246, 0.4)';
+              e.currentTarget.style.boxShadow = '0 12px 24px rgba(0, 0, 0, 0.4)';
             }
           }}
           onMouseLeave={(e) => {
             e.currentTarget.style.transform = 'translateY(0)';
-            e.currentTarget.style.boxShadow = '0 8px 16px rgba(139, 92, 246, 0.3)';
+            e.currentTarget.style.boxShadow = '0 8px 16px rgba(0, 0, 0, 0.3)';
           }}
         >
           {isMobile ? (
@@ -800,7 +800,7 @@ export default function Perfil(){
                         </div>
                         {/* Botones */}
                         <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 8 }}>
-                          <button onClick={()=>setSelectedTicket(t)} style={{ padding: '10px 6px', background: '#6366f1', color: 'white', border: 'none', borderRadius: 8, fontWeight: 600, cursor: 'pointer', fontSize: 12 }}>
+                          <button onClick={()=>setSelectedTicket(t)} style={{ padding: '10px 6px', background: '#000000', color: 'white', border: 'none', borderRadius: 8, fontWeight: 600, cursor: 'pointer', fontSize: 12 }}>
                             Ver QR
                           </button>
                           <button 
@@ -914,7 +914,7 @@ export default function Perfil(){
                         {/* 5) Ver QR (botón cuadrado) */}
                         <div style={{ padding:'0 8px' }}>
                           {t.qr_code && (
-                            <button onClick={()=>setSelectedTicket(t)} style={{ padding:'12px 16px', background:'#6366f1', color:'white', border:'none', borderRadius:8, fontWeight:700, cursor:'pointer', display:'flex', alignItems:'center', justifyContent:'center', minHeight:80, minWidth:80 }}>
+                            <button onClick={()=>setSelectedTicket(t)} style={{ padding:'12px 16px', background:'#000000', color:'white', border:'none', borderRadius:8, fontWeight:700, cursor:'pointer', display:'flex', alignItems:'center', justifyContent:'center', minHeight:80, minWidth:80 }}>
                               <span style={{ textAlign:'center', lineHeight:1.3 }}>Ver<br/>QR</span>
                             </button>
                           )}
@@ -1072,7 +1072,7 @@ export default function Perfil(){
               onClick={() => setSelectedTicket(null)}
               style={{
                 padding: '10px 24px',
-                background: '#6366f1',
+                background: '#000000',
                 color: 'white',
                 border: 'none',
                 borderRadius: 6,

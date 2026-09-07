@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { useNavigate, Link } from 'react-router-dom';
 import { useAuth } from '../contexts/AuthContext';
 
@@ -9,6 +9,15 @@ export default function Login() {
   const [loading, setLoading] = useState(false);
   const { login } = useAuth();
   const navigate = useNavigate();
+
+  // Si venimos de un cierre de sesión automático por token vencido
+  // (ej: boletero validando entradas durante varios días), mostramos aviso.
+  useEffect(() => {
+    if (sessionStorage.getItem('session_expired')) {
+      setError('Tu sesión venció. Iniciá sesión nuevamente para continuar.');
+      sessionStorage.removeItem('session_expired');
+    }
+  }, []);
 
   const handleSubmit = async (e) => {
     e.preventDefault();
@@ -64,7 +73,7 @@ export default function Login() {
           disabled={loading}
           style={{
             padding: 12,
-            background: '#007bff',
+            background: '#000000',
             color: 'white',
             border: 'none',
             borderRadius: 4,

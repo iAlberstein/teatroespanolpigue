@@ -17,6 +17,18 @@ export function AuthProvider({ children }) {
     }
   }, []);
 
+  // Escuchar avisos globales de token vencido/inválido (ej: emitidos por
+  // apiAuthFetch cuando el backend responde 401 mientras se usa el
+  // Validador de entradas) y cerrar sesión automáticamente.
+  useEffect(() => {
+    const handleUnauthorized = () => {
+      sessionStorage.setItem('session_expired', 'true');
+      logout();
+    };
+    window.addEventListener('auth:unauthorized', handleUnauthorized);
+    return () => window.removeEventListener('auth:unauthorized', handleUnauthorized);
+  }, []);
+
   const loadUser = async () => {
     try {
       const res = await apiAuthFetch('/api/auth/me', {}, token);

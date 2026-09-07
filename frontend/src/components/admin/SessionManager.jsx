@@ -388,7 +388,7 @@ export default function SessionManager({ show, sessions, onAddSession, onDeleteS
           type="submit"
           style={{
             padding: '9px 20px',
-            background: '#28a745',
+            background: '#000000',
             color: '#fff',
             border: 'none',
             borderRadius: 4,
@@ -655,7 +655,7 @@ export default function SessionManager({ show, sessions, onAddSession, onDeleteS
                             }
                             setEditingSession(null);
                           }}
-                          style={{ padding: '8px 20px', background: '#10b981', color: '#fff', border: 'none', borderRadius: 4, cursor: 'pointer', fontWeight: 600 }}
+                          style={{ padding: '8px 20px', background: '#000000', color: '#fff', border: 'none', borderRadius: 4, cursor: 'pointer', fontWeight: 600 }}
                         >
                           💾 Guardar Cambios
                         </button>
@@ -710,7 +710,7 @@ export default function SessionManager({ show, sessions, onAddSession, onDeleteS
                             }}
                             style={{
                               padding: '6px 12px',
-                              background: '#3b82f6',
+                              background: '#000000',
                               color: '#fff',
                               border: 'none',
                               borderRadius: 4,

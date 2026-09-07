@@ -1,8 +1,11 @@
 import { Router } from 'express';
 import { sequelize } from '../../lib/sequelize.js';
-import { authenticateToken, requireRole } from '../../middleware/auth.js';
+import { authenticateToken, optionalAuth, requireRole } from '../../middleware/auth.js';
 import { Op } from 'sequelize';
 import { enviarConfirmacionInscripcion } from '../../lib/ateneoEmailService.js';
+import { createSipagoOrder } from '../../lib/sipago.js';
+import bcrypt from 'bcrypt';
+import crypto from 'crypto';
 
 const router = Router();
 
@@ -114,11 +117,11 @@ router.get('/', authenticateToken, requireRole('admin', 'admin_ateneo'), async (
 });
 
 // POST /api/ateneo/inscripciones - Inscribir alumno a clase
-router.post('/', authenticateToken, async (req, res) => {
+router.post('/', optionalAuth, async (req, res) => {
   const transaction = await sequelize.transaction();
-  
+
   try {
-    const { 
+    const {
       ateneo_inscripciones: AteneoInscripcion,
       ateneo_alumnos: AteneoAlumno,
       ateneo_clases: AteneoClase,
@@ -128,24 +131,87 @@ router.post('/', authenticateToken, async (req, res) => {
       roles: Role,
       user_roles: UserRole
     } = sequelize.models;
-    
-    const { clase_id, alumno_id, es_menor, nombre_menor, apellido_menor, dni_menor, fecha_nacimiento_menor } = req.body;
-    const userRoles = req.user.roles || [];
-    const isAdmin = userRoles.includes('admin') || userRoles.includes('admin_ateneo') || req.user.role === 'admin';
-    
-    // Si no es admin, obtener o crear alumno_id del usuario logueado
+
+    const {
+      clase_id, alumno_id, es_menor,
+      nombre_menor, apellido_menor, dni_menor, fecha_nacimiento_menor,
+      nombre_tutor, telefono_tutor,
+      guest
+    } = req.body;
+
+    if (!clase_id) {
+      await transaction.rollback();
+      return res.status(400).json({ error: 'clase_id es requerido' });
+    }
+
+    const clase = await AteneoClase.findByPk(clase_id);
+    if (!clase) {
+      await transaction.rollback();
+      return res.status(404).json({ error: 'Clase no encontrada' });
+    }
+    if (clase.estado !== 'activa') {
+      await transaction.rollback();
+      return res.status(400).json({ error: 'La clase no está activa' });
+    }
+
+    const isAuthenticated = !!req.user;
+    const isTallerCorto = !!clase.taller_corto;
+
+    if (!isAuthenticated && !isTallerCorto) {
+      await transaction.rollback();
+      return res.status(401).json({ error: 'Debes iniciar sesión para inscribirte a esta clase' });
+    }
+    if (!isAuthenticated && (!guest || !guest.name || !guest.email)) {
+      await transaction.rollback();
+      return res.status(400).json({ error: 'Nombre y email son requeridos para la inscripción' });
+    }
+
+    const userRoles = req.user?.roles || (req.user?.role ? [req.user.role] : []);
+    const isAdmin = isAuthenticated && (userRoles.includes('admin') || userRoles.includes('admin_ateneo') || req.user.role === 'admin');
+
+    let targetUserId = req.user?.userId;
     let targetAlumnoId = alumno_id;
+
     if (!isAdmin) {
-      let alumno = await AteneoAlumno.findOne({ where: { user_id: req.user.userId } });
-      if (!alumno) {
-        // Auto-crear perfil de alumno
-        const user = await User.findByPk(req.user.userId);
-        if (!user) {
+      let alumno;
+
+      if (!isAuthenticated) {
+        // Flujo invitado para talleres cortos: crear usuario oculto
+        const { name, email, phone, dni } = guest;
+        const existingEmail = await User.findOne({ where: { email: email.toLowerCase() } });
+        if (existingEmail) {
           await transaction.rollback();
-          return res.status(404).json({ error: 'Usuario no encontrado' });
+          return res.status(409).json({ error: 'El email ya está registrado. Iniciá sesión con tu cuenta.' });
         }
+        if (dni) {
+          const existingDni = await User.findOne({ where: { dni } });
+          if (existingDni) {
+            await transaction.rollback();
+            return res.status(409).json({ error: 'El DNI ya está registrado. Iniciá sesión con tu cuenta.' });
+          }
+        }
+
+        const randomPassword = crypto.randomUUID();
+        const password_hash = await bcrypt.hash(randomPassword, 10);
+        const user = await User.create({
+          name,
+          email: email.toLowerCase(),
+          phone: phone || null,
+          dni: dni || null,
+          password_hash,
+          role: 'alumno_ateneo',
+          provincia: null,
+          localidad: null
+        }, { transaction });
+
+        const rolAlumno = await Role.findOne({ where: { nombre: 'alumno_ateneo' } });
+        if (rolAlumno) {
+          await UserRole.create({ user_id: user.id, role_id: rolAlumno.id }, { transaction });
+        }
+
+        targetUserId = user.id;
         alumno = await AteneoAlumno.create({
-          user_id: req.user.userId,
+          user_id: user.id,
           nombre: user.name || null,
           dni: user.dni || null,
           telefono: user.phone || null,
@@ -155,46 +221,63 @@ router.post('/', authenticateToken, async (req, res) => {
           nombre_menor: es_menor ? (nombre_menor || null) : null,
           apellido_menor: es_menor ? (apellido_menor || null) : null,
           dni_menor: es_menor ? (dni_menor || null) : null,
-          fecha_nacimiento_menor: es_menor ? (fecha_nacimiento_menor || null) : null
+          fecha_nacimiento_menor: es_menor ? (fecha_nacimiento_menor || null) : null,
+          contacto_emergencia: es_menor ? (nombre_tutor || null) : null,
+          telefono_emergencia: es_menor ? (telefono_tutor || null) : null
         }, { transaction });
+      } else {
+        // Usuario autenticado
+        alumno = await AteneoAlumno.findOne({ where: { user_id: req.user.userId } });
+        if (!alumno) {
+          const user = await User.findByPk(req.user.userId);
+          if (!user) {
+            await transaction.rollback();
+            return res.status(404).json({ error: 'Usuario no encontrado' });
+          }
+          alumno = await AteneoAlumno.create({
+            user_id: req.user.userId,
+            nombre: user.name || null,
+            dni: user.dni || null,
+            telefono: user.phone || null,
+            estado_academico: 'pendiente',
+            fecha_ingreso: new Date(),
+            es_menor: es_menor || false,
+            nombre_menor: es_menor ? (nombre_menor || null) : null,
+            apellido_menor: es_menor ? (apellido_menor || null) : null,
+            dni_menor: es_menor ? (dni_menor || null) : null,
+            fecha_nacimiento_menor: es_menor ? (fecha_nacimiento_menor || null) : null,
+            contacto_emergencia: es_menor ? (nombre_tutor || null) : null,
+            telefono_emergencia: es_menor ? (telefono_tutor || null) : null
+          }, { transaction });
 
-        // Asignar rol alumno_ateneo si no lo tiene
-        if (!userRoles.includes('alumno_ateneo')) {
-          const rolAlumno = await Role.findOne({ where: { nombre: 'alumno_ateneo' } });
-          if (rolAlumno) {
-            const yaExiste = await UserRole.findOne({ where: { user_id: req.user.userId, role_id: rolAlumno.id } });
-            if (!yaExiste) {
-              await UserRole.create({ user_id: req.user.userId, role_id: rolAlumno.id }, { transaction });
+          if (!userRoles.includes('alumno_ateneo')) {
+            const rolAlumno = await Role.findOne({ where: { nombre: 'alumno_ateneo' } });
+            if (rolAlumno) {
+              const yaExiste = await UserRole.findOne({ where: { user_id: req.user.userId, role_id: rolAlumno.id } });
+              if (!yaExiste) {
+                await UserRole.create({ user_id: req.user.userId, role_id: rolAlumno.id }, { transaction });
+              }
             }
           }
+        } else if (es_menor && !alumno.es_menor) {
+          await alumno.update({
+            es_menor: true,
+            nombre_menor: nombre_menor || alumno.nombre_menor,
+            apellido_menor: apellido_menor || alumno.apellido_menor,
+            dni_menor: dni_menor || alumno.dni_menor,
+            fecha_nacimiento_menor: fecha_nacimiento_menor || alumno.fecha_nacimiento_menor,
+            contacto_emergencia: nombre_tutor || alumno.contacto_emergencia,
+            telefono_emergencia: telefono_tutor || alumno.telefono_emergencia
+          }, { transaction });
         }
-      } else if (es_menor && !alumno.es_menor) {
-        // Update existing alumno with minor data
-        await alumno.update({
-          es_menor: true,
-          nombre_menor: nombre_menor || alumno.nombre_menor,
-          apellido_menor: apellido_menor || alumno.apellido_menor,
-          dni_menor: dni_menor || alumno.dni_menor,
-          fecha_nacimiento_menor: fecha_nacimiento_menor || alumno.fecha_nacimiento_menor
-        }, { transaction });
       }
+
       targetAlumnoId = alumno.id;
     }
 
-    if (!clase_id || !targetAlumnoId) {
+    if (!targetAlumnoId) {
       await transaction.rollback();
-      return res.status(400).json({ error: 'clase_id y alumno_id son requeridos' });
-    }
-
-    // Verificar que la clase existe y está activa
-    const clase = await AteneoClase.findByPk(clase_id);
-    if (!clase) {
-      await transaction.rollback();
-      return res.status(404).json({ error: 'Clase no encontrada' });
-    }
-    if (clase.estado !== 'activa') {
-      await transaction.rollback();
-      return res.status(400).json({ error: 'La clase no está activa' });
+      return res.status(400).json({ error: 'alumno_id es requerido' });
     }
 
     // Verificar cupo
@@ -206,7 +289,7 @@ router.post('/', authenticateToken, async (req, res) => {
       return res.status(400).json({ error: 'No hay cupo disponible' });
     }
 
-    // Verificar que no esté ya inscripto (excluir bajas para permitir re-inscripción)
+    // Verificar que no esté ya inscripto
     const existente = await AteneoInscripcion.findOne({
       where: { alumno_id: targetAlumnoId, clase_id, estado: { [Op.in]: ['pendiente', 'confirmada'] } }
     });
@@ -215,23 +298,102 @@ router.post('/', authenticateToken, async (req, res) => {
       return res.status(400).json({ error: 'Ya existe una inscripción activa a esta clase' });
     }
 
-    // Si la clase tiene matrícula bonificada, la inscripción se confirma directamente
+    // Si es taller corto: confirmar inscripción y redirigir a pago inmediato
+    if (isTallerCorto) {
+      const inscripcion = await AteneoInscripcion.create({
+        alumno_id: targetAlumnoId,
+        clase_id,
+        estado: 'confirmada'
+      }, { transaction });
+
+      const montoTaller = parseFloat(clase.costo_cuota || 0);
+      if (montoTaller <= 0) {
+        await transaction.commit();
+        return res.status(201).json({ inscripcion, mensaje: 'Inscripción confirmada' });
+      }
+
+      const hoy = new Date();
+      const vencTaller = new Date(hoy.getFullYear(), hoy.getMonth(), hoy.getDate() + 7);
+      const fechaVencTallerStr = `${vencTaller.getFullYear()}-${String(vencTaller.getMonth() + 1).padStart(2, '0')}-${String(vencTaller.getDate()).padStart(2, '0')}`;
+
+      const pago = await AteneoPago.create({
+        alumno_id: targetAlumnoId,
+        clase_id,
+        inscripcion_id: inscripcion.id,
+        tipo: 'cuota',
+        periodo: `${clase.ciclo || hoy.getFullYear()}`,
+        monto_original: montoTaller,
+        monto_final: montoTaller,
+        estado: 'pendiente',
+        fecha_vencimiento: fechaVencTallerStr
+      }, { transaction });
+
+      const totalCentavos = Math.round(montoTaller * 100);
+      const FRONTEND_URL = process.env.FRONTEND_URL || process.env.APP_URL || 'https://www.teatropigue.com.ar';
+      const BASE_URL = process.env.BASE_URL || 'https://www.teatropigue.com.ar';
+      const concepto = `Taller ${clase.nombre}`;
+
+      const successUrl = new URL(`${FRONTEND_URL}${isAuthenticated ? '/ateneo/alumno' : '/ateneo/inscripcion-exitosa'}`);
+      successUrl.searchParams.set('pago', 'ok');
+      successUrl.searchParams.set('id', String(pago.id));
+
+      const failureUrl = new URL(`${FRONTEND_URL}${isAuthenticated ? '/ateneo/alumno' : '/ateneo/inscripcion-exitosa'}`);
+      failureUrl.searchParams.set('pago', 'error');
+      failureUrl.searchParams.set('id', String(pago.id));
+
+      const redirect_urls = { success: successUrl.toString(), failed: failureUrl.toString() };
+
+      const hookParams = new URLSearchParams({
+        pago_id: String(pago.id),
+        alumno_id: String(targetAlumnoId)
+      });
+      if (process.env.SIPAGO_WEBHOOK_SECRET) {
+        hookParams.set('secret', process.env.SIPAGO_WEBHOOK_SECRET);
+      }
+      const webhookUrl = `${BASE_URL}/api/ateneo/pagos/webhook?${hookParams.toString()}`;
+
+      const items = [{
+        id: `ateneo_pago_${pago.id}`,
+        name: concepto,
+        unitPrice: { currency: '032', amount: totalCentavos },
+        quantity: 1
+      }];
+
+      const order = await createSipagoOrder({ total: totalCentavos, redirect_urls, items, webhookUrl });
+      const checkoutUrl = order?.data?.attributes?.links?.checkout || order?.data?.links?.checkout;
+
+      if (!checkoutUrl) {
+        console.error('[Ateneo Sipago] No checkout URL in response:', JSON.stringify(order));
+        await transaction.rollback();
+        return res.status(500).json({ error: 'No se pudo generar el link de pago' });
+      }
+
+      await pago.update({
+        referencia_pasarela: order?.data?.id || order?.data?.attributes?.uuid || null
+      }, { transaction });
+
+      await transaction.commit();
+      return res.status(201).json({
+        inscripcion,
+        pago_id: pago.id,
+        checkout_url: checkoutUrl,
+        mensaje: 'Redirigiendo al pago...'
+      });
+    }
+
+    // Flujo de clases regulares (matrícula + cuota mensual)
     const skipMatricula = !!clase.matricula_bonificada;
 
-    // Crear inscripción
     const inscripcion = await AteneoInscripcion.create({
       alumno_id: targetAlumnoId,
       clase_id,
       estado: skipMatricula ? 'confirmada' : 'pendiente'
     }, { transaction });
 
-    // Obtener configuración para fecha de vencimiento
     const configDiaVencimiento = await AteneoConfig.findOne({ where: { clave: 'dia_vencimiento_cuota' } });
     const diaVencimiento = parseInt(configDiaVencimiento?.valor || '10');
-
     const hoy = new Date();
 
-    // Solo crear pago de matrícula si la clase NO tiene matrícula bonificada
     if (!skipMatricula) {
       const vencMatricula = new Date(hoy.getFullYear(), hoy.getMonth(), hoy.getDate() + 7);
       const fechaVencMatriculaStr = `${vencMatricula.getFullYear()}-${String(vencMatricula.getMonth() + 1).padStart(2, '0')}-${String(vencMatricula.getDate()).padStart(2, '0')}`;
@@ -249,7 +411,6 @@ router.post('/', authenticateToken, async (req, res) => {
       }, { transaction });
     }
 
-    // Generar solo la primera cuota mensual (el resto se genera manualmente desde admin)
     if (clase.fecha_inicio && clase.costo_cuota > 0) {
       const inicio = new Date(clase.fecha_inicio + 'T12:00:00');
       const anio = inicio.getFullYear();
@@ -272,7 +433,6 @@ router.post('/', authenticateToken, async (req, res) => {
 
     await transaction.commit();
 
-    // Enviar email de confirmación (async, no bloquea)
     try {
       const alumnoData = await AteneoAlumno.findByPk(targetAlumnoId, {
         include: [{ model: User, as: 'usuario', attributes: ['name', 'email'] }]
@@ -282,7 +442,7 @@ router.post('/', authenticateToken, async (req, res) => {
           email: alumnoData.usuario.email,
           nombre: alumnoData.usuario.name,
           clase: clase.nombre,
-          estado: 'pendiente'
+          estado: skipMatricula ? 'confirmada' : 'pendiente'
         }).catch(err => console.error('[Ateneo] Error enviando email inscripción:', err.message));
       }
     } catch (emailErr) {
@@ -291,7 +451,7 @@ router.post('/', authenticateToken, async (req, res) => {
 
     res.status(201).json({
       inscripcion,
-      mensaje: 'Inscripción creada. Pague la matrícula para confirmar.'
+      mensaje: skipMatricula ? 'Inscripción confirmada' : 'Inscripción creada. Pague la matrícula para confirmar.'
     });
   } catch (error) {
     await transaction.rollback();

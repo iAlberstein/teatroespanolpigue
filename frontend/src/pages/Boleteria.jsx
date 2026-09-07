@@ -7,7 +7,7 @@ import BoxOfficeSessionPicker from '../components/BoxOfficeSessionPicker';
 import BoxOfficeReferences from '../components/BoxOfficeReferences';
 import BoxOfficePackCheckout from '../components/BoxOfficePackCheckout.jsx';
 import TicketViewModal from '../components/admin/TicketViewModal.jsx';
-import { formatSeatLocation } from '../lib/seatFormatter';
+import { formatSeatLocation, validatePlateaBajaRows } from '../lib/seatFormatter';
 import { getSeatPriceTier } from '../lib/seatPriceColors.js';
 import { formatDate, formatTime, formatDateTimeCompact } from '../lib/dateFormatter.js';
 import { 
@@ -487,7 +487,8 @@ export default function BoxOffice() {
         body: JSON.stringify({ 
           code: discountCode.trim(),
           show_id: selectedShow,
-          seat_count: seatCount
+          seat_count: seatCount,
+          items
         })
       });
       
@@ -529,12 +530,12 @@ export default function BoxOffice() {
     }));
     
     // Check if applied discount still meets seat constraints
-    if (appliedDiscount && (appliedDiscount.min_seats || appliedDiscount.max_seats || appliedDiscount.require_even)) {
+    if (appliedDiscount && (appliedDiscount.min_seats || appliedDiscount.max_seats || appliedDiscount.require_even || appliedDiscount.platea_baja_only)) {
       const items = [];
       const newSelection = payload?.selectedSeatIds || currentSelection?.selectedSeatIds || new Set();
       const newPalcos = payload?.selectedPalcosLabels || currentSelection?.selectedPalcosLabels || new Set();
       const newPullman = payload?.pullmanSelected ?? currentSelection?.pullmanSelected ?? 0;
-      
+
       for (const seatId of newSelection) {
         items.push({ type: 'butaca', seat_code: seatId });
       }
@@ -545,14 +546,14 @@ export default function BoxOffice() {
       if (newPullman > 0) {
         items.push({ type: payload?.pricing?.general > 0 ? 'general' : 'pullman', quantity: newPullman });
       }
-      
+
       const seatCount = items.reduce((sum, item) => {
         if (item.type === 'butaca') return sum + 1;
         if (item.type === 'palco' && item.quantity) return sum + item.quantity;
         if ((item.type === 'pullman' || item.type === 'general') && item.quantity) return sum + item.quantity;
         return sum + 1;
       }, 0);
-      
+
       if (appliedDiscount.min_seats && seatCount < appliedDiscount.min_seats) {
         setDiscountError(`Debes seleccionar ${appliedDiscount.min_seats} localidades como mínimo`);
         setAppliedDiscount(null);
@@ -562,6 +563,12 @@ export default function BoxOffice() {
       } else if (appliedDiscount.require_even && seatCount % 2 !== 0) {
         setDiscountError('Este cupón requiere seleccionar un número par de localidades');
         setAppliedDiscount(null);
+      } else if (appliedDiscount.platea_baja_only) {
+        const rowError = validatePlateaBajaRows(items, appliedDiscount.row_start, appliedDiscount.row_end);
+        if (rowError) {
+          setDiscountError(rowError);
+          setAppliedDiscount(null);
+        }
       }
     }
   };
@@ -1690,7 +1697,7 @@ Teatro Español Pigüé`;
                   padding: 12,
                   borderRadius: 10,
                   border: 'none',
-                  background: '#2563eb',
+                  background: '#000000',
                   color: '#ffffff',
                   fontWeight: 600,
                   fontSize: 15,
@@ -1897,7 +1904,7 @@ Teatro Español Pigüé`;
                 padding: 12,
                 borderRadius: 10,
                 border: 'none',
-                background: '#2563eb',
+                background: '#000000',
                 color: '#ffffff',
                 fontWeight: 600,
                 cursor: summaryDisabled ? 'not-allowed' : 'pointer',
@@ -2336,7 +2343,7 @@ Teatro Español Pigüé`;
               type="submit"
               style={{
                 padding: '10px 16px',
-                background: '#2563eb',
+                background: '#000000',
                 color: '#fff',
                 border: 'none',
                 borderRadius: 8,
@@ -4378,7 +4385,7 @@ Teatro Español Pigüé`;
                       padding: '10px 16px',
                       borderRadius: 10,
                       border: 'none',
-                      background: '#2563eb',
+                      background: '#000000',
                       color: '#ffffff',
                       fontWeight: 600,
                       cursor: 'pointer'

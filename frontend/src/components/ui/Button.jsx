@@ -13,10 +13,10 @@ export default function Button({
 }) {
   const variants = {
     primary: {
-      background: theme.colors.primary,
-      color: theme.colors.surface,
+      background: '#000000',
+      color: '#ffffff',
       border: 'none',
-      hover: theme.colors.primaryDark,
+      hover: '#1F2937',
     },
     secondary: {
       background: theme.colors.surfaceAlt,
@@ -25,28 +25,28 @@ export default function Button({
       hover: theme.colors.border,
     },
     accent: {
-      background: theme.colors.accent,
-      color: theme.colors.surface,
+      background: '#000000',
+      color: '#ffffff',
       border: 'none',
-      hover: theme.colors.accentLight,
+      hover: '#1F2937',
     },
     danger: {
-      background: theme.colors.danger,
-      color: theme.colors.surface,
+      background: '#dc3545',
+      color: '#ffffff',
       border: 'none',
       hover: '#c0392b',
     },
     success: {
-      background: theme.colors.success,
-      color: theme.colors.surface,
+      background: '#000000',
+      color: '#ffffff',
       border: 'none',
-      hover: '#059669',
+      hover: '#1F2937',
     },
     outline: {
       background: 'transparent',
-      color: theme.colors.primary,
-      border: `2px solid ${theme.colors.primary}`,
-      hover: theme.colors.primaryLight,
+      color: '#000000',
+      border: '2px solid #000000',
+      hover: '#1F2937',
     },
     ghost: {
       background: 'transparent',

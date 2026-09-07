@@ -25,8 +25,14 @@ export default function Discounts({ shows }) {
     min_seats: '',
     max_seats: '',
     require_even: false,
+    platea_baja_only: false,
+    row_start: '',
+    row_end: '',
     active: true
   });
+
+  // Filas válidas de platea baja (A-M)
+  const PLATEA_BAJA_ROWS = 'ABCDEFGHIJKLM'.split('');
 
   useEffect(() => {
     loadDiscounts();
@@ -61,6 +67,9 @@ export default function Discounts({ shows }) {
       min_seats: '',
       max_seats: '',
       require_even: false,
+      platea_baja_only: false,
+      row_start: '',
+      row_end: '',
       active: true
     });
     setEditingDiscount(null);
@@ -95,6 +104,24 @@ export default function Discounts({ shows }) {
       return;
     }
 
+    // Validar rango de filas de platea baja
+    let rowStart = formData.row_start ? formData.row_start.toUpperCase() : null;
+    let rowEnd = formData.row_end ? formData.row_end.toUpperCase() : null;
+    if (formData.platea_baja_only) {
+      if (rowStart && !PLATEA_BAJA_ROWS.includes(rowStart)) {
+        setError('La fila inicial debe ser una letra entre A y M');
+        return;
+      }
+      if (rowEnd && !PLATEA_BAJA_ROWS.includes(rowEnd)) {
+        setError('La fila final debe ser una letra entre A y M');
+        return;
+      }
+      if (rowStart && rowEnd && rowStart > rowEnd) {
+        setError('La fila inicial no puede ser mayor que la fila final');
+        return;
+      }
+    }
+
     const payload = {
       code: formData.code.trim(),
       alias: formData.alias ? formData.alias.trim() : null,
@@ -105,6 +132,9 @@ export default function Discounts({ shows }) {
       min_seats: formData.min_seats ? parseInt(formData.min_seats) : null,
       max_seats: formData.max_seats ? parseInt(formData.max_seats) : null,
       require_even: formData.require_even,
+      platea_baja_only: formData.platea_baja_only,
+      row_start: formData.platea_baja_only ? rowStart : null,
+      row_end: formData.platea_baja_only ? rowEnd : null,
       active: formData.active
     };
 
@@ -147,6 +177,9 @@ export default function Discounts({ shows }) {
       min_seats: discount.min_seats || '',
       max_seats: discount.max_seats || '',
       require_even: !!discount.require_even,
+      platea_baja_only: !!discount.platea_baja_only,
+      row_start: discount.row_start || '',
+      row_end: discount.row_end || '',
       active: discount.active
     });
     setShowForm(true);
@@ -524,6 +557,92 @@ export default function Discounts({ shows }) {
                 </small>
               </div>
 
+              {/* Solo Platea Baja */}
+              <div style={{ display: 'flex', alignItems: 'center', paddingTop: theme.spacing.lg }}>
+                <label style={{ 
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: theme.spacing.xs,
+                  cursor: 'pointer'
+                }}>
+                  <input
+                    type="checkbox"
+                    checked={formData.platea_baja_only}
+                    onChange={(e) => setFormData({ ...formData, platea_baja_only: e.target.checked })}
+                    style={{ width: 18, height: 18, cursor: 'pointer' }}
+                  />
+                  <span style={{ fontWeight: theme.typography.semibold }}>Solo Platea Baja</span>
+                </label>
+                <small style={{ fontSize: theme.typography.tiny, color: theme.colors.textMuted, marginLeft: theme.spacing.sm }}>
+                  No aplica a Palcos Bajos, Palcos Altos ni Pullman
+                </small>
+              </div>
+
+              {/* Rango de filas (visible solo si platea_baja_only) */}
+              {formData.platea_baja_only && (
+                <>
+                  <div>
+                    <label style={{ 
+                      display: 'block', 
+                      marginBottom: theme.spacing.xs,
+                      fontWeight: theme.typography.semibold,
+                      fontSize: theme.typography.small
+                    }}>
+                      Fila inicial
+                    </label>
+                    <select
+                      value={formData.row_start}
+                      onChange={(e) => setFormData({ ...formData, row_start: e.target.value })}
+                      style={{
+                        width: '100%',
+                        padding: theme.spacing.sm,
+                        border: `1px solid ${theme.colors.border}`,
+                        borderRadius: theme.borderRadius.md,
+                        fontSize: theme.typography.body
+                      }}
+                    >
+                      <option value="">Desde la A</option>
+                      {PLATEA_BAJA_ROWS.map(r => (
+                        <option key={r} value={r}>Fila {r}</option>
+                      ))}
+                    </select>
+                    <small style={{ fontSize: theme.typography.tiny, color: theme.colors.textMuted }}>
+                      Vacío = desde la fila A
+                    </small>
+                  </div>
+
+                  <div>
+                    <label style={{ 
+                      display: 'block', 
+                      marginBottom: theme.spacing.xs,
+                      fontWeight: theme.typography.semibold,
+                      fontSize: theme.typography.small
+                    }}>
+                      Fila final
+                    </label>
+                    <select
+                      value={formData.row_end}
+                      onChange={(e) => setFormData({ ...formData, row_end: e.target.value })}
+                      style={{
+                        width: '100%',
+                        padding: theme.spacing.sm,
+                        border: `1px solid ${theme.colors.border}`,
+                        borderRadius: theme.borderRadius.md,
+                        fontSize: theme.typography.body
+                      }}
+                    >
+                      <option value="">Hasta la M</option>
+                      {PLATEA_BAJA_ROWS.map(r => (
+                        <option key={r} value={r}>Fila {r}</option>
+                      ))}
+                    </select>
+                    <small style={{ fontSize: theme.typography.tiny, color: theme.colors.textMuted }}>
+                      Vacío = hasta la fila M
+                    </small>
+                  </div>
+                </>
+              )}
+
               {/* Activo */}
               <div style={{ display: 'flex', alignItems: 'center', paddingTop: theme.spacing.lg }}>
                 <label style={{ 
@@ -661,6 +780,18 @@ export default function Discounts({ shows }) {
                         fontWeight: theme.typography.semibold
                       }}>
                         Par requerido
+                      </span>
+                    )}
+                    {discount.platea_baja_only && (
+                      <span style={{
+                        padding: `${theme.spacing.xs} ${theme.spacing.sm}`,
+                        background: '#e0e7ff',
+                        color: '#3730a3',
+                        borderRadius: theme.borderRadius.sm,
+                        fontSize: theme.typography.tiny,
+                        fontWeight: theme.typography.semibold
+                      }}>
+                        Platea Baja {discount.row_start || 'A'}-{discount.row_end || 'M'}
                       </span>
                     )}
                   </div>

@@ -348,13 +348,13 @@ router.post('/', authenticateToken, requireRole('admin'), async (req, res) => {
     const Show = sequelize.models.shows;
     const ShowProducer = sequelize.models.show_producer;
     const User = sequelize.models.users;
-    const { 
-      title, 
-      description, 
-      duration_minutes, 
-      venue_type, 
-      general_capacity, 
-      pricing_json, 
+    const {
+      title,
+      description,
+      duration_minutes,
+      venue_type,
+      general_capacity,
+      pricing_json,
       image_url,
       image_principal_web,
       image_secundaria_web,
@@ -366,9 +366,10 @@ router.post('/', authenticateToken, requireRole('admin'), async (req, res) => {
       palcos_individual_seats,
       pack_enabled,
       pack_pricing_json,
-      pack_max_sessions
+      pack_max_sessions,
+      clasificacion
     } = req.body;
-    
+
     console.log('[SHOWS] Creating show with data:', { title, venue_type, general_capacity, pricing_json, producer_ids, is_visible, external_sale, palcos_individual_seats, pack_enabled, pack_max_sessions });
     
     if (!title || !title.trim()) {
@@ -415,6 +416,7 @@ router.post('/', authenticateToken, requireRole('admin'), async (req, res) => {
       pack_enabled: pack_enabled === true,
       pack_pricing_json: pack_enabled ? pack_pricing_json : null,
       pack_max_sessions: pack_enabled ? (Math.max(1, Math.min(10, Number(pack_max_sessions) || 3))) : 3,
+      clasificacion: clasificacion?.trim() || null,
       ...sanitizedImages
     });
     
@@ -466,13 +468,13 @@ router.put('/:id', authenticateToken, requireRole('admin'), async (req, res) => 
       return res.status(404).json({ error: 'not_found', message: 'Espectáculo no encontrado' });
     }
     
-    const { 
-      title, 
-      description, 
-      duration_minutes, 
-      venue_type, 
-      general_capacity, 
-      pricing_json, 
+    const {
+      title,
+      description,
+      duration_minutes,
+      venue_type,
+      general_capacity,
+      pricing_json,
       image_url,
       image_principal_web,
       image_secundaria_web,
@@ -484,7 +486,8 @@ router.put('/:id', authenticateToken, requireRole('admin'), async (req, res) => 
       palcos_individual_seats,
       pack_enabled,
       pack_pricing_json,
-      pack_max_sessions
+      pack_max_sessions,
+      clasificacion
     } = req.body;
     
     if (!title || !title.trim()) {
@@ -537,6 +540,7 @@ router.put('/:id', authenticateToken, requireRole('admin'), async (req, res) => 
       pack_max_sessions: pack_enabled !== undefined && pack_enabled === true
         ? Math.max(1, Math.min(10, Number(pack_max_sessions) || 3))
         : (pack_enabled === false ? 3 : show.pack_max_sessions),
+      clasificacion: clasificacion !== undefined ? (clasificacion?.trim() || null) : show.clasificacion,
       ...sanitizedImages
     });
     

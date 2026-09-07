@@ -23,6 +23,7 @@ import apiRouter from './routes/index.js';
 import dayjs from 'dayjs';
 import { Op } from 'sequelize';
 import { scheduleDailySalesEmail } from './lib/dailySalesReport.js';
+import { attemptSipagoFinalizationForReservation, reconcileSipagoAttempts } from './routes/payments.js';
 
 // Inicializar Sequelize DESPUÉS de cargar dotenv
 const sequelizeInstance = initSequelize();
@@ -654,6 +655,9 @@ io.on('connection', (socket) => {
       console.error('[STARTUP] Error loading seat blocks:', err);
     }
 
+    const SIPAGO_EXPIRY_VERIFICATION_GRACE_MS = Number(process.env.SIPAGO_EXPIRY_VERIFICATION_GRACE_MINUTES || 2) * 60 * 1000;
+    const SIPAGO_RECONCILE_INTERVAL_MS = Number(process.env.SIPAGO_RECONCILE_INTERVAL_MS || 120000);
+
     // Simple expiry worker for reservations: runs every 15s
     const { reservations: Reservation } = sequelize.models;
     setInterval(async () => {
@@ -661,6 +665,27 @@ io.on('connection', (socket) => {
         const now = dayjs().toDate();
         const expired = await Reservation.findAll({ where: { status: 'active', expires_at: { [Op.lt]: now } } });
         for (const r of expired) {
+          // Before releasing an expired reservation, check for a pending SiPago attempt.
+          // If the provider reports SUCCESS, finalize it. If verification is temporarily
+          // unavailable, hold the reservation for a bounded grace period.
+          try {
+            const sipagoResult = await attemptSipagoFinalizationForReservation(r, io);
+            if (sipagoResult?.finalized) {
+              console.log(`[Worker] Reservation ${r.id} finalized by provider check, sale_id: ${sipagoResult.sale_id}`);
+              continue;
+            }
+            if (sipagoResult?.status === 'verification_unavailable') {
+              const expiredAgo = Date.now() - new Date(r.expires_at).getTime();
+              if (expiredAgo < SIPAGO_EXPIRY_VERIFICATION_GRACE_MS) {
+                console.log(`[Worker] Reservation ${r.id} verification temporarily unavailable, skipping expiry (grace period)`);
+                continue;
+              }
+              console.log(`[Worker] Reservation ${r.id} verification unavailable but grace period expired, proceeding to expire`);
+            }
+          } catch (checkErr) {
+            console.error(`[Worker] Error checking SiPago for reservation ${r.id}:`, checkErr);
+          }
+
           await r.update({ status: 'expired' });
           
           // Release holds for expired reservation
@@ -694,6 +719,12 @@ io.on('connection', (socket) => {
         console.error('[Worker] Error expiring reservations:', e);
       }
     }, 15000);
+
+    // Periodic reconciliation for pending SiPago attempts: checks provider status
+    // and finalizes SUCCESS payments without waiting for the browser to return.
+    setInterval(() => {
+      reconcileSipagoAttempts(io).catch(err => console.error('[SIPAGO_RECONCILE_WORKER] error', err));
+    }, SIPAGO_RECONCILE_INTERVAL_MS);
 
     const port = process.env.PORT || 4000;
     server.listen(port, () => console.log(`API running on :${port}`));

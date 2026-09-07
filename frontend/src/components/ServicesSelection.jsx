@@ -42,7 +42,7 @@ export default function ServicesSelection({ services, selectedServices, onQuanti
                       onClick={() => setShowServiceDetail(showServiceDetail === service.id ? null : service.id)}
                       style={{
                         padding: '2px 8px',
-                        background: '#007bff',
+                        background: '#000000',
                         color: '#fff',
                         border: 'none',
                         borderRadius: 4,

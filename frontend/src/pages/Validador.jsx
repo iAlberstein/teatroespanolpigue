@@ -1,5 +1,4 @@
 import { useState, useEffect, useRef } from 'react';
-import { Html5Qrcode, Html5QrcodeSupportedFormats } from 'html5-qrcode';
 import { apiAuthFetch } from '../lib/api';
 import { useAuth } from '../contexts/AuthContext';
 import { formatDate, formatTime, formatDateLong, toLocalDate } from '../lib/dateFormatter.js';
@@ -35,25 +34,8 @@ export default function Validador() {
     }
   }, [user]);
 
-  // Solicitar permisos de cámara
-  useEffect(() => {
-    const requestCameraPermission = async () => {
-      try {
-        const stream = await navigator.mediaDevices.getUserMedia({ video: true });
-        // Detener el stream inmediatamente, solo queríamos verificar permisos
-        stream.getTracks().forEach(track => track.stop());
-      } catch (err) {
-        console.error('[VALIDADOR] Error requesting camera permission:', err);
-        setError('No se pudo acceder a la cámara. Por favor, permití el acceso a la cámara en la configuración de tu navegador.');
-      }
-    };
-
-    if (scanning && token) {
-      requestCameraPermission();
-    }
-  }, [scanning, token]);
-
-  // Inicializar escáner
+  // Inicializar escáner (lazy-load de html5-qrcode para no romper la app si
+  // la librería falla al cargar en algún navegador/dispositivo).
   useEffect(() => {
     if (!scanning || !token) {
       return;
@@ -67,56 +49,97 @@ export default function Validador() {
     // Nueva sesión de escaneo: permitir procesar un nuevo QR
     isProcessingRef.current = false;
 
-    const onScanSuccess = (decodedText) => {
-      if (isProcessingRef.current) return;
-      isProcessingRef.current = true;
+    let isActive = true;
+    let scannerInstance = null;
 
-      // Detener escaneo inmediatamente
-      if (html5QrcodeScannerRef.current) {
-        html5QrcodeScannerRef.current.stop().then(() => {
-          html5QrcodeScannerRef.current.clear();
-          html5QrcodeScannerRef.current = null;
-        }).catch(() => {
-          html5QrcodeScannerRef.current = null;
+    const startScanner = async () => {
+      try {
+        const { Html5Qrcode, Html5QrcodeSupportedFormats } = await import('html5-qrcode');
+
+        if (!isActive) return;
+
+        const onScanSuccess = (decodedText) => {
+          if (isProcessingRef.current) return;
+          isProcessingRef.current = true;
+
+          // Detener escaneo inmediatamente
+          if (html5QrcodeScannerRef.current) {
+            html5QrcodeScannerRef.current.stop().then(() => {
+              html5QrcodeScannerRef.current.clear();
+              html5QrcodeScannerRef.current = null;
+            }).catch(() => {
+              html5QrcodeScannerRef.current = null;
+            });
+          }
+
+          setScanning(false);
+          handleScan(decodedText);
+        };
+
+        const onScanFailure = (error) => {
+          // Silenciar errores de escaneo fallido (normal mientras se escanea)
+        };
+
+        const config = {
+          fps: 10,
+          qrbox: { width: 280, height: 280 },
+          aspectRatio: 1.777778,
+          disableFlip: false,
+          // En varios dispositivos Android (especialmente Samsung) el
+          // BarcodeDetector nativo se cuelga/falla al inicializar. Forzamos
+          // el decodificador ZXing que es más estable.
+          useBarCodeDetectorIfSupported: false
+        };
+
+        console.log('[VALIDADOR] Inicializando escáner...');
+
+        scannerInstance = new Html5Qrcode('qr-reader', {
+          formatsToSupport: [Html5QrcodeSupportedFormats.QR_CODE],
+          useBarCodeDetectorIfSupported: false
         });
+        html5QrcodeScannerRef.current = scannerInstance;
+
+        // En Android, { facingMode: 'environment' } suele no elegir la cámara
+        // trasera correctamente. Listamos las cámaras y seleccionamos la trasera
+        // por su label, usando su deviceId exacto cuando sea posible.
+        let cameraConfig = { facingMode: 'environment' };
+        try {
+          const cameras = await Html5Qrcode.getCameras();
+          console.log('[VALIDADOR] Cámaras disponibles:', cameras);
+          const rearCamera = cameras.find(c => /back|rear|trasera|environment/i.test(c.label));
+          if (rearCamera) {
+            cameraConfig = { deviceId: { exact: rearCamera.id } };
+            console.log('[VALIDADOR] Usando cámara trasera:', rearCamera.label);
+          }
+        } catch (cameraErr) {
+          console.warn('[VALIDADOR] No se pudieron listar cámaras, usando facingMode:', cameraErr);
+        }
+
+        console.log('[VALIDADOR] Iniciando cámara...');
+        await scannerInstance.start(
+          cameraConfig,
+          config,
+          onScanSuccess,
+          onScanFailure
+        );
+        console.log('[VALIDADOR] ✅ Cámara iniciada correctamente');
+      } catch (err) {
+        console.error('[VALIDADOR] ❌ Error al iniciar cámara:', err);
+        if (isActive) {
+          setError('Error al inicializar la cámara: ' + String(err?.message || err));
+          setScanning(false);
+        }
+        if (scannerInstance) {
+          try { scannerInstance.clear(); } catch (e) { /* ignorar */ }
+        }
+        html5QrcodeScannerRef.current = null;
       }
-
-      setScanning(false);
-      handleScan(decodedText);
     };
 
-    const onScanFailure = (error) => {
-      // Silenciar errores de escaneo fallido (normal mientras se escanea)
-    };
-
-    const config = {
-      fps: 15,
-      qrbox: { width: 280, height: 280 },
-      aspectRatio: 1.0,
-      disableFlip: false
-    };
-
-    console.log('[VALIDADOR] Inicializando escáner...');
-    
-    html5QrcodeScannerRef.current = new Html5Qrcode('qr-reader', {
-      formatsToSupport: [Html5QrcodeSupportedFormats.QR_CODE]
-    });
-
-    console.log('[VALIDADOR] Iniciando cámara...');
-    html5QrcodeScannerRef.current.start(
-      { facingMode: "environment" }, // Usar cámara trasera
-      config,
-      onScanSuccess,
-      onScanFailure
-    ).then(() => {
-      console.log('[VALIDADOR] ✅ Cámara iniciada correctamente');
-    }).catch((err) => {
-      console.error('[VALIDADOR] ❌ Error al iniciar cámara:', err);
-      setError('Error al inicializar la cámara: ' + err);
-      setScanning(false);
-    });
+    startScanner();
 
     return () => {
+      isActive = false;
       console.log('[VALIDADOR] Cleanup: deteniendo cámara...');
       if (html5QrcodeScannerRef.current) {
         html5QrcodeScannerRef.current.stop()
@@ -633,7 +656,7 @@ export default function Validador() {
                   style={{
                     width: '100%',
                     padding: '16px 20px',
-                    background: '#22c55e',
+                    background: '#000000',
                     color: 'white',
                     border: 'none',
                     borderRadius: 8,
@@ -708,7 +731,7 @@ export default function Validador() {
                 onClick={() => setScanning(true)}
                 style={{
                   padding: '16px 32px',
-                  background: '#22c55e',
+                  background: '#000000',
                   color: 'white',
                   border: 'none',
                   borderRadius: 8,
@@ -767,7 +790,7 @@ export default function Validador() {
                   disabled={searching}
                   style={{
                     padding: '12px 20px',
-                    background: '#3b82f6',
+                    background: '#000000',
                     color: 'white',
                     border: 'none',
                     borderRadius: 8,
@@ -860,7 +883,7 @@ export default function Validador() {
                 style={{
                   width: '100%',
                   padding: '14px 20px',
-                  background: '#7c3aed',
+                  background: '#000000',
                   color: 'white',
                   border: 'none',
                   borderRadius: 8,
@@ -1015,7 +1038,7 @@ export default function Validador() {
                 style={{
                   flex: 1,
                   padding: '14px 20px',
-                  background: '#7c3aed',
+                  background: '#000000',
                   color: 'white',
                   border: 'none',
                   borderRadius: 8,

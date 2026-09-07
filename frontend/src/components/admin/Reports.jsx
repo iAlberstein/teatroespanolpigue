@@ -1107,7 +1107,7 @@ export default function Reports({ shows }) {
             onClick={handleExportCSV}
             style={{
               padding: `${theme.spacing.sm} ${theme.spacing.lg}`,
-              background: theme.colors.success,
+              background: '#000000',
               color: theme.colors.surface,
               border: 'none',
               borderRadius: theme.borderRadius.md,

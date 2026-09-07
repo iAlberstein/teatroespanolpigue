@@ -413,7 +413,7 @@ const Billing = ({ token }) => {
               style={{
                 flex: 1,
                 padding: '8px',
-                backgroundColor: '#0ea5e9',
+                backgroundColor: '#000000',
                 color: 'white',
                 border: 'none',
                 borderRadius: '4px',
@@ -481,7 +481,7 @@ const Billing = ({ token }) => {
             style={{
               width: '100%',
               padding: '12px',
-              backgroundColor: '#3b82f6',
+              backgroundColor: '#000000',
               color: 'white',
               border: 'none',
               borderRadius: '6px',

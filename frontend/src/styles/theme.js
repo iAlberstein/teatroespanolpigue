@@ -3,12 +3,12 @@
 export const theme = {
   colors: {
     // Colores principales
-    primary: '#A78BFA',      // Lavanda suave
-    primaryLight: '#C4B5FD',  // Púrpura pastel claro
-    primaryDark: '#8B5CF6',   // Lavanda más intenso
+    primary: '#000000',      // Negro
+    primaryLight: '#C4B5FD',  // Púrpura pastel claro (uso no-botón: selección, scrollbar)
+    primaryDark: '#1F2937',   // Gris oscuro (hover de botones primary)
     
     // Colores de acento
-    accent: '#FCA5A5',        // Rosa coral suave
+    accent: '#FCA5A5',        // Rosa coral suave (uso no-botón)
     accentLight: '#FECACA',   // Rosa más claro
     
     // Backgrounds

@@ -82,6 +82,7 @@
   - `fixed`: monto fijo.
   - `internal`: cortesía (tratada como 100% en el cálculo). **En producción las cortesías reales son `percentage` con `value = 100.00`.**
 - **Límite de uso**: `usage_limit` = cantidad de **tickets** individuales que puede descontar. `used_count` se incrementa por cantidad de tickets, no por transacción. El frontend recibe `remaining_uses`.
+- **Restricción de platea baja**: `platea_baja_only` (BOOLEAN) hace que el cupón solo aplique a butacas (platea baja), excluyendo Palcos Bajos, Palcos Altos y Pullman. `row_start` y `row_end` (CHAR(1), A-M) limitan el rango de filas; si son `NULL` se asume todo el rango A-M. Opcional por cupón. La validación se hace en `POST /api/discounts/validate` recibiendo `items` (array de `{ type, seat_code, quantity }`) y también client-side con `validatePlateaBajaRows` de `seatFormatter.js` (re-validación al cambiar selección).
 - **Medios de pago** (`sales.payment_method`):
   - `mp`: MercadoPago (online). `total_amount` INCLUYE el cargo por servicio.
   - `card`: SiPago (online). `total_amount` NO incluye cargo por servicio.
@@ -89,7 +90,7 @@
 - **Al calcular ingreso neto**: solo dividir por `serviceFeeDivisor` cuando `payment_method === 'mp'`.
 - **Bordereaux**: usa `ticket.price` (precio base), siempre correcto sin importar el medio de pago.
 - **MercadoPago**: `payments.js` usa el SDK `mercadopago`. El token viene de `process.env.MP_ACCESS_TOKEN` o `MERCADOPAGO_ACCESS_TOKEN`. El webhook se valida con `MP_WEBHOOK_SECRET`.
-- **SiPago**: `backend/src/lib/sipago.js`.
+- **SiPago**: `backend/src/lib/sipago.js`. Cada compra individual crea un registro en `sipago_payment_attempts`; los retornos usan `attempt_id` y el estado público se consulta en `GET /api/payments/sipago-status/:attempt_id`. Nunca emitir entradas por la redirección del navegador ni continuar si falla la verificación contra SiPago.
 
 ### 4.4. Fechas, horarios y timezone
 
@@ -108,6 +109,7 @@
 - **Palcos**: `PB` = Palco Bajo (4 personas), `PA` = Palco Alto (2 personas). Para validación parcial se usa `capacity` y `capacity_validated`.
 - **Pullman**: sin asiento numerado, capacidad basada en `capacity`.
 - **Entradas generales**: `type = 'general'` para salas `el_tablado` / `las_gemelas`. No tienen `seat_code`.
+- **Clasificación**: `shows.clasificacion` (VARCHAR(20), nullable) almacena la clasificación por edad del espectáculo (ej: ATP, SAM 7, SAM 13, SAM 16, SAM 18). Se muestra en `/info/:id` debajo de Sala y Duración. Se configura desde `ShowForm.jsx` con un select.
 
 ### 4.6. Email
 

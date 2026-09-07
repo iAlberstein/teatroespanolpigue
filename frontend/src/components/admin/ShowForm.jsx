@@ -40,6 +40,7 @@ export default function ShowForm({ show, onSave, onCancel }) {
     description: '',
     duration_minutes: 120,
     venue_type: 'sala_principal',
+    clasificacion: '',
     general_capacity: '',
     general_price: '',
     platea_general: '',
@@ -204,6 +205,7 @@ export default function ShowForm({ show, onSave, onCancel }) {
         description: show.description || '',
         duration_minutes: show.duration_minutes || 120,
         venue_type: show.venue_type || 'sala_principal',
+        clasificacion: show.clasificacion || '',
         general_capacity: show.general_capacity || '',
         general_price: pricing?.general || '',
         platea_general: pricing?.platea_general || '',
@@ -444,7 +446,7 @@ export default function ShowForm({ show, onSave, onCancel }) {
             onClick={() => triggerFileDialog(slotConfig.key)}
             style={{
               padding: '8px 16px',
-              background: '#0d6efd',
+              background: '#000000',
               color: '#fff',
               border: 'none',
               borderRadius: 6,
@@ -638,6 +640,7 @@ export default function ShowForm({ show, onSave, onCancel }) {
       description: formData.description.trim(),
       duration_minutes: Number(formData.duration_minutes),
       venue_type: formData.venue_type,
+      clasificacion: formData.clasificacion.trim() || null,
       general_capacity: formData.venue_type !== 'sala_principal' && !formData.external_sale ? Number(formData.general_capacity) : null,
       pricing_json: formData.external_sale ? {} : (formData.venue_type === 'sala_principal' ? {
         platea_general: Number(formData.platea_general),
@@ -803,9 +806,31 @@ export default function ShowForm({ show, onSave, onCancel }) {
               <option value="las_gemelas">Nueva sala (entradas generales)</option>
             </select>
             <p style={{ margin: '4px 0 0 0', fontSize: 12, color: '#666' }}>
-              {formData.venue_type === 'sala_principal' 
+              {formData.venue_type === 'sala_principal'
                 ? 'Los espectadores seleccionarán sus asientos en el mapa de la sala'
                 : 'Las entradas no tienen asientos asignados, solo capacidad total'}
+            </p>
+          </div>
+
+          <div style={{ marginBottom: 16 }}>
+            <label style={{ display: 'block', marginBottom: 4, fontWeight: 600 }}>
+              Clasificación
+            </label>
+            <input
+              type="text"
+              value={formData.clasificacion}
+              onChange={(e) => handleChange('clasificacion', e.target.value)}
+              placeholder="Ej: ATP, SAM 13, SAM 16, SAM 18..."
+              style={{
+                width: '100%',
+                padding: 8,
+                borderRadius: 4,
+                border: '1px solid #ccc',
+                fontSize: 14
+              }}
+            />
+            <p style={{ margin: '4px 0 0 0', fontSize: 12, color: '#666' }}>
+              Clasificación por edad del espectáculo (se muestra en la info del show)
             </p>
           </div>
 
@@ -1282,7 +1307,7 @@ export default function ShowForm({ show, onSave, onCancel }) {
                     <button
                       type="button"
                       onClick={() => handleEditService(svc)}
-                      style={{ background: '#ffc107', color: '#000', border: 'none', borderRadius: 4, padding: '4px 10px', cursor: 'pointer', fontSize: 12 }}
+                      style={{ background: '#000000', color: '#fff', border: 'none', borderRadius: 4, padding: '4px 10px', cursor: 'pointer', fontSize: 12 }}
                     >
                       Editar
                     </button>
@@ -1346,7 +1371,7 @@ export default function ShowForm({ show, onSave, onCancel }) {
                 type="button"
                 onClick={editingService ? handleUpdateService : handleAddService}
                 disabled={savingService || !show?.id}
-                style={{ padding: '8px 16px', background: (savingService || !show?.id) ? '#adb5bd' : (editingService ? '#ffc107' : '#28a745'), color: editingService ? '#000' : '#fff', border: 'none', borderRadius: 6, cursor: (savingService || !show?.id) ? 'not-allowed' : 'pointer', fontSize: 14, fontWeight: 600, whiteSpace: 'nowrap' }}
+                style={{ padding: '8px 16px', background: (savingService || !show?.id) ? '#adb5bd' : '#000000', color: '#fff', border: 'none', borderRadius: 6, cursor: (savingService || !show?.id) ? 'not-allowed' : 'pointer', fontSize: 14, fontWeight: 600, whiteSpace: 'nowrap' }}
               >
                 {savingService ? 'Guardando...' : (editingService ? 'Actualizar' : '+ Agregar')}
               </button>
@@ -1401,7 +1426,7 @@ export default function ShowForm({ show, onSave, onCancel }) {
             type="submit"
             style={{
               padding: '10px 24px',
-              background: '#28a745',
+              background: '#000000',
               color: '#fff',
               border: 'none',
               borderRadius: 6,

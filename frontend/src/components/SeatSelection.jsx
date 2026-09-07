@@ -708,7 +708,7 @@ export default function SeatSelection({
                 doTogglePalco(label);
               }}
               style={{
-                background: '#A78BFA',
+                background: '#000000',
                 color: '#fff',
                 border: 'none',
                 borderRadius: 8,

@@ -336,7 +336,7 @@ export default function AteneoAlumno() {
                     <h4 style={{ margin: 0, fontSize: 15 }}>Datos personales</h4>
                     {!perfilEditing && (
                       <button onClick={() => setPerfilEditing(true)} style={{
-                        padding: '6px 14px', background: '#7c3aed', color: '#fff',
+                        padding: '6px 14px', background: '#000000', color: '#fff',
                         border: 'none', borderRadius: 6, cursor: 'pointer', fontSize: 12, fontWeight: 600
                       }}>Editar</button>
                     )}
@@ -494,7 +494,7 @@ export default function AteneoAlumno() {
                     <h4 style={{ margin: 0, fontSize: 15 }}>Datos personales</h4>
                     {!perfilEditing && (
                       <button onClick={() => setPerfilEditing(true)} style={{
-                        padding: '6px 14px', background: '#7c3aed', color: '#fff',
+                        padding: '6px 14px', background: '#000000', color: '#fff',
                         border: 'none', borderRadius: 6, cursor: 'pointer', fontSize: 12, fontWeight: 600
                       }}>Editar</button>
                     )}
@@ -564,7 +564,7 @@ export default function AteneoAlumno() {
                     <div style={{ fontSize: 12, color: '#a16207', marginTop: 2 }}>Inscribite a una clase para completar tu perfil de alumno.</div>
                   </div>
                   <Link to="/ateneo" style={{
-                    padding: '8px 16px', background: '#7c3aed', color: '#fff',
+                    padding: '8px 16px', background: '#000000', color: '#fff',
                     borderRadius: 6, textDecoration: 'none', fontWeight: 600, fontSize: 13, whiteSpace: 'nowrap'
                   }}>Ver oferta</Link>
                 </div>
@@ -1011,7 +1011,7 @@ export default function AteneoAlumno() {
                             border: 'none', borderRadius: 6, cursor: 'pointer', fontSize: 13
                           }}>Cerrar</button>
                           <button onClick={() => handlePagarDirecto(showPagoModal.matricula.id)} style={{
-                            padding: '8px 16px', background: '#7c3aed', color: '#fff',
+                            padding: '8px 16px', background: '#000000', color: '#fff',
                             border: 'none', borderRadius: 6, cursor: 'pointer', fontSize: 13, fontWeight: 600
                           }}>Pagar matricula</button>
                         </div>
@@ -1038,7 +1038,7 @@ export default function AteneoAlumno() {
                             border: 'none', borderRadius: 6, cursor: 'pointer', fontSize: 13
                           }}>Cancelar</button>
                           <button onClick={() => handlePagarDirecto(showPagoModal.pago.id)} style={{
-                            padding: '8px 16px', background: '#7c3aed', color: '#fff',
+                            padding: '8px 16px', background: '#000000', color: '#fff',
                             border: 'none', borderRadius: 6, cursor: 'pointer', fontSize: 13, fontWeight: 600
                           }}>Pagar matricula</button>
                         </div>

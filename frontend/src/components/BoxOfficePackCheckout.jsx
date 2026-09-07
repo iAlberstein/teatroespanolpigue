@@ -175,13 +175,15 @@ export default function BoxOfficePackCheckout({ show, sessions, token, onClose }
   const handleApplyDiscount = async () => {
     if (!discountCode.trim()) return;
     const ticketCount = countPackTickets();
+    // Agregar items de todas las sesiones seleccionadas para validación de platea baja
+    const allItems = Object.values(allSelections).flatMap(selection => buildItems(selection));
     setValidatingDiscount(true);
     setDiscountError('');
     try {
       const res = await apiFetch('/api/discounts/validate', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ code: discountCode.trim(), show_id: show.id, seat_count: ticketCount })
+        body: JSON.stringify({ code: discountCode.trim(), show_id: show.id, seat_count: ticketCount, items: allItems })
       });
       if (res.ok) {
         const discount = await res.json();
@@ -268,8 +270,8 @@ export default function BoxOfficePackCheckout({ show, sessions, token, onClose }
       </div>
       {currentSession && currentSessionIndex < selectedSessionIds.length - 1 && <button onClick={() => handleNext('customer')} disabled={!currentSelectionValid} style={{ padding: 12, background: currentSelectionValid ? '#16a34a' : '#94a3b8', color: '#fff', border: 0, borderRadius: 6, cursor: currentSelectionValid ? 'pointer' : 'not-allowed', fontWeight: 700 }}>Siguiente función</button>}
       {currentSession && currentSessionIndex === selectedSessionIds.length - 1 && <>
-        <button onClick={() => handleNext('customer')} disabled={!currentSelectionValid} style={{ padding: 12, background: currentSelectionValid ? '#2563eb' : '#94a3b8', color: '#fff', border: 0, borderRadius: 6, cursor: currentSelectionValid ? 'pointer' : 'not-allowed', fontWeight: 700 }}>Vender entradas</button>
-        <button onClick={() => handleNext('quick')} disabled={!currentSelectionValid} style={{ padding: 12, background: '#eff6ff', color: currentSelectionValid ? '#2563eb' : '#94a3b8', border: '2px solid #2563eb', borderRadius: 6, cursor: currentSelectionValid ? 'pointer' : 'not-allowed', fontWeight: 700 }}>Vender en función</button>
+        <button onClick={() => handleNext('customer')} disabled={!currentSelectionValid} style={{ padding: 12, background: currentSelectionValid ? '#000000' : '#94a3b8', color: '#fff', border: 0, borderRadius: 6, cursor: currentSelectionValid ? 'pointer' : 'not-allowed', fontWeight: 700 }}>Vender entradas</button>
+        <button onClick={() => handleNext('quick')} disabled={!currentSelectionValid} style={{ padding: 12, background: currentSelectionValid ? '#000000' : '#f3f4f6', color: currentSelectionValid ? '#fff' : '#94a3b8', border: '2px solid #000000', borderRadius: 6, cursor: currentSelectionValid ? 'pointer' : 'not-allowed', fontWeight: 700 }}>Vender en función</button>
       </>}
       <button onClick={onClose} style={{ padding: 10, background: '#fff', color: '#475569', border: '1px solid #cbd5e1', borderRadius: 6, cursor: 'pointer' }}>Cancelar venta</button>
     </aside>
@@ -372,8 +374,8 @@ export default function BoxOfficePackCheckout({ show, sessions, token, onClose }
                 </div>
                 <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>
                   <button type="button" onClick={() => window.open(`${getShareUrl(sale)}?mode=print`, '_blank')} style={{ padding: '9px 14px', border: 'none', borderRadius: 8, background: '#111827', color: '#fff', fontWeight: 600, cursor: 'pointer' }}>Imprimir entradas</button>
-                  <button type="button" onClick={() => sendWhatsApp(sale)} disabled={!hasPhone} style={{ padding: '9px 14px', border: 'none', borderRadius: 8, background: hasPhone ? '#16a34a' : '#d1d5db', color: hasPhone ? '#fff' : '#6b7280', fontWeight: 600, cursor: hasPhone ? 'pointer' : 'not-allowed' }}>Enviar por WhatsApp</button>
-                  <button type="button" onClick={() => sendEmail(sale)} disabled={!hasEmail || emailStatus === 'sending'} style={{ padding: '9px 14px', border: 'none', borderRadius: 8, background: hasEmail ? '#2563eb' : '#d1d5db', color: hasEmail ? '#fff' : '#6b7280', fontWeight: 600, cursor: hasEmail ? 'pointer' : 'not-allowed' }}>{emailStatus === 'sending' ? 'Enviando...' : emailStatus === 'sent' ? 'Email enviado' : 'Enviar por email'}</button>
+                  <button type="button" onClick={() => sendWhatsApp(sale)} disabled={!hasPhone} style={{ padding: '9px 14px', border: 'none', borderRadius: 8, background: hasPhone ? '#000000' : '#d1d5db', color: hasPhone ? '#fff' : '#6b7280', fontWeight: 600, cursor: hasPhone ? 'pointer' : 'not-allowed' }}>Enviar por WhatsApp</button>
+                  <button type="button" onClick={() => sendEmail(sale)} disabled={!hasEmail || emailStatus === 'sending'} style={{ padding: '9px 14px', border: 'none', borderRadius: 8, background: hasEmail ? '#000000' : '#d1d5db', color: hasEmail ? '#fff' : '#6b7280', fontWeight: 600, cursor: hasEmail ? 'pointer' : 'not-allowed' }}>{emailStatus === 'sending' ? 'Enviando...' : emailStatus === 'sent' ? 'Email enviado' : 'Enviar por email'}</button>
                 </div>
                 {emailStatus === 'error' && <div style={{ marginTop: 10, color: '#b91c1c', fontSize: 13 }}>No se pudieron enviar las entradas por email. Intentá nuevamente.</div>}
               </section>
@@ -381,7 +383,7 @@ export default function BoxOfficePackCheckout({ show, sessions, token, onClose }
           })}
         </div>
 
-        <button onClick={onClose} style={{ marginTop: 24, padding: '10px 16px', background: '#16a34a', color: '#fff', border: 0, borderRadius: 6, cursor: 'pointer', fontWeight: 600 }}>Nueva venta</button>
+        <button onClick={onClose} style={{ marginTop: 24, padding: '10px 16px', background: '#000000', color: '#fff', border: 0, borderRadius: 6, cursor: 'pointer', fontWeight: 600 }}>Nueva venta</button>
       </div>
     );
   }
@@ -509,7 +511,7 @@ export default function BoxOfficePackCheckout({ show, sessions, token, onClose }
                 {Number(preview.discount_amount || 0) > 0 && <div style={{ display: 'flex', justifyContent: 'space-between', color: '#059669', fontWeight: 600 }}><span>Descuento</span><span>-{formatCurrency(preview.discount_amount)}</span></div>}
                 <div style={{ display: 'flex', justifyContent: 'space-between', fontWeight: 700, fontSize: 18, paddingTop: 8, borderTop: '2px solid #1f2937' }}><span>Total</span><span>{formatCurrency(preview.total ?? preview.subtotal)}</span></div>
               </div>
-              <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 12 }}><button type="button" onClick={() => setShowSaleModal(false)} style={{ padding: '10px 16px', borderRadius: 10, border: '1px solid #d1d5db', background: '#f3f4f6', color: '#374151', fontWeight: 600, cursor: 'pointer' }}>Cancelar</button><button type="submit" disabled={loading} style={{ padding: '10px 18px', borderRadius: 10, border: 'none', background: loading ? '#9ca3af' : '#2563eb', color: '#fff', fontWeight: 600, cursor: loading ? 'not-allowed' : 'pointer' }}>{loading ? 'Procesando...' : `Confirmar venta (${formatCurrency(preview.total ?? preview.subtotal)})`}</button></div>
+              <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 12 }}><button type="button" onClick={() => setShowSaleModal(false)} style={{ padding: '10px 16px', borderRadius: 10, border: '1px solid #d1d5db', background: '#f3f4f6', color: '#374151', fontWeight: 600, cursor: 'pointer' }}>Cancelar</button><button type="submit" disabled={loading} style={{ padding: '10px 18px', borderRadius: 10, border: 'none', background: loading ? '#9ca3af' : '#000000', color: '#fff', fontWeight: 600, cursor: loading ? 'not-allowed' : 'pointer' }}>{loading ? 'Procesando...' : `Confirmar venta (${formatCurrency(preview.total ?? preview.subtotal)})`}</button></div>
             </form>
           </div>
         </div>
@@ -549,7 +551,7 @@ export default function BoxOfficePackCheckout({ show, sessions, token, onClose }
                 {Number(preview.discount_amount || 0) > 0 && <div style={{ display: 'flex', justifyContent: 'space-between', color: '#059669', fontWeight: 600 }}><span>Descuento</span><span>-{formatCurrency(preview.discount_amount)}</span></div>}
                 <div style={{ display: 'flex', justifyContent: 'space-between', fontWeight: 700, fontSize: 18, paddingTop: 8, borderTop: '2px solid #1f2937' }}><span>Total</span><span>{formatCurrency(preview.total ?? preview.subtotal)}</span></div>
               </div>
-              <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 12 }}><button type="button" onClick={() => setShowQuickSaleModal(false)} style={{ padding: '10px 16px', borderRadius: 10, border: '1px solid #d1d5db', background: '#f3f4f6', color: '#374151', fontWeight: 600, cursor: 'pointer' }}>Cancelar</button><button type="submit" disabled={loading} style={{ padding: '10px 18px', borderRadius: 10, border: 'none', background: loading ? '#9ca3af' : '#2563eb', color: '#fff', fontWeight: 600, cursor: loading ? 'not-allowed' : 'pointer' }}>{loading ? 'Procesando...' : `Confirmar venta (${formatCurrency(preview.total ?? preview.subtotal)})`}</button></div>
+              <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 12 }}><button type="button" onClick={() => setShowQuickSaleModal(false)} style={{ padding: '10px 16px', borderRadius: 10, border: '1px solid #d1d5db', background: '#f3f4f6', color: '#374151', fontWeight: 600, cursor: 'pointer' }}>Cancelar</button><button type="submit" disabled={loading} style={{ padding: '10px 18px', borderRadius: 10, border: 'none', background: loading ? '#9ca3af' : '#000000', color: '#fff', fontWeight: 600, cursor: loading ? 'not-allowed' : 'pointer' }}>{loading ? 'Procesando...' : `Confirmar venta (${formatCurrency(preview.total ?? preview.subtotal)})`}</button></div>
             </form>
           </div>
         </div>

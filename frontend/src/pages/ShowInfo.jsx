@@ -2,16 +2,15 @@ import { useParams, useNavigate } from 'react-router-dom';
 import { useEffect, useState } from 'react';
 import { apiFetch } from '../lib/api';
 import { getShowImageUrl } from '../lib/media';
-import { formatDate, formatTime, formatDateLong } from '../lib/dateFormatter.js';
+import { formatTime, formatDateLong } from '../lib/dateFormatter.js';
 
 export default function ShowInfo() {
   const { id } = useParams();
   const navigate = useNavigate();
   const [show, setShow] = useState(null);
   const [sessions, setSessions] = useState([]);
-  const [sessionPricing, setSessionPricing] = useState({}); // Map sessionId -> pricing rules
   const [selectedSessionId, setSelectedSessionId] = useState(null);
-  const [flippedCardId, setFlippedCardId] = useState(null); // Which card is flipped
+  const [selectError, setSelectError] = useState(false);
   const [isMobile, setIsMobile] = useState(() => {
     if (typeof window === 'undefined') return false;
     return window.innerWidth < 768;
@@ -35,7 +34,6 @@ export default function ShowInfo() {
     apiFetch(`/api/shows/${id}`)
       .then(res => res.json())
       .then(data => {
-        console.log('[ShowInfo] Show loaded:', data);
         setShow(data);
       })
       .catch(err => {
@@ -45,34 +43,11 @@ export default function ShowInfo() {
     apiFetch(`/api/shows/${id}/sessions`)
       .then(res => res.json())
       .then(sessions => {
-        console.log('[ShowInfo] Sessions loaded:', sessions);
         setSessions(sessions);
-        
-        // Load pricing rules for each session
-        const pricingPromises = sessions.map(session => 
-          apiFetch(`/api/seat-pricing/rules?sessionId=${session.id}`)
-            .then(res => res.json())
-            .then(data => ({ sessionId: session.id, rules: data.rules || [] }))
-            .catch(() => ({ sessionId: session.id, rules: [] }))
-        );
-        
-        Promise.all(pricingPromises).then(results => {
-          const pricingMap = {};
-          results.forEach(({ sessionId, rules }) => {
-            pricingMap[sessionId] = rules;
-          });
-          setSessionPricing(pricingMap);
-          
-          // Select first session by default
-          if (sessions.length > 0 && !selectedSessionId) {
-            setSelectedSessionId(sessions[0].id);
-          }
-          
-          // Auto-flip if only one session
-          if (sessions.length === 1) {
-            setFlippedCardId(sessions[0].id);
-          }
-        });
+        // Auto-select if only one session
+        if (sessions.length === 1) {
+          setSelectedSessionId(sessions[0].id);
+        }
       })
       .catch(err => {
         console.error('[ShowInfo] Error loading sessions:', err);
@@ -109,45 +84,17 @@ export default function ShowInfo() {
   }
 
   const heroImageUrl = getShowImageUrl(show, 'principal_web');
-  
-  const getPricing = () => {
-    // Prioridad: usar pricing de la primera sesión disponible
-    if (sessions.length > 0) {
-      let sessionPricing = sessions[0].pricing_json;
-      if (typeof sessionPricing === 'string') {
-        try {
-          sessionPricing = JSON.parse(sessionPricing);
-        } catch {
-          sessionPricing = null;
-        }
-      }
-      if (sessionPricing && Object.keys(sessionPricing).length > 0) {
-        return sessionPricing;
-      }
-    }
-    // Fallback: usar pricing del show
-    if (!show.pricing_json) return null;
-    let pricing = show.pricing_json;
-    if (typeof pricing === 'string') {
-      try {
-        pricing = JSON.parse(pricing);
-      } catch {
-        return null;
-      }
-    }
-    return pricing;
-  };
+  const isPack = !!show.pack_enabled;
+  const hasMultipleSessions = sessions.length > 1;
 
-  const pricing = getPricing();
-
-  // Get palcos_individual_seats from session (if set) or fallback to show
-  const getPalcosIndividualSeats = () => {
-    if (sessions.length > 0 && sessions[0].palcos_individual_seats !== null && sessions[0].palcos_individual_seats !== undefined) {
-      return sessions[0].palcos_individual_seats;
+  const navigateToSession = (sessionId) => {
+    window.scrollTo(0, 0);
+    if (sessionId) {
+      navigate(`/detalle/${id}?sesion=${sessionId}`);
+    } else {
+      navigate(`/detalle/${id}`);
     }
-    return show.palcos_individual_seats || false;
   };
-  const palcosIndividualSeats = getPalcosIndividualSeats();
 
   return (
     <div
@@ -222,185 +169,100 @@ export default function ShowInfo() {
             </div>
           )}
 
-          {/* Session Cards with Flip Animation */}
+          {show.clasificacion && (
+            <div>
+              <div style={{ fontSize: 14, color: '#64748b', fontWeight: 600 }}>Clasificación</div>
+              <div style={{ fontSize: 16, color: '#0f172a', fontWeight: 600 }}>
+                {show.clasificacion}
+              </div>
+            </div>
+          )}
+
+          {/* Session Cards */}
           {sessions.length > 0 && (
             <div style={{ marginTop: 16 }}>
               <div style={{ fontSize: 14, color: '#64748b', fontWeight: 600, marginBottom: 12 }}>
                 {sessions.length === 1 ? 'Función' : 'Funciones'}
               </div>
-              
+
+              {hasMultipleSessions && !selectedSessionId && !isPack && (
+                <div style={{ fontSize: 13, color: '#9ca3af', fontWeight: 500, marginBottom: 12, fontStyle: 'italic' }}>
+                  Seleccionar una
+                </div>
+              )}
+
               <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
-                {(() => {
-                  const isPack = !!show.pack_enabled;
+                {sessions.map(session => {
+                  const longDateStr = formatDateLong(session.starts_at);
+                  const timeStr = formatTime(session.starts_at);
+                  const isSoldOut = !!session.is_sold_out;
+                  const isSelected = selectedSessionId === session.id;
+
+                  // Capitalize first letter of long date
+                  const displayText = longDateStr
+                    ? longDateStr.charAt(0).toUpperCase() + longDateStr.slice(1) + ' a las ' + timeStr
+                    : '';
+
+                  // Pack: plain text dates, no cards
+                  if (isPack) {
+                    return (
+                      <div key={session.id} style={{ fontSize: 15, color: '#374151', padding: '4px 0' }}>
+                        {displayText}
+                      </div>
+                    );
+                  }
+
                   return (
-                    <>
-                      {sessions.map(session => {
-                        const dateStr = formatDate(session.starts_at);
-                        const timeStr = formatTime(session.starts_at);
-                        const longDateStr = formatDateLong(session.starts_at);
-
-                        const isSoldOut = !!session.is_sold_out;
-                        const isFlipped = !isPack && flippedCardId === session.id;
-                        const seatPricing = sessionPricing[session.id] || [];
-
-                        if (isPack) {
-                          return (
-                            <div key={session.id} style={{ fontSize: 15, color: '#374151', padding: '4px 0' }}>
-                              {longDateStr} - {timeStr} hs
-                            </div>
-                          );
+                    <div
+                      key={session.id}
+                      onClick={() => {
+                        if (!isSoldOut) {
+                          setSelectedSessionId(isSelected ? null : session.id);
+                          setSelectError(false);
                         }
-                        
-                        return (
-                          <div
-                            key={session.id}
-                            onClick={() => !isSoldOut && setFlippedCardId(isFlipped ? null : session.id)}
-                            style={{
-                              position: 'relative',
-                              height: isFlipped ? 'auto' : 80,
-                              cursor: isSoldOut ? 'default' : 'pointer',
-                              perspective: '1000px'
-                            }}
-                          >
-                            {/* Card Container with Flip Animation */}
-                            <div style={{
-                              position: 'relative',
-                              width: '100%',
-                              height: '100%',
-                              transformStyle: isPack ? 'flat' : 'preserve-3d',
-                              transition: 'transform 0.6s',
-                              transform: isPack ? 'none' : (isFlipped ? 'rotateX(180deg)' : 'rotateX(0deg)')
-                            }}>
-                              {/* Front of card (always visible initially) */}
-                              <div style={{
-                                position: isFlipped ? 'absolute' : 'relative',
-                                width: '100%',
-                                height: '100%',
-                                backfaceVisibility: 'hidden',
-                                display: 'flex',
-                                alignItems: 'center',
-                                justifyContent: 'space-between',
-                                padding: '16px 20px',
-                                background: isSoldOut
-                                  ? 'linear-gradient(135deg, #94a3b8 0%, #64748b 100%)'
-                                  : 'linear-gradient(135deg, #a78bfa 0%, #8b5cf6 100%)',
-                                borderRadius: 12,
-                                boxShadow: isSoldOut
-                                  ? '0 4px 6px -1px rgba(100, 116, 139, 0.2)'
-                                  : '0 4px 6px -1px rgba(139, 92, 246, 0.2)',
-                                transform: isPack ? 'none' : (isFlipped ? 'rotateX(180deg)' : 'rotateX(0deg)'),
-                                overflow: 'hidden'
-                              }}>
-                                <div>
-                                  <div style={{ fontSize: 18, color: '#ffffff', fontWeight: 700 }}>
-                                    {timeStr}
-                                  </div>
-                                  <div style={{ fontSize: 14, color: isSoldOut ? '#e2e8f0' : '#ede9fe', marginTop: 2 }}>
-                                    {dateStr}
-                                  </div>
-                                </div>
-                                {isSoldOut ? (
-                                  <div style={{
-                                    background: '#ef4444',
-                                    color: '#ffffff',
-                                    fontSize: 12,
-                                    fontWeight: 800,
-                                    letterSpacing: '0.5px',
-                                    padding: '6px 14px',
-                                    borderRadius: 999,
-                                    textTransform: 'uppercase',
-                                    whiteSpace: 'nowrap',
-                                    boxShadow: '0 2px 8px rgba(239,68,68,0.4)'
-                                  }}>
-                                    LOCALIDADES AGOTADAS
-                                  </div>
-                                ) : !isPack && (
-                                <div style={{ 
-                                  display: 'flex', 
-                                  alignItems: 'center', 
-                                  gap: 8
-                                }}>
-                                  <div style={{ 
-                                    fontSize: 13, 
-                                    color: '#ffffff', 
-                                    fontWeight: 700,
-                                    letterSpacing: '0.5px'
-                                  }}>
-                                    VER PRECIOS
-                                  </div>
-                                  <div style={{ fontSize: 20, color: '#ffffff' }}>
-                                    →
-                                  </div>
-                                </div>
-                                )}
-                              </div>
-                              
-                              {/* Back of card (pricing info) */}
-                              {isFlipped && !isPack && (
-                                <div style={{
-                                  width: '100%',
-                                  background: '#f8fafc',
-                                  borderRadius: 12,
-                                  border: '1px solid #e5e7eb',
-                                  padding: 16,
-                                  transform: 'rotateX(180deg)'
-                                }}>
-                                  {/* Header */}
-                                  <div style={{
-                                    display: 'flex',
-                                    justifyContent: 'space-between',
-                                    alignItems: 'center',
-                                    marginBottom: 12,
-                                    paddingBottom: 12,
-                                    borderBottom: '1px solid #e5e7eb'
-                                  }}>
-                                    <div>
-                                      <div style={{ fontSize: 16, color: '#0f172a', fontWeight: 700 }}>
-                                        {dateStr} - {timeStr}
-                                      </div>
-                                      <div style={{ fontSize: 12, color: '#64748b' }}>
-                                        Precios según ubicación
-                                      </div>
-                                    </div>
-                                    <div style={{
-                                      fontSize: 12,
-                                      color: '#8b5cf6',
-                                      fontWeight: 600,
-                                      cursor: 'pointer'
-                                    }}>
-                                      ← Volver
-                                    </div>
-                                  </div>
-                                  
-                                  {/* Pricing Display for this session */}
-                                  <SessionPricingDisplay 
-                                    session={session} 
-                                    seatPricing={seatPricing}
-                                    pricing={pricing}
-                                    palcosIndividualSeats={palcosIndividualSeats}
-                                    venueType={show.venue_type}
-                                    isMobile={isMobile}
-                                  />
-                                </div>
-                              )}
-                            </div>
-                          </div>
-                        );
-                      })}
+                      }}
+                      style={{
+                        display: 'flex',
+                        alignItems: 'center',
+                        justifyContent: 'space-between',
+                        padding: '16px 20px',
+                        background: isSelected ? '#000000' : (isSoldOut ? '#f3f4f6' : '#ffffff'),
+                        border: `2px solid ${isSoldOut ? '#d1d5db' : '#000000'}`,
+                        borderRadius: 12,
+                        cursor: isSoldOut ? 'default' : 'pointer',
+                        transition: 'all 0.2s ease'
+                      }}
+                    >
+                      <div style={{ fontSize: 16, fontWeight: 600, color: isSelected ? '#ffffff' : (isSoldOut ? '#9ca3af' : '#0f172a') }}>
+                        {displayText}
+                      </div>
 
-                      {isPack && (
-                        <PackPricingDisplay
-                          packPricingJson={show.pack_pricing_json}
-                          basePricing={show.pricing_json}
-                          packMaxSessions={show.pack_max_sessions}
-                          palcosIndividualSeats={palcosIndividualSeats}
-                          isMobile={isMobile}
-                        />
+                      {isSoldOut && (
+                        <div style={{
+                          background: '#ef4444',
+                          color: '#ffffff',
+                          fontSize: 12,
+                          fontWeight: 800,
+                          letterSpacing: '0.5px',
+                          padding: '6px 14px',
+                          borderRadius: 999,
+                          textTransform: 'uppercase',
+                          whiteSpace: 'nowrap'
+                        }}>
+                          LOCALIDADES AGOTADAS
+                        </div>
                       )}
-                    </>
+                    </div>
                   );
-                })()}
+                })}
               </div>
+
+              {/* Error message when no session selected */}
+              {selectError && (
+                <div style={{ marginTop: 12, fontSize: 14, color: '#ef4444', fontWeight: 600 }}>
+                  Debés seleccionar una función para continuar
+                </div>
+              )}
             </div>
           )}
         </div>
@@ -426,21 +288,19 @@ export default function ShowInfo() {
         ) : show.external_sale && show.external_sale_link ? (
           <button
             onClick={() => {
-              // Use location.href for more reliable navigation on mobile
               window.location.href = show.external_sale_link;
             }}
             style={{
               display: 'block',
               width: '100%',
               padding: isMobile ? '16px' : '18px',
-              background: '#3b82f6',
+              background: '#000000',
               color: '#fff',
               border: 'none',
               borderRadius: 12,
               fontSize: isMobile ? 16 : 18,
               fontWeight: 700,
               cursor: 'pointer',
-              boxShadow: '0 8px 24px rgba(59, 130, 246, 0.4)',
               marginBottom: 32,
               textAlign: 'center',
               textDecoration: 'none',
@@ -449,35 +309,49 @@ export default function ShowInfo() {
           >
             🔗 COMPRAR EN SITIO EXTERNO
           </button>
-        ) : (
+        ) : sessions.length > 0 && !isPack ? (
           <button
             onClick={() => {
-              window.scrollTo(0, 0);
-              // If a card is flipped, navigate to that specific session
-              const targetSession = flippedCardId || sessions[0]?.id;
-              if (targetSession) {
-                navigate(`/detalle/${id}?sesion=${targetSession}`);
-              } else {
-                navigate(`/detalle/${id}`);
+              if (!selectedSessionId) {
+                setSelectError(true);
+                return;
               }
+              navigateToSession(selectedSessionId);
             }}
             style={{
               width: '100%',
               padding: isMobile ? '16px' : '18px',
-              background: '#f97316',
+              background: selectedSessionId ? '#000000' : '#d1d5db',
               color: '#fff',
               border: 'none',
               borderRadius: 12,
               fontSize: isMobile ? 16 : 18,
               fontWeight: 700,
               cursor: 'pointer',
-              boxShadow: '0 8px 24px rgba(249, 115, 22, 0.4)',
               marginBottom: 32
             }}
           >
             COMPRAR ENTRADAS
           </button>
-        )}
+        ) : isPack ? (
+          <button
+            onClick={() => navigateToSession(sessions[0]?.id)}
+            style={{
+              width: '100%',
+              padding: isMobile ? '16px' : '18px',
+              background: '#000000',
+              color: '#fff',
+              border: 'none',
+              borderRadius: 12,
+              fontSize: isMobile ? 16 : 18,
+              fontWeight: 700,
+              cursor: 'pointer',
+              marginBottom: 32
+            }}
+          >
+            COMPRAR ENTRADAS
+          </button>
+        ) : null}
 
         {/* Show Description */}
         {show.description && (
@@ -523,278 +397,6 @@ export default function ShowInfo() {
           ← Volver al inicio
         </button>
       </div>
-    </div>
-  );
-}
-
-// Component to display pack pricing by number of functions
-function PackPricingDisplay({ packPricingJson, basePricing, packMaxSessions, palcosIndividualSeats, isMobile }) {
-  const parse = (value) => {
-    if (!value) return {};
-    if (typeof value === 'string') {
-      try {
-        const parsed = JSON.parse(value);
-        return parsed && typeof parsed === 'object' ? parsed : {};
-      } catch {
-        return {};
-      }
-    }
-    return typeof value === 'object' ? value : {};
-  };
-
-  const packPricing = parse(packPricingJson);
-  const base = parse(basePricing);
-  const maxSessions = Math.max(1, Number(packMaxSessions) || 3);
-
-  const formatCurrency = (amount) =>
-    new Intl.NumberFormat('es-AR', { style: 'currency', currency: 'ARS', minimumFractionDigits: 0 }).format(Number(amount || 0));
-
-  const getPrice = (depth, key) => {
-    const depthPrices = packPricing[depth] || packPricing[String(depth)] || {};
-    return depthPrices[key] || depthPrices[key.replace(/_/g, ' ')] || base[key] || 0;
-  };
-
-  const priceRow = (sec) => {
-    const price = sec.price;
-    if (!price) return null;
-    return (
-      <div key={sec.key} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8, padding: '6px 0', borderBottom: '1px solid #f1f5f9' }}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-          <span style={{ background: sec.color, padding: '3px 8px', borderRadius: 999, fontSize: 11, fontWeight: 600, color: sec.key === 'palcos_altos' ? '#ffffff' : '#1f2937', flexShrink: 0 }}>{sec.badge}</span>
-          <div>
-            <div style={{ fontSize: 13, color: '#1f2937' }}>{sec.title}</div>
-            {sec.localidades && <div style={{ fontSize: 11, color: '#94a3b8' }}>{sec.localidades}</div>}
-            {sec.location && <div style={{ fontSize: 11, color: '#94a3b8', whiteSpace: 'pre-line' }}>{sec.location}</div>}
-          </div>
-        </div>
-        <span style={{ fontSize: 13, fontWeight: 700, color: '#0f172a', whiteSpace: 'nowrap' }}>{formatCurrency(price)}</span>
-      </div>
-    );
-  };
-
-  return (
-    <div style={{ background: '#f8fafc', border: '1px solid #e5e7eb', borderRadius: 12, padding: 16 }}>
-      <div style={{
-        background: '#f0fdf4',
-        border: '1px solid #86efac',
-        borderRadius: 8,
-        padding: 12,
-        marginBottom: 16,
-        fontSize: 14,
-        color: '#166534',
-        lineHeight: 1.5
-      }}>
-        Espectáculo dividido en varios días. comprando para más de una función, tus entradas tienen descuento
-      </div>
-
-      <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
-        {Array.from({ length: maxSessions }, (_, i) => i + 1).map(depth => {
-          const leftSections = [
-            { key: 'platea_general', badge: 'Platea', title: 'Platea General', location: 'Planta baja', color: '#a8d8a8', price: getPrice(depth, 'platea_general') },
-            { key: 'palcos_altos', badge: 'PA', title: 'Palcos Altos', localidades: !palcosIndividualSeats ? '2 localidades' : null, location: '1° piso por escalera', color: '#6b8e6b', price: getPrice(depth, 'palcos_altos') }
-          ];
-          const rightSections = [
-            { key: 'palcos_bajos', badge: 'PB', title: 'Palcos Bajos', localidades: !palcosIndividualSeats ? '4 localidades' : null, location: 'Planta baja', color: '#8fbc8f', price: getPrice(depth, 'palcos_bajos') },
-            { key: 'pullman', badge: 'Pullman', title: 'Pullman', location: '2° piso por escalera\nSin ubicación fija', color: '#c0c0c0', price: getPrice(depth, 'pullman') },
-            { key: 'general', badge: 'General', title: 'Entrada General', location: 'Sin ubicación fija', color: '#94a3b8', price: getPrice(depth, 'general') }
-          ];
-
-          const label = depth === 1 ? '1 función' : `${depth} funciones`;
-          return (
-            <div key={depth} style={{ background: '#ffffff', borderRadius: 8, border: '1px solid #e5e7eb', padding: 12 }}>
-              <div style={{ fontSize: 14, fontWeight: 700, color: '#1e293b', marginBottom: 10 }}>{label}</div>
-              <div style={{ display: 'flex', flexDirection: isMobile ? 'column' : 'row', gap: isMobile ? 8 : 16 }}>
-                <div style={{ flex: 1, display: 'flex', flexDirection: 'column', gap: 4 }}>
-                  {leftSections.map(priceRow)}
-                </div>
-                {!isMobile && <div style={{ width: 1, background: '#e5e7eb' }} />}
-                <div style={{ flex: 1, display: 'flex', flexDirection: 'column', gap: 4 }}>
-                  {rightSections.map(priceRow)}
-                </div>
-              </div>
-            </div>
-          );
-        })}
-      </div>
-    </div>
-  );
-}
-
-// Component to display pricing for a specific session
-function SessionPricingDisplay({ seatPricing, pricing, palcosIndividualSeats, venueType, isMobile }) {
-  const isGeneralAdmission = (venueType === 'el_tablado' || venueType === 'las_gemelas');
-  
-  if (!pricing && seatPricing.length === 0) {
-    return (
-      <div style={{ fontSize: 14, color: '#64748b', textAlign: 'center', padding: 20 }}>
-        Información de precios no disponible
-      </div>
-    );
-  }
-  
-  // Group seat pricing by section
-  const tiersBySection = {
-    platea: seatPricing.filter(p => p.row_from && p.row_to),
-    palcos_bajos: seatPricing.filter(p => p.palco_from !== null && p.palco_from !== undefined && !p.is_palco_alto),
-    palcos_altos: seatPricing.filter(p => p.palco_from !== null && p.palco_from !== undefined && p.is_palco_alto),
-    pullman: []
-  };
-  
-  // Base colors for each section
-  const baseColors = {
-    platea: '#a8d8a8',
-    palcos_bajos: '#8fbc8f',
-    palcos_altos: '#6b8e6b',
-    pullman: '#c0c0c0'
-  };
-
-  // Sector configuration — 3 separate fields: title, localidades, location
-  const sectorConfig = {
-    platea: { 
-      badge: 'Platea', 
-      title: 'Platea General',
-      localidades: null,
-      location: 'Planta baja',
-      hasPricing: pricing?.platea_general || tiersBySection.platea.length > 0
-    },
-    palcos_bajos: { 
-      badge: 'PB', 
-      title: 'Palcos Bajos',
-      localidades: !palcosIndividualSeats ? '4 localidades' : null,
-      location: 'Planta baja',
-      hasPricing: pricing?.palcos_bajos || tiersBySection.palcos_bajos.length > 0
-    },
-    palcos_altos: { 
-      badge: 'PA', 
-      title: 'Palcos Altos',
-      localidades: !palcosIndividualSeats ? '2 localidades' : null,
-      location: '1° piso por escalera',
-      hasPricing: pricing?.palcos_altos || tiersBySection.palcos_altos.length > 0
-    },
-    pullman: { 
-      badge: 'Pullman', 
-      title: 'Pullman',
-      localidades: null,
-      location: '2° piso por escalera\nSin ubicación fija',
-      hasPricing: pricing?.pullman
-    }
-  };
-  
-  // Section order
-  const sectionOrder = ['platea', 'palcos_bajos', 'palcos_altos', 'pullman'];
-  
-  // Render a single price row — always 3 lines: name, localidades, location
-  const renderPriceRow = (badge, badgeColor, title, localidades, location, price, isPA = false) => (
-    <div key={`${badge}-${title}`} style={{ 
-      display: 'flex', 
-      alignItems: 'center', 
-      gap: 8,
-      padding: '8px 0',
-      borderBottom: '1px solid #f1f5f9'
-    }}>
-      <span style={{
-        background: badgeColor,
-        color: isPA ? '#ffffff' : '#1f2937',
-        padding: '4px 10px',
-        borderRadius: 999,
-        fontSize: 11,
-        fontWeight: 600,
-        minWidth: 50,
-        textAlign: 'center',
-        flexShrink: 0
-      }}>{badge}</span>
-      <div style={{ flex: 1 }}>
-        <div style={{ fontSize: 12, color: '#64748b', fontWeight: 600 }}>{title}</div>
-        {localidades && <div style={{ fontSize: 11, color: '#94a3b8' }}>{localidades}</div>}
-        {location && (typeof location === 'string' ? location.split('\n') : [String(location)]).map((line, i) => (
-          <div key={i} style={{ fontSize: 11, color: '#94a3b8' }}>{line}</div>
-        ))}
-      </div>
-      <div style={{ fontSize: 14, color: '#0f172a', fontWeight: 700, whiteSpace: 'nowrap' }}>
-        ${Number(price).toLocaleString('es-AR')}
-      </div>
-    </div>
-  );
-  
-  return (
-    <div style={{
-      display: 'grid',
-      gridTemplateColumns: isGeneralAdmission ? '1fr' : (isMobile ? '1fr' : 'repeat(2, 1fr)'),
-      gap: 12
-    }}>
-      {sectionOrder.map(section => {
-        const config = sectorConfig[section];
-        const sectionTiers = tiersBySection[section] || [];
-        const isPA = section === 'palcos_altos';
-        const isPalco = section === 'palcos_bajos' || section === 'palcos_altos';
-        
-        if (!config.hasPricing) return null;
-
-        const basePrice = pricing?.[
-          section === 'platea' ? 'platea_general' :
-          section === 'palcos_bajos' ? 'palcos_bajos' :
-          section === 'palcos_altos' ? 'palcos_altos' : 'pullman'
-        ];
-        
-        return (
-          <div key={section} style={{
-            padding: 12,
-            background: '#ffffff',
-            borderRadius: 8,
-            border: '1px solid #e5e7eb'
-          }}>
-            {/* For palcos: always show base row with 3 lines, then tiers as sub-rows */}
-            {isPalco ? (
-              <>
-                {basePrice && renderPriceRow(
-                  config.badge, baseColors[section],
-                  config.title, config.localidades, config.location,
-                  basePrice, isPA
-                )}
-                {sectionTiers.map((tier) => renderPriceRow(
-                  config.badge,
-                  tier.color || baseColors[section],
-                  section === 'palcos_bajos'
-                    ? `PB ${tier.palco_from} a ${tier.palco_to}`
-                    : `PA ${tier.palco_from} a ${tier.palco_to}`,
-                  config.localidades, config.location,
-                  tier.price, isPA
-                ))}
-              </>
-            ) : section === 'platea' ? (
-              <>
-                {basePrice && renderPriceRow(
-                  config.badge, baseColors[section],
-                  config.title, config.localidades, config.location,
-                  basePrice
-                )}
-                {sectionTiers.map(tier => renderPriceRow(
-                  config.badge,
-                  tier.color || baseColors[section],
-                  `Filas ${tier.row_from} a ${tier.row_to}`,
-                  config.localidades, config.location,
-                  tier.price
-                ))}
-              </>
-            ) : (
-              /* Pullman */
-              basePrice && renderPriceRow(config.badge, baseColors[section], config.title, config.localidades, config.location, basePrice)
-            )}
-          </div>
-        );
-      })}
-      
-      {/* General Admission */}
-      {pricing?.general && (
-        <div style={{
-          padding: 12,
-          background: '#ffffff',
-          borderRadius: 8,
-          border: '1px solid #e5e7eb'
-        }}>
-          {renderPriceRow('General', '#94a3b8', 'Entrada General', 'Sin ubicación fija', 'Sin ubicación fija', pricing.general)}
-        </div>
-      )}
     </div>
   );
 }

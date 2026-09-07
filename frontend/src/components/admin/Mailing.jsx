@@ -850,7 +850,7 @@ export default function Mailing() {
                 disabled={sending}
                 style={{
                   padding: '10px 16px',
-                  background: '#f59e0b',
+                  background: '#000000',
                   color: 'white',
                   border: 'none',
                   borderRadius: 6,

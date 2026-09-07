@@ -299,7 +299,7 @@ export default function Home() {
                         border: 'none',
                         borderRadius: 6,
                         padding: '10px 20px',
-                        background: '#f97316',
+                        background: '#000000',
                         color: '#fff',
                         fontSize: 14,
                         fontWeight: 700,
@@ -320,7 +320,7 @@ export default function Home() {
                     border: 'none',
                     borderRadius: 4,
                     padding: '6px 16px',
-                    background: '#f97316',
+                    background: '#000000',
                     color: '#fff',
                     fontSize: 11,
                     fontWeight: 600,
@@ -532,7 +532,7 @@ export default function Home() {
           <div style={{ display: 'flex', gap: 12, justifyContent: isMobile ? 'center' : 'flex-end', flexWrap: 'wrap' }}>
             <Link to="/ateneo/sobre" style={{
               padding: '10px 20px',
-              background: '#7c3aed',
+              background: '#000000',
               color: '#fff',
               borderRadius: 6,
               textDecoration: 'none',

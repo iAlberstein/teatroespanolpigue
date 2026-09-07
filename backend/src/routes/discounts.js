@@ -4,6 +4,63 @@ import { authenticateToken, requireRole } from '../middleware/auth.js';
 
 const router = express.Router();
 
+// Filas válidas de platea baja (A-M)
+const PLATEA_BAJA_ROWS = 'ABCDEFGHIJKLM';
+
+function isValidRow(row) {
+  return typeof row === 'string' && row.length === 1 && PLATEA_BAJA_ROWS.includes(row.toUpperCase());
+}
+
+// Normaliza y valida el par row_start/row_end.
+// Devuelve { rowStart, rowEnd } o lanza error con mensaje.
+function normalizeRowRange(rowStart, rowEnd) {
+  let rs = rowStart ? String(rowStart).trim().toUpperCase() : null;
+  let re = rowEnd ? String(rowEnd).trim().toUpperCase() : null;
+  if (rs !== null && rs !== '') {
+    if (!isValidRow(rs)) throw new Error('La fila inicial debe ser una letra entre A y M');
+  } else {
+    rs = null;
+  }
+  if (re !== null && re !== '') {
+    if (!isValidRow(re)) throw new Error('La fila final debe ser una letra entre A y M');
+  } else {
+    re = null;
+  }
+  if (rs && re && rs > re) {
+    throw new Error('La fila inicial no puede ser mayor que la fila final');
+  }
+  return { rowStart: rs, rowEnd: re };
+}
+
+// Valida que todos los items sean butacas de platea baja dentro del rango.
+// Devuelve null si ok, o un mensaje de error si no cumple.
+function validateItemsForPlateaBaja(items, rowStart, rowEnd) {
+  const rs = rowStart || 'A';
+  const re = rowEnd || 'M';
+  const list = Array.isArray(items) ? items : [];
+  for (const item of list) {
+    if (!item) continue;
+    const type = item.type;
+    // Solo se permiten butacas (platea baja). Palcos, pullman y general quedan excluidos.
+    if (type !== 'butaca') {
+      return `El código aplicado solo es válido de la fila ${rs} a la fila ${re} de la platea baja`;
+    }
+    const seatCode = item.seat_code;
+    if (!seatCode) {
+      return `El código aplicado solo es válido de la fila ${rs} a la fila ${re} de la platea baja`;
+    }
+    const match = String(seatCode).match(/^([A-Z])(\d+)$/);
+    if (!match) {
+      return `El código aplicado solo es válido de la fila ${rs} a la fila ${re} de la platea baja`;
+    }
+    const rowLetter = match[1];
+    if (rowLetter < rs || rowLetter > re) {
+      return `El código aplicado solo es válido de la fila ${rs} a la fila ${re} de la platea baja`;
+    }
+  }
+  return null;
+}
+
 // ADMIN: Get all discounts
 router.get('/', authenticateToken, async (req, res) => {
   try {
@@ -42,7 +99,7 @@ router.post('/', authenticateToken, async (req, res) => {
         return res.status(403).json({ message: 'No autorizado' });
       }
 
-      const { code, alias, show_id, type, value, usage_limit, active, min_seats, max_seats, require_even } = req.body;
+      const { code, alias, show_id, type, value, usage_limit, active, min_seats, max_seats, require_even, platea_baja_only, row_start, row_end } = req.body;
 
       // Validate required fields
       if (!code || !type) {
@@ -100,6 +157,19 @@ router.post('/', authenticateToken, async (req, res) => {
         return res.status(400).json({ message: 'El máximo de localidades no puede ser menor al mínimo' });
       }
 
+      // Restricción de platea baja con rango de filas
+      let rowStartValue = null;
+      let rowEndValue = null;
+      if (platea_baja_only) {
+        try {
+          const range = normalizeRowRange(row_start, row_end);
+          rowStartValue = range.rowStart;
+          rowEndValue = range.rowEnd;
+        } catch (rangeErr) {
+          return res.status(400).json({ message: rangeErr.message });
+        }
+      }
+
       const discount = await Discount.create({
         code: code.trim().toUpperCase(),
         alias: alias ? alias.trim() : null,
@@ -111,7 +181,10 @@ router.post('/', authenticateToken, async (req, res) => {
         require_even: !!require_even,
         usage_limit: usage_limit || null,
         used_count: 0,
-        active: active !== undefined ? active : true
+        active: active !== undefined ? active : true,
+        platea_baja_only: !!platea_baja_only,
+        row_start: rowStartValue,
+        row_end: rowEndValue
       });
 
       // Load with show relation
@@ -142,7 +215,7 @@ router.put('/:id', authenticateToken, async (req, res) => {
       }
 
       const { id } = req.params;
-      const { code, alias, show_id, type, value, usage_limit, active, min_seats, max_seats, require_even } = req.body;
+      const { code, alias, show_id, type, value, usage_limit, active, min_seats, max_seats, require_even, platea_baja_only, row_start, row_end } = req.body;
 
       const discount = await Discount.findByPk(id);
       if (!discount) {
@@ -206,6 +279,35 @@ router.put('/:id', authenticateToken, async (req, res) => {
       if (require_even !== undefined) discount.require_even = !!require_even;
       if (alias !== undefined) discount.alias = alias ? alias.trim() : null;
       if (active !== undefined) discount.active = active;
+      if (platea_baja_only !== undefined) {
+        discount.platea_baja_only = !!platea_baja_only;
+        if (platea_baja_only) {
+          try {
+            const range = normalizeRowRange(row_start, row_end);
+            discount.row_start = range.rowStart;
+            discount.row_end = range.rowEnd;
+          } catch (rangeErr) {
+            return res.status(400).json({ message: rangeErr.message });
+          }
+        } else {
+          discount.row_start = null;
+          discount.row_end = null;
+        }
+      } else if (row_start !== undefined || row_end !== undefined) {
+        // Permitir actualizar solo el rango si la restricción ya está activa
+        if (discount.platea_baja_only) {
+          try {
+            const range = normalizeRowRange(
+              row_start !== undefined ? row_start : discount.row_start,
+              row_end !== undefined ? row_end : discount.row_end
+            );
+            discount.row_start = range.rowStart;
+            discount.row_end = range.rowEnd;
+          } catch (rangeErr) {
+            return res.status(400).json({ message: rangeErr.message });
+          }
+        }
+      }
 
       // Cross-validate min/max
       const finalMin = discount.min_seats;
@@ -314,7 +416,7 @@ router.get('/disability-quota', authenticateToken, requireRole('admin', 'boleter
 router.post('/validate', async (req, res) => {
   try {
     const { discounts: Discount } = sequelize.models;
-    const { code, show_id, seat_count } = req.body;
+    const { code, show_id, seat_count, items } = req.body;
 
       if (!code) {
         return res.status(400).json({ message: 'Código es obligatorio' });
@@ -373,6 +475,17 @@ router.post('/validate', async (req, res) => {
         }
       }
 
+      // Restricción de platea baja con rango de filas
+      if (discount.platea_baja_only) {
+        const rowErrorMsg = validateItemsForPlateaBaja(items, discount.row_start, discount.row_end);
+        if (rowErrorMsg) {
+          return res.status(400).json({
+            error: 'platea_baja_only',
+            message: rowErrorMsg
+          });
+        }
+      }
+
       let multiplierHint = 1;
       if (discount.type === 'fixed' && discount.min_seats) {
         const seatCountNumber = Number(seat_count || 0);
@@ -391,6 +504,9 @@ router.post('/validate', async (req, res) => {
         min_seats: discount.min_seats,
         max_seats: discount.max_seats,
         require_even: discount.require_even,
+        platea_baja_only: !!discount.platea_baja_only,
+        row_start: discount.row_start || 'A',
+        row_end: discount.row_end || 'M',
         usage_limit: discount.usage_limit || null,
         remaining_uses: remainingUses,
         multiplier_hint: multiplierHint

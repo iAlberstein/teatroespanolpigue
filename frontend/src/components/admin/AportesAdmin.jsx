@@ -313,7 +313,7 @@ export default function AportesAdmin({ token }) {
                 style={{
                   flex: 1,
                   padding: '10px',
-                  background: '#10b981',
+                  background: '#000000',
                   color: '#ffffff',
                   border: 'none',
                   borderRadius: theme.borderRadius.md,
@@ -416,7 +416,7 @@ export default function AportesAdmin({ token }) {
                   <span
                     key={aporte.id}
                     style={{
-                      background: '#059669',
+                      background: '#000000',
                       color: '#ffffff',
                       padding: '8px 12px',
                       borderRadius: theme.borderRadius.md,
@@ -459,7 +459,7 @@ export default function AportesAdmin({ token }) {
           disabled={!allAportes.length}
           style={{
             padding: '8px 16px',
-            background: '#059669',
+            background: '#000000',
             color: '#fff',
             border: 'none',
             borderRadius: theme.borderRadius.md,

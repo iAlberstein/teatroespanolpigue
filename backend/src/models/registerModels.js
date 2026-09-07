@@ -110,7 +110,8 @@ export default function registerModels(sequelize) {
     // Legacy fields (mantener para compatibilidad con datos existentes)
     sala: { type: DataTypes.STRING, allowNull: true },
     date: { type: DataTypes.DATEONLY, allowNull: true },
-    time: { type: DataTypes.STRING, allowNull: true }
+    time: { type: DataTypes.STRING, allowNull: true },
+    clasificacion: { type: DataTypes.STRING(100), allowNull: true, comment: 'Clasificación del espectáculo (texto libre, ej: ATP, SAM 13, SAM 16, SAM 18)' }
   });
 
   const Session = sequelize.define('sessions', {
@@ -210,7 +211,10 @@ export default function registerModels(sequelize) {
     require_even: { type: DataTypes.BOOLEAN, defaultValue: false },
     usage_limit: { type: DataTypes.INTEGER, defaultValue: 1 },
     used_count: { type: DataTypes.INTEGER, defaultValue: 0 },
-    active: { type: DataTypes.BOOLEAN, defaultValue: true }
+    active: { type: DataTypes.BOOLEAN, defaultValue: true },
+    platea_baja_only: { type: DataTypes.BOOLEAN, defaultValue: false },
+    row_start: { type: DataTypes.CHAR(1), allowNull: true },
+    row_end: { type: DataTypes.CHAR(1), allowNull: true }
   });
 
   const Sale = sequelize.define('sales', {
@@ -240,6 +244,52 @@ export default function registerModels(sequelize) {
     invoiced_at: { type: DataTypes.DATE, allowNull: true },
     invoiced_by: { type: DataTypes.UUID, allowNull: true },
     service_items: { type: DataTypes.JSON, allowNull: true }
+  });
+
+  const SipagoPaymentAttempt = sequelize.define('sipago_payment_attempts', {
+    id: { type: DataTypes.UUID, defaultValue: DataTypes.UUIDV4, primaryKey: true },
+    reservation_id: { type: DataTypes.UUID, allowNull: false },
+    sale_id: { type: DataTypes.UUID, allowNull: true },
+    provider_order_uuid: { type: DataTypes.STRING(255), allowNull: true, unique: true },
+    expected_amount: { type: DataTypes.BIGINT.UNSIGNED, allowNull: false },
+    expected_currency: { type: DataTypes.STRING(10), allowNull: false },
+    status: { type: DataTypes.STRING(32), allowNull: false, defaultValue: 'pending' },
+    provider_status: { type: DataTypes.STRING(100), allowNull: true },
+    provider_response: {
+      type: DataTypes.JSON,
+      allowNull: true,
+      get() {
+        const value = this.getDataValue('provider_response');
+        if (typeof value !== 'string') return value;
+        try { return JSON.parse(value); } catch { return null; }
+      }
+    },
+    expires_at: { type: DataTypes.DATE, allowNull: false },
+    customer_metadata: {
+      type: DataTypes.JSON,
+      allowNull: true,
+      get() {
+        const value = this.getDataValue('customer_metadata');
+        if (typeof value !== 'string') return value;
+        try { return JSON.parse(value); } catch { return null; }
+      }
+    },
+    discount_id: { type: DataTypes.UUID, allowNull: true },
+    service_items: {
+      type: DataTypes.JSON,
+      allowNull: true,
+      get() {
+        const value = this.getDataValue('service_items');
+        if (typeof value !== 'string') return value;
+        try { return JSON.parse(value); } catch { return null; }
+      }
+    },
+    finalized_at: { type: DataTypes.DATE, allowNull: true },
+    verification_error: { type: DataTypes.STRING(500), allowNull: true }
+  }, {
+    timestamps: true,
+    createdAt: 'created_at',
+    updatedAt: 'updated_at'
   });
 
   const CashRegisterShift = sequelize.define('cash_register_shifts', {
@@ -329,6 +379,13 @@ export default function registerModels(sequelize) {
 
   Sale.hasMany(Ticket, { foreignKey: 'sale_id', as: 'tickets' });
   Ticket.belongsTo(Sale, { foreignKey: 'sale_id', as: 'sale' });
+
+  Reservation.hasMany(SipagoPaymentAttempt, { foreignKey: 'reservation_id', as: 'sipago_payment_attempts' });
+  SipagoPaymentAttempt.belongsTo(Reservation, { foreignKey: 'reservation_id', as: 'reservation' });
+  Sale.hasMany(SipagoPaymentAttempt, { foreignKey: 'sale_id', as: 'sipago_payment_attempts' });
+  SipagoPaymentAttempt.belongsTo(Sale, { foreignKey: 'sale_id', as: 'sale' });
+  Discount.hasMany(SipagoPaymentAttempt, { foreignKey: 'discount_id', as: 'sipago_payment_attempts' });
+  SipagoPaymentAttempt.belongsTo(Discount, { foreignKey: 'discount_id', as: 'discount' });
 
   // Billing associations
   Sale.belongsTo(User, { foreignKey: 'invoiced_by', as: 'invoiced_by_user' });
@@ -957,7 +1014,7 @@ export default function registerModels(sequelize) {
   });
 
   return { 
-    User, Show, Session, Reservation, Ticket, Discount, Sale, CashRegisterShift, Validation, 
+    User, Show, Session, Reservation, Ticket, Discount, Sale, SipagoPaymentAttempt, CashRegisterShift, Validation,
     Bordereaux, ActivityLog, Producer, ShowProducer, NewsletterSubscriber, SystemSettings, SeatBlock,
     // Seat pricing
     SeatPricing,

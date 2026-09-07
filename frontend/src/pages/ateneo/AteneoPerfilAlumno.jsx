@@ -150,7 +150,7 @@ export default function AteneoPerfilAlumno() {
             <h4 style={{ margin: 0, fontSize: 15 }}>Datos personales</h4>
             {!editing && (
               <button onClick={() => setEditing(true)} style={{
-                padding: '6px 14px', background: '#7c3aed', color: '#fff',
+                padding: '6px 14px', background: '#000000', color: '#fff',
                 border: 'none', borderRadius: 6, cursor: 'pointer', fontSize: 12, fontWeight: 600
               }}>Editar</button>
             )}

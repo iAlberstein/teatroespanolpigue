@@ -779,7 +779,7 @@ export default function Aportes() {
                 <div
                   key={aporte.id}
                   style={{
-                    background: '#059669',
+                    background: '#000000',
                     color: '#ffffff',
                     padding: '12px 20px',
                     borderRadius: theme.borderRadius.md,

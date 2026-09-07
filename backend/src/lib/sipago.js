@@ -42,8 +42,11 @@ export async function getSipagoToken(forceRefresh = false) {
   });
   if (!res.ok) {
     const errorText = await res.text().catch(() => 'unknown');
-    console.error('[SIPAGO_AUTH] Failed:', res.status, errorText);
-    throw new Error(`Sipago Auth failed: ${res.status} - ${errorText}`);
+    console.error('[SIPAGO_AUTH] Request failed with status:', res.status);
+    const err = new Error(`Sipago Auth failed: ${res.status}`);
+    err.status = res.status;
+    err.responseText = errorText;
+    throw err;
   }
   const data = await res.json();
   cachedToken = data.access_token;
@@ -51,8 +54,23 @@ export async function getSipagoToken(forceRefresh = false) {
   return cachedToken;
 }
 
+const MAX_CREATE_RETRIES = 4;
+const CREATE_RETRY_INITIAL_MS = 500;
+const CREATE_RETRY_MAX_MS = 8000;
+
+function sleep(ms) {
+  return new Promise(resolve => setTimeout(resolve, ms));
+}
+
+function isTransientCreateError(status, responseText = '') {
+  if (status === null || status === undefined) return true; // network / timeout
+  if (status >= 500 && status < 600) return true;
+  if (status === 401 || status === 429) return true;
+  if (status === 400 && /api\\?\/account|401 Unauthorized|status_code[^0-9]*401/i.test(responseText)) return true;
+  return false;
+}
+
 export async function createSipagoOrder({ total, redirect_urls, items, webhookUrl, currency = '032', expireLimitMinutes }) {
-  const token = await getSipagoToken();
   const config = getConfig();
   const attributes = {
     redirect_urls,
@@ -74,46 +92,56 @@ export async function createSipagoOrder({ total, redirect_urls, items, webhookUr
   // acepte un pago después de que nuestra reserva interna ya haya expirado.
   if (Number.isFinite(expireLimitMinutes)) attributes.expireLimitMinutes = expireLimitMinutes;
   const body = { data: { attributes } };
-  const res = await fetch(`${config.baseUrl}/api/v2/orders`, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/vnd.api+json',
-      'Authorization': `Bearer ${token}`
-    },
-    body: JSON.stringify(body)
-  });
-  if (!res.ok) {
-    const errorText = await res.text().catch(() => 'unknown');
-    console.error('[SIPAGO_ORDER] Failed:', res.status, errorText);
-    // Si es 401, invalidar token y reintentar una vez
-    if (res.status === 401 || errorText.includes('401')) {
-      console.log('[SIPAGO] Got 401, invalidating token and retrying...');
-      invalidateSipagoToken();
-      const newToken = await getSipagoToken(true);
-      const retryRes = await fetch(`${config.baseUrl}/api/v2/orders`, {
+
+  let lastError;
+  for (let attempt = 0; attempt <= MAX_CREATE_RETRIES; attempt++) {
+    try {
+      const token = await getSipagoToken();
+      const res = await fetch(`${config.baseUrl}/api/v2/orders`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/vnd.api+json',
-          'Authorization': `Bearer ${newToken}`
+          'Authorization': `Bearer ${token}`
         },
         body: JSON.stringify(body)
       });
-      if (!retryRes.ok) {
-        const retryError = await retryRes.text().catch(() => 'unknown');
-        console.error('[SIPAGO_ORDER] Retry failed:', retryRes.status, retryError);
-        throw new Error(`Sipago order creation failed after retry: ${retryRes.status} - ${retryError}`);
-      }
-      return retryRes.json();
+      if (res.ok) return res.json();
+
+      const errorText = await res.text().catch(() => 'unknown');
+      console.error(`[SIPAGO_ORDER] Request failed with status: ${res.status} (attempt ${attempt})`);
+      const err = new Error(`Sipago order creation failed: ${res.status}`);
+      err.status = res.status;
+      err.responseText = errorText;
+
+      // Do not retry ordinary validation 4xx (e.g. 400, 403, 404, 422)
+      if (!isTransientCreateError(res.status, errorText)) throw err;
+
+      // A direct or provider-wrapped account 401 requires a fresh token.
+      if (res.status === 401 || /401 Unauthorized|status_code[^0-9]*401/i.test(errorText)) invalidateSipagoToken();
+
+      if (attempt === MAX_CREATE_RETRIES) throw err;
+
+      const delayMs = Math.min(CREATE_RETRY_INITIAL_MS * (2 ** attempt), CREATE_RETRY_MAX_MS) + Math.floor(Math.random() * 200);
+      await sleep(delayMs);
+      lastError = err;
+    } catch (networkError) {
+      // Auth / network failures without a status: only retry if they are transient.
+      // 4xx credential errors (e.g. 403) are terminal and should not be retried.
+      if (networkError?.status && !isTransientCreateError(networkError.status)) throw networkError;
+      console.error(`[SIPAGO_ORDER] Network/auth error on attempt ${attempt}:`, networkError.message);
+      if (attempt === MAX_CREATE_RETRIES) throw networkError;
+      const delayMs = Math.min(CREATE_RETRY_INITIAL_MS * (2 ** attempt), CREATE_RETRY_MAX_MS) + Math.floor(Math.random() * 200);
+      await sleep(delayMs);
+      lastError = networkError;
     }
-    throw new Error(`Sipago order creation failed: ${res.status} - ${errorText}`);
   }
-  return res.json();
+  throw lastError || new Error('Sipago order creation failed');
 }
 
-export async function getSipagoOrder(uuid) {
+export async function getSipagoOrder(uuid, retry = true) {
   const token = await getSipagoToken();
   const config = getConfig();
-  const res = await fetch(`${config.baseUrl}/api/v2/orders/${uuid}`, {
+  const res = await fetch(`${config.baseUrl}/api/v2/orders/${encodeURIComponent(uuid)}`, {
     method: 'GET',
     headers: {
       'Authorization': `Bearer ${token}`,
@@ -121,9 +149,14 @@ export async function getSipagoOrder(uuid) {
     }
   });
   if (!res.ok) {
-    const errorText = await res.text().catch(() => 'unknown');
-    console.error('[SIPAGO_GET_ORDER] Failed:', res.status, errorText);
-    throw new Error(`Sipago get order failed: ${res.status} - ${errorText}`);
+    await res.text().catch(() => '');
+    if (res.status === 401 && retry) {
+      invalidateSipagoToken();
+      await getSipagoToken(true);
+      return getSipagoOrder(uuid, false);
+    }
+    console.error('[SIPAGO_GET_ORDER] Request failed with status:', res.status);
+    throw new Error(`Sipago get order failed: ${res.status}`);
   }
   return res.json();
 }

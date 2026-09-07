@@ -146,6 +146,28 @@ router.get('/show/:show_id', authenticateToken, requireRole('admin', 'boleteria'
     if (!show) {
       return res.status(404).json({ error: 'Show not found' });
     }
+
+    // Helper: excluir ventas anuladas totalmente y sus transacciones de reintegro asociadas
+    function parseSaleMetadata(sale) {
+      const raw = sale.metadata;
+      if (!raw) return {};
+      if (typeof raw === 'string') {
+        try { return JSON.parse(raw); } catch { return {}; }
+      }
+      return raw;
+    }
+    const allSessionSales = show.sessions.flatMap(s => s.sales || []);
+    const fullyRefundedSaleIds = new Set(
+      allSessionSales
+        .filter(s => parseSaleMetadata(s).refunded === true)
+        .map(s => s.id)
+    );
+    const isExcludedSale = (sale) => {
+      const meta = parseSaleMetadata(sale);
+      if (meta.refunded === true) return true;
+      if (meta.type === 'refund' && fullyRefundedSaleIds.has(meta.refund_of)) return true;
+      return false;
+    };
     
     // Calcular métricas por sesión y totales
     const sessionsData = [];
@@ -178,7 +200,7 @@ router.get('/show/:show_id', authenticateToken, requireRole('admin', 'boleteria'
       const sessionCapacity = calculateSessionCapacity(session, show);
       const soldTickets = (session.tickets || []).filter(t => t.type !== 'service');
       const validatedTickets = soldTickets.filter(t => t.status === 'validated');
-      const sessionSales = session.sales || [];
+      const sessionSales = (session.sales || []).filter(sale => !isExcludedSale(sale));
       
       // Calcular revenue (solo mp incluye service charge en total_amount)
       const sessionRevenue = sessionSales.reduce((sum, sale) => {
@@ -310,7 +332,7 @@ router.get('/show/:show_id', authenticateToken, requireRole('admin', 'boleteria'
     }
     
     // Calcular descuentos
-    const allSales = sessionsToProcess.flatMap(s => s.sales || []);
+    const allSales = sessionsToProcess.flatMap(s => s.sales || []).filter(sale => !isExcludedSale(sale));
     const salesWithDiscount = allSales.filter(s => s.discount_id);
     const totalDiscountAmount = salesWithDiscount.reduce((sum, sale) => {
       const discount = sale.discount;

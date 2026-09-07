@@ -532,7 +532,7 @@ export default function MpSuccess(){
           style={{
             display: 'inline-block',
             padding: '12px 32px',
-            background: '#28a745',
+            background: '#000000',
             color: '#fff',
             textDecoration: 'none',
             borderRadius: 6,

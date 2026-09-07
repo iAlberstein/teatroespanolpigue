@@ -58,3 +58,36 @@ export function getSectionName(type) {
       return type;
   }
 }
+
+/**
+ * Valida que los items seleccionados cumplan la restricción de platea baja
+ * con rango de filas (A-M).
+ * @param {Array} items - items { type, seat_code, quantity }
+ * @param {string} rowStart - letra de fila inicial (default 'A')
+ * @param {string} rowEnd - letra de fila final (default 'M')
+ * @returns {string|null} mensaje de error si no cumple, null si ok
+ */
+export function validatePlateaBajaRows(items, rowStart, rowEnd) {
+  const rs = rowStart || 'A';
+  const re = rowEnd || 'M';
+  const list = Array.isArray(items) ? items : [];
+  for (const item of list) {
+    if (!item) continue;
+    if (item.type !== 'butaca') {
+      return `El código aplicado solo es válido de la fila ${rs} a la fila ${re} de la platea baja`;
+    }
+    const seatCode = item.seat_code;
+    if (!seatCode) {
+      return `El código aplicado solo es válido de la fila ${rs} a la fila ${re} de la platea baja`;
+    }
+    const match = String(seatCode).match(/^([A-Z])(\d+)$/);
+    if (!match) {
+      return `El código aplicado solo es válido de la fila ${rs} a la fila ${re} de la platea baja`;
+    }
+    const rowLetter = match[1];
+    if (rowLetter < rs || rowLetter > re) {
+      return `El código aplicado solo es válido de la fila ${rs} a la fila ${re} de la platea baja`;
+    }
+  }
+  return null;
+}

@@ -34,6 +34,7 @@ import AteneoAdmin from './pages/ateneo/AteneoAdmin.jsx';
 import AteneoDocente from './pages/ateneo/AteneoDocente.jsx';
 import AteneoAlumno from './pages/ateneo/AteneoAlumno.jsx';
 import AteneoPerfilAlumno from './pages/ateneo/AteneoPerfilAlumno.jsx';
+import AteneoInscripcionExitosa from './pages/ateneo/AteneoInscripcionExitosa.jsx';
 import SobreElAteneo from './pages/ateneo/SobreElAteneo.jsx';
 import { theme } from './styles/theme.js';
 import { useState, useEffect, useRef } from 'react';
@@ -195,7 +196,7 @@ function AteneoNavbar() {
                   onClick={logout}
                   style={{
                     padding: `${theme.spacing.sm} ${theme.spacing.md}`,
-                    background: '#7c3aed',
+                    background: '#000000',
                     color: '#fff',
                     border: 'none',
                     borderRadius: theme.borderRadius.md,
@@ -215,7 +216,7 @@ function AteneoNavbar() {
                 <Link to="/register" style={{
                   textDecoration: 'none',
                   padding: `${theme.spacing.sm} ${theme.spacing.md}`,
-                  background: '#7c3aed',
+                  background: '#000000',
                   color: '#fff',
                   borderRadius: theme.borderRadius.md,
                   fontSize: theme.typography.small,
@@ -259,7 +260,7 @@ function AteneoNavbar() {
             <button
               onClick={() => { logout(); setMenuOpen(false); }}
               style={{
-                padding: theme.spacing.sm, background: '#7c3aed', color: '#fff',
+                padding: theme.spacing.sm, background: '#000000', color: '#fff',
                 border: 'none', borderRadius: theme.borderRadius.md, cursor: 'pointer', textAlign: 'left',
               }}
             >
@@ -270,7 +271,7 @@ function AteneoNavbar() {
               <Link to="/login" onClick={() => setMenuOpen(false)} style={mobileNavLinkStyle('/login')}>Ingresar</Link>
               <Link to="/register" onClick={() => setMenuOpen(false)} style={{
                 textDecoration: 'none', padding: theme.spacing.sm,
-                background: '#7c3aed', color: '#fff',
+                background: '#000000', color: '#fff',
                 borderRadius: theme.borderRadius.md, textAlign: 'center',
               }}>Registrarse</Link>
             </>
@@ -794,6 +795,11 @@ function Footer() {
           <div style={{ paddingLeft: isMobile ? 0 : theme.spacing.lg, borderTop: isMobile ? `1px solid ${theme.colors.border}` : 'none', paddingTop: isMobile ? theme.spacing.lg : 0 }}>
             <h4 style={columnTitleStyle}>Encontranos</h4>
             <p style={{ ...linkStyle, marginBottom: theme.spacing.md }}>
+              <strong>Horarios de boletería:</strong><br />
+              miércoles a viernes 18:00 a 20:30<br />
+              <span style={{ fontSize: theme.typography.tiny }}>(pagos en efectivo y QR con dinero en cuenta)</span>
+            </p>
+            <p style={{ ...linkStyle, marginBottom: theme.spacing.md }}>
               Espana 120, Pigue, Provincia de Buenos Aires, Argentina
             </p>
             <p style={{ ...linkStyle, marginBottom: theme.spacing.md }}>
@@ -1044,6 +1050,7 @@ function AppRoutes() {
               <AteneoPerfilAlumno />
             </ProtectedRoute>
           } />
+          <Route path="/ateneo/inscripcion-exitosa" element={<AteneoInscripcionExitosa />} />
           <Route path="/apoyanos" element={<Apoyanos />} />
           <Route path="/trabaja-con-nosotros" element={<TrabajaConNosotros />} />
           <Route path="/centro-de-ayuda" element={<CentroAyuda />} />

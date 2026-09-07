@@ -95,11 +95,20 @@ export async function apiFetch(endpoint, options = {}) {
  * @returns {Promise<Response>}
  */
 export async function apiAuthFetch(endpoint, options = {}, token) {
-  return apiFetch(endpoint, {
+  const response = await apiFetch(endpoint, {
     ...options,
     headers: {
       ...options.headers,
       Authorization: token ? `Bearer ${token}` : undefined,
     },
   });
+
+  // Si el token venció o es inválido, avisamos a la app para que cierre la
+  // sesión y redirija a /login en vez de dejar pantallas (ej: Validador) con
+  // un error crudo de "Token has expired" sin salida.
+  if (token && response.status === 401 && typeof window !== 'undefined') {
+    window.dispatchEvent(new CustomEvent('auth:unauthorized'));
+  }
+
+  return response;
 }

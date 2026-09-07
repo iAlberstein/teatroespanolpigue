@@ -1,34 +1,17 @@
-import { useEffect, useState } from 'react';
-import { useSearchParams } from 'react-router-dom';
-import { apiFetch } from '../lib/api';
+import { Link, useSearchParams } from 'react-router-dom';
+import SipagoSuccess from './SipagoSuccess.jsx';
+import { theme } from '../styles/theme.js';
 
-export default function SipagoFailure(){
+export default function SipagoFailure() {
   const [params] = useSearchParams();
-  const reservationId = params.get('reservation_id');
-  const status = params.get('status') || 'failure';
-  const [canceled, setCanceled] = useState(false);
-
-  // Auto-cancel reservation on mount to release holds
-  useEffect(() => {
-    if (!reservationId) return;
-    let aborted = false;
-    (async () => {
-      try {
-        await apiFetch(`/api/reservations/${reservationId}`, { method: 'DELETE' });
-        if (!aborted) setCanceled(true);
-      } catch {}
-    })();
-    return () => { aborted = true; };
-  }, [reservationId]);
+  if (params.get('attempt_id')) return <SipagoSuccess />;
 
   return (
-    <div>
-      <h1>Pago rechazado</h1>
-      <p>Tu pago está en estado <strong>{status}</strong>. Podés intentar de nuevo desde la cartelera.</p>
-      {reservationId && <p>Reservation ID: <code>{reservationId}</code></p>}
-      {canceled && <p style={{ fontSize: 12, color: '#666' }}>Tu reserva fue cancelada y los asientos liberados.</p>}
-      <div style={{ marginTop: 16 }}>
-        <a href="/cartelera">Ir a la cartelera</a>
+    <div style={{ padding: theme.spacing.lg, maxWidth: 600, margin: '0 auto', textAlign: 'center' }}>
+      <div style={{ background: theme.colors.surface, border: `1px solid ${theme.colors.border}`, borderRadius: theme.borderRadius.lg, boxShadow: theme.shadows.md, padding: theme.spacing.xl }}>
+        <h1 style={{ color: theme.colors.textPrimary, marginTop: 0 }}>El pago fue rechazado</h1>
+        <p style={{ color: theme.colors.textSecondary, lineHeight: 1.6 }}>SiPago no aprobó la operación. No se realizó la compra ni se emitieron entradas.</p>
+        <Link to="/agenda" style={{ display: 'inline-block', marginTop: theme.spacing.md, padding: '12px 20px', borderRadius: theme.borderRadius.md, background: theme.colors.primary, color: theme.colors.surface, textDecoration: 'none', fontWeight: theme.typography.semibold }}>Volver a la agenda</Link>
       </div>
     </div>
   );

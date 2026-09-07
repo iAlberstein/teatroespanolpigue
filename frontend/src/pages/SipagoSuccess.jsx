@@ -1,14 +1,20 @@
-import { useEffect, useState } from 'react';
-import { useSearchParams } from 'react-router-dom';
+import { useEffect, useRef, useState } from 'react';
+import { Link, useSearchParams } from 'react-router-dom';
 import { apiFetch } from '../lib/api';
 import { formatDateLong, formatTime, formatDateShort } from '../lib/dateFormatter.js';
+import { theme } from '../styles/theme.js';
 
 export default function SipagoSuccess(){
   const [searchParams] = useSearchParams();
   const reservationIdParam = searchParams.get('reservation_id');
+  const attemptIdParam = searchParams.get('attempt_id');
   const packIdParam = searchParams.get('pack_id');
   const discountIdParam = searchParams.get('discount_id');
 
+  const [attemptId] = useState(() => attemptIdParam || sessionStorage.getItem('sipago_attempt_id') || '');
+  const [paymentStatus, setPaymentStatus] = useState(attemptId ? 'pending' : null);
+  const [verificationPending, setVerificationPending] = useState(false);
+  const confirmRequested = useRef(false);
   const [reservation, setReservation] = useState(null);
   const [reservationId, setReservationId] = useState(reservationIdParam || '');
   const [packId, setPackId] = useState(packIdParam || '');
@@ -26,6 +32,46 @@ export default function SipagoSuccess(){
   const [autoSentEmail, setAutoSentEmail] = useState('');
   const [saleServiceItems, setSaleServiceItems] = useState([]);
   const [servicesSubtotal, setServicesSubtotal] = useState(0);
+
+  useEffect(() => {
+    if (!attemptId || packId) return;
+    let stopped = false;
+    let attempts = 0;
+    const checkStatus = async () => {
+      attempts++;
+      try {
+        const response = await apiFetch(`/api/payments/sipago-status/${attemptId}`);
+        const data = await response.json();
+        if (!response.ok) throw new Error(data.error || 'status_unavailable');
+        if (stopped) return;
+        setPaymentStatus(data.status);
+        setVerificationPending(Boolean(data.verification_pending));
+        if (data.reservation_id) setReservationId(data.reservation_id);
+        if (data.sale_id) setSaleId(data.sale_id);
+        if (data.status === 'success' && !data.sale_id && !confirmRequested.current) {
+          confirmRequested.current = true;
+          const confirmResponse = await apiFetch('/api/payments/sipago-confirm', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ attempt_id: attemptId })
+          });
+          if (!confirmResponse.ok) {
+            confirmRequested.current = false;
+            setPaymentStatus('processing_error');
+            setVerificationPending(true);
+          }
+        }
+      } catch {
+        if (!stopped) setVerificationPending(true);
+      }
+    };
+    checkStatus();
+    const interval = setInterval(() => {
+      if (attempts >= 60) return clearInterval(interval);
+      checkStatus();
+    }, 2000);
+    return () => { stopped = true; clearInterval(interval); };
+  }, [attemptId, packId]);
 
   useEffect(() => {
     if (!reservationId) return;
@@ -119,7 +165,7 @@ export default function SipagoSuccess(){
 
   // Fallback confirm if webhook didn't process yet
   useEffect(() => {
-    if (packId) return;
+    if (packId || attemptId) return;
     if (!reservationId || saleId) return;
     let aborted = false;
     const timer = setTimeout(async () => {
@@ -165,7 +211,7 @@ export default function SipagoSuccess(){
       } catch {}
     }, 2000);
     return () => { aborted = true; clearTimeout(timer); };
-  }, [reservationId, saleId, packId]);
+  }, [reservationId, saleId, packId, attemptId]);
 
   // Fallback pack confirm if webhook didn't process yet
   useEffect(() => {
@@ -338,10 +384,47 @@ export default function SipagoSuccess(){
     setWhatsappSent(true);
   };
 
+  if (!packId && attemptId && !saleId && paymentStatus !== 'success') {
+    const expired = paymentStatus === 'expired';
+    const rejected = paymentStatus === 'rejected';
+    const creationFailed = paymentStatus === 'creation_failed';
+    const showId = reservation?.session?.show?.id;
+    const sessionId = reservation?.session?.id || reservation?.session_id;
+    const retryHref = showId ? `/detalle/${showId}${sessionId ? `?sesion=${sessionId}` : ''}` : '/agenda';
+    const title = expired ? 'El tiempo para pagar venció' : rejected ? 'El pago fue rechazado' : creationFailed ? 'No pudimos iniciar el pago' : verificationPending ? 'No pudimos verificar el pago todavía' : 'Estamos verificando tu pago';
+    const message = expired
+      ? 'La operación no fue aprobada y las butacas fueron liberadas. Podés seleccionarlas nuevamente si continúan disponibles.'
+      : rejected
+        ? 'SiPago no aprobó la operación. No se realizó la compra ni se emitieron entradas.'
+        : creationFailed
+          ? 'SiPago no pudo crear la operación y no se realizó ningún cobro. Podés volver al espectáculo e intentarlo nuevamente.'
+        : verificationPending
+          ? 'SiPago todavía no pudo confirmar el resultado. No vuelvas a pagar hasta verificar el estado para evitar una operación duplicada.'
+          : 'La operación todavía no tiene una confirmación definitiva. Esta página se actualizará automáticamente.';
+    return (
+      <div style={{ padding: theme.spacing.lg, maxWidth: 600, margin: '0 auto', textAlign: 'center' }}>
+        <div style={{ background: theme.colors.surface, border: `1px solid ${theme.colors.border}`, borderRadius: theme.borderRadius.lg, boxShadow: theme.shadows.md, padding: theme.spacing.xl }}>
+          <h1 style={{ color: theme.colors.textPrimary, marginTop: 0 }}>{title}</h1>
+          <p style={{ color: theme.colors.textSecondary, lineHeight: 1.6, marginBottom: theme.spacing.lg }}>{message}</p>
+          {(expired || rejected || creationFailed) ? (
+            <div style={{ display: 'flex', gap: theme.spacing.sm, justifyContent: 'center', flexWrap: 'wrap' }}>
+              <Link to={retryHref} style={{ padding: '12px 20px', borderRadius: theme.borderRadius.md, background: theme.colors.primary, color: theme.colors.surface, textDecoration: 'none', fontWeight: theme.typography.semibold }}>Seleccionar butacas nuevamente</Link>
+              <Link to="/agenda" style={{ padding: '12px 20px', borderRadius: theme.borderRadius.md, border: `1px solid ${theme.colors.border}`, color: theme.colors.textPrimary, textDecoration: 'none', fontWeight: theme.typography.semibold }}>Volver a la agenda</Link>
+            </div>
+          ) : verificationPending ? (
+            <button type="button" onClick={() => window.location.reload()} style={{ padding: '12px 20px', border: 0, borderRadius: theme.borderRadius.md, background: theme.colors.primary, color: theme.colors.surface, cursor: 'pointer', fontWeight: theme.typography.semibold }}>Volver a verificar</button>
+          ) : (
+            <p style={{ color: theme.colors.textMuted, fontSize: theme.typography.small, margin: 0 }}>La verificación puede demorar unos instantes.</p>
+          )}
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div style={{ padding: 24, maxWidth: 600, margin: '0 auto' }}>
       <h1 style={{ color: purchaseConfirmed ? '#28a745' : '#a16207', marginBottom: 8 }}>{purchaseConfirmed ? '¡Compra confirmada!' : 'Estamos confirmando tu compra'}</h1>
-      <p style={{ fontSize: 16, marginBottom: 16 }}>{purchaseConfirmed ? 'Gracias por tu compra. Tu pago fue aprobado exitosamente.' : 'Tu pago fue recibido. Estamos registrando tus entradas; esta página se actualizará automáticamente.'}</p>
+      <p style={{ fontSize: 16, marginBottom: 16 }}>{purchaseConfirmed ? 'Gracias por tu compra. Tu pago fue aprobado exitosamente.' : 'Todavía no tenemos una confirmación definitiva del pago. Esta página se actualizará automáticamente.'}</p>
 
       {purchaseConfirmed && (
         <div style={{ padding: 12, background: '#e7f3ff', border: '1px solid #2196f3', borderRadius: 8, color: '#0d47a1', fontSize: 14, textAlign: 'center', marginBottom: 24 }}>
@@ -550,7 +633,7 @@ export default function SipagoSuccess(){
       <div style={{ marginTop: 24, textAlign: 'center' }}>
         <a 
           href="/perfil"
-          style={{ display: 'inline-block', padding: '12px 32px', background: '#28a745', color: '#fff', textDecoration: 'none', borderRadius: 6, fontSize: 16, fontWeight: 600, transition: 'background 0.2s' }}
+          style={{ display: 'inline-block', padding: '12px 32px', background: '#000000', color: '#fff', textDecoration: 'none', borderRadius: 6, fontSize: 16, fontWeight: 600, transition: 'background 0.2s' }}
         >
           Ver mis entradas en mi perfil →
         </a>

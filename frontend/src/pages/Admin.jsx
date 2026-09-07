@@ -239,12 +239,12 @@ export default function Admin() {
       {/* Banner especial para productor */}
       {user?.role === 'productor' && (
         <div style={{
-          background: 'linear-gradient(135deg, #8b5cf6 0%, #7c3aed 100%)',
+          background: '#000000',
           color: 'white',
           padding: isMobile ? theme.spacing.md : theme.spacing.lg,
           borderRadius: theme.borderRadius.lg,
           marginBottom: isMobile ? theme.spacing.md : theme.spacing.xl,
-          boxShadow: '0 4px 6px rgba(139, 92, 246, 0.2)'
+          boxShadow: '0 4px 6px rgba(0, 0, 0, 0.2)'
         }}>
           <div style={{ display: 'flex', flexDirection: isMobile ? 'column' : 'row', alignItems: isMobile ? 'flex-start' : 'center', gap: theme.spacing.md }}>
             <div style={{ fontSize: isMobile ? 28 : 48, fontWeight: 700 }}>PRODUCTOR</div>
@@ -308,9 +308,9 @@ export default function Admin() {
           onClick={() => setSection('reports')}
           style={{
             padding: isMobile ? `${theme.spacing.xs} ${theme.spacing.sm}` : `${theme.spacing.sm} ${theme.spacing.lg}`,
-            background: section === 'reports' ? (user?.role === 'productor' ? '#8b5cf6' : theme.colors.primary) : 'none',
+            background: section === 'reports' ? '#000000' : 'none',
             border: 'none',
-            borderBottom: section === 'reports' ? `3px solid ${user?.role === 'productor' ? '#8b5cf6' : theme.colors.primary}` : 'none',
+            borderBottom: section === 'reports' ? `3px solid #000000` : 'none',
             color: section === 'reports' ? 'white' : theme.colors.textSecondary,
             fontWeight: theme.typography.semibold,
             fontSize: isMobile ? theme.typography.small : theme.typography.body,

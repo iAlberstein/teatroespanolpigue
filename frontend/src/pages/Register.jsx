@@ -229,7 +229,7 @@ export default function Register() {
           disabled={loading}
           style={{
             padding: 12,
-            background: '#28a745',
+            background: '#000000',
             color: 'white',
             border: 'none',
             borderRadius: 4,

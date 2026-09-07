@@ -268,7 +268,7 @@ export default function AteneoDocente() {
                             <div style={{ fontSize: 12, color: '#6b7280', marginTop: 4 }}>{a.email || '-'}</div>
                             <div style={{ marginTop: 6, display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
                               <span style={{ fontSize: 11, color: '#9ca3af' }}>{a.seguimiento ? 'Con seguimiento' : 'Sin seguimiento'}</span>
-                              <button onClick={() => handleOpenSeguimiento(a)} style={{ padding: '3px 10px', background: '#ede9fe', color: '#7c3aed', border: 'none', borderRadius: 4, cursor: 'pointer', fontSize: 11, fontWeight: 600 }}>Modificar</button>
+                              <button onClick={() => handleOpenSeguimiento(a)} style={{ padding: '3px 10px', background: '#000000', color: '#fff', border: 'none', borderRadius: 4, cursor: 'pointer', fontSize: 11, fontWeight: 600 }}>Modificar</button>
                             </div>
                           </div>
                         ))}
@@ -291,7 +291,7 @@ export default function AteneoDocente() {
                                 <td style={{...tdStyle, fontSize: 12, color: '#6b7280'}}>{a.email || '-'}</td>
                                 <td style={{...tdStyle, textAlign: 'center'}}><span style={getEstadoBadge(a.estado_academico)}>{a.estado_academico || 'pendiente'}</span></td>
                                 <td style={tdStyle}>
-                                  <button onClick={() => handleOpenSeguimiento(a)} style={{ padding: '4px 12px', background: '#ede9fe', color: '#7c3aed', border: 'none', borderRadius: 4, cursor: 'pointer', fontSize: 12, fontWeight: 600 }}>Modificar</button>
+                                  <button onClick={() => handleOpenSeguimiento(a)} style={{ padding: '4px 12px', background: '#000000', color: '#fff', border: 'none', borderRadius: 4, cursor: 'pointer', fontSize: 12, fontWeight: 600 }}>Modificar</button>
                                 </td>
                               </tr>
                             ))}
@@ -313,7 +313,7 @@ export default function AteneoDocente() {
                       <>
                         <div style={{ display: 'flex', gap: 8, marginBottom: 8 }}>
                           <button onClick={() => setAsistencias(prev => { const n = {...prev}; Object.keys(n).forEach(k => n[k] = {...n[k], presente: true}); return n; })}
-                            style={{ padding: '4px 12px', background: '#059669', color: '#fff', border: 'none', borderRadius: 4, cursor: 'pointer', fontSize: 11, fontWeight: 600 }}>Todos P</button>
+                            style={{ padding: '4px 12px', background: '#000000', color: '#fff', border: 'none', borderRadius: 4, cursor: 'pointer', fontSize: 11, fontWeight: 600 }}>Todos P</button>
                           <button onClick={() => setAsistencias(prev => { const n = {...prev}; Object.keys(n).forEach(k => n[k] = {...n[k], presente: false}); return n; })}
                             style={{ padding: '4px 12px', background: '#dc2626', color: '#fff', border: 'none', borderRadius: 4, cursor: 'pointer', fontSize: 11, fontWeight: 600 }}>Todos A</button>
                         </div>
@@ -374,7 +374,7 @@ export default function AteneoDocente() {
                           </div>
                         )}
                         <div style={{ marginTop: 12, display: 'flex', justifyContent: 'flex-end' }}>
-                          <button onClick={handleGuardarAsistencia} disabled={saving} style={{ padding: '8px 16px', background: '#8B5CF6', color: '#fff', border: 'none', borderRadius: 6, cursor: 'pointer', fontWeight: 600, fontSize: 13 }}>
+                          <button onClick={handleGuardarAsistencia} disabled={saving} style={{ padding: '8px 16px', background: '#000000', color: '#fff', border: 'none', borderRadius: 6, cursor: 'pointer', fontWeight: 600, fontSize: 13 }}>
                             {saving ? 'Guardando...' : 'Guardar'}
                           </button>
                         </div>
@@ -398,7 +398,7 @@ export default function AteneoDocente() {
                               <div style={{ fontSize: 13, fontWeight: 600 }}>{formatDate(h.fecha)}</div>
                               <div style={{ fontSize: 12, color: '#6b7280' }}>{presentes}/{total} presentes · <span style={{ fontWeight: 600, color: pct >= 80 ? '#059669' : pct >= 50 ? '#d97706' : '#dc2626' }}>{pct}%</span></div>
                             </div>
-                            <button onClick={() => loadDetalle(h.fecha)} style={{ padding: '3px 10px', background: '#ede9fe', color: '#7c3aed', border: 'none', borderRadius: 4, cursor: 'pointer', fontSize: 11, fontWeight: 600, flexShrink: 0 }}>Detalle</button>
+                            <button onClick={() => loadDetalle(h.fecha)} style={{ padding: '3px 10px', background: '#000000', color: '#fff', border: 'none', borderRadius: 4, cursor: 'pointer', fontSize: 11, fontWeight: 600, flexShrink: 0 }}>Detalle</button>
                           </div>
                         );
                       })}
@@ -427,7 +427,7 @@ export default function AteneoDocente() {
                                 <td style={tdStyle}>{presentes}</td>
                                 <td style={tdStyle}><span style={{ fontWeight: 600, color: pct >= 80 ? '#059669' : pct >= 50 ? '#d97706' : '#dc2626' }}>{pct}%</span></td>
                                 <td style={tdStyle}>
-                                  <button onClick={() => loadDetalle(h.fecha)} style={{ padding: '3px 10px', background: '#ede9fe', color: '#7c3aed', border: 'none', borderRadius: 4, cursor: 'pointer', fontSize: 11, fontWeight: 600 }}>Ver detalle</button>
+                                  <button onClick={() => loadDetalle(h.fecha)} style={{ padding: '3px 10px', background: '#000000', color: '#fff', border: 'none', borderRadius: 4, cursor: 'pointer', fontSize: 11, fontWeight: 600 }}>Ver detalle</button>
                                 </td>
                               </tr>
                             );
@@ -506,7 +506,7 @@ export default function AteneoDocente() {
             />
             <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8, marginTop: 12 }}>
               <button onClick={() => setSeguimientoModal(null)} style={{ padding: '8px 16px', background: '#f3f4f6', color: '#374151', border: 'none', borderRadius: 6, cursor: 'pointer', fontWeight: 500, fontSize: 13 }}>Cancelar</button>
-              <button onClick={handleGuardarSeguimiento} disabled={savingSeguimiento} style={{ padding: '8px 16px', background: '#7c3aed', color: '#fff', border: 'none', borderRadius: 6, cursor: 'pointer', fontWeight: 600, fontSize: 13 }}>
+              <button onClick={handleGuardarSeguimiento} disabled={savingSeguimiento} style={{ padding: '8px 16px', background: '#000000', color: '#fff', border: 'none', borderRadius: 6, cursor: 'pointer', fontWeight: 600, fontSize: 13 }}>
                 {savingSeguimiento ? 'Guardando...' : 'Guardar'}
               </button>
             </div>

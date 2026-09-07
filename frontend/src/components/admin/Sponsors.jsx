@@ -90,7 +90,7 @@ export default function Sponsors() {
               onClick={() => handleDelete(s.filename)}
               style={{
                 position: 'absolute', top: 4, right: 4,
-                background: theme.colors.accent, color: '#fff',
+                background: '#dc3545', color: '#fff',
                 border: 'none', borderRadius: '50%',
                 width: 22, height: 22, cursor: 'pointer',
                 fontSize: 12, lineHeight: '22px',

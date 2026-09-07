@@ -700,7 +700,7 @@ export default function PackCheckout({
     return (
       <div style={{ padding: 24, background: '#fff', borderRadius: 12, border: '1px solid #ddd', maxWidth: 600, margin: '0 auto' }}>
         <p>Para continuar, iniciá sesión o continuá como invitado.</p>
-        <button onClick={() => onGuestCheckoutNeeded?.()} style={{ padding: '10px 20px', background: '#3b82f6', color: '#fff', border: 'none', borderRadius: 6, cursor: 'pointer' }}>Continuar</button>
+        <button onClick={() => onGuestCheckoutNeeded?.()} style={{ padding: '10px 20px', background: '#000000', color: '#fff', border: 'none', borderRadius: 6, cursor: 'pointer' }}>Continuar</button>
         <button onClick={() => onClose?.() || (window.location.href = '/')} style={{ marginLeft: 12, padding: '10px 20px', background: '#6b7280', color: '#fff', border: 'none', borderRadius: 6, cursor: 'pointer' }}>Cancelar</button>
       </div>
     );
