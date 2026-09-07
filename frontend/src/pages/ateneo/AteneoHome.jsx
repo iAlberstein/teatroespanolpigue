@@ -43,7 +43,7 @@ export default function AteneoHome() {
   const [authLoading, setAuthLoading] = useState(false);
   const pendingInscripcionRef = useRef(null);
   const [esMenor, setEsMenor] = useState(false);
-  const [menorForm, setMenorForm] = useState({ nombre: '', apellido: '', dni: '', fecha_nacimiento: '', nombre_tutor: '', telefono_tutor: '' });
+  const [menorForm, setMenorForm] = useState({ nombre: '', apellido: '', dni: '', fecha_nacimiento: '', nombre_tutor: '', email_tutor: '', telefono_tutor: '' });
   const [guestForm, setGuestForm] = useState({ name: '', email: '', phone: '', dni: '' });
 
   useEffect(() => {
@@ -85,10 +85,20 @@ export default function AteneoHome() {
         body.dni_menor = menorForm.dni;
         body.fecha_nacimiento_menor = menorForm.fecha_nacimiento;
         body.nombre_tutor = menorForm.nombre_tutor;
+        body.email_tutor = menorForm.email_tutor;
         body.telefono_tutor = menorForm.telefono_tutor;
       }
       if (!isAuthenticated) {
-        body.guest = guestForm;
+        if (esMenor) {
+          body.guest = {
+            name: menorForm.nombre_tutor,
+            email: menorForm.email_tutor,
+            phone: menorForm.telefono_tutor,
+            dni: ''
+          };
+        } else {
+          body.guest = guestForm;
+        }
       }
       const res = isAuthenticated
         ? await apiAuthFetch('/api/ateneo/inscripciones', { method: 'POST', body: JSON.stringify(body) }, token)
@@ -485,7 +495,7 @@ export default function AteneoHome() {
           background: 'rgba(0,0,0,0.5)', display: 'flex', alignItems: 'flex-start',
           justifyContent: 'center', zIndex: 1000, padding: 16,
           overflowY: 'auto', WebkitOverflowScrolling: 'touch'
-        }} onClick={() => { setConfirmInscripcionModal(null); setEsMenor(false); setMenorForm({ nombre: '', apellido: '', dni: '', fecha_nacimiento: '', nombre_tutor: '', telefono_tutor: '' }); setGuestForm({ name: '', email: '', phone: '', dni: '' }); }}>
+        }} onClick={() => { setConfirmInscripcionModal(null); setEsMenor(false); setMenorForm({ nombre: '', apellido: '', dni: '', fecha_nacimiento: '', nombre_tutor: '', email_tutor: '', telefono_tutor: '' }); setGuestForm({ name: '', email: '', phone: '', dni: '' }); }}>
           <div style={{
             background: '#fff', borderRadius: 12, padding: 24, maxWidth: 480, width: '100%',
             boxShadow: '0 20px 60px rgba(0,0,0,0.3)', margin: 'auto 0'
@@ -529,7 +539,7 @@ export default function AteneoHome() {
               padding: 16, marginBottom: 20
             }}>
               <label style={{ display: 'flex', alignItems: 'center', gap: 10, cursor: 'pointer', fontSize: 14, color: '#92400e', fontWeight: 500 }}>
-                <input type="checkbox" checked={esMenor} onChange={e => { setEsMenor(e.target.checked); if (!e.target.checked) setMenorForm({ nombre: '', apellido: '', dni: '', fecha_nacimiento: '', nombre_tutor: '', telefono_tutor: '' }); }}
+                <input type="checkbox" checked={esMenor} onChange={e => { setEsMenor(e.target.checked); if (!e.target.checked) setMenorForm({ nombre: '', apellido: '', dni: '', fecha_nacimiento: '', nombre_tutor: '', email_tutor: '', telefono_tutor: '' }); }}
                   style={{ width: 18, height: 18, accentColor: '#7c3aed', cursor: 'pointer' }} />
                 La inscripcion es para un/a menor de edad
               </label>
@@ -561,6 +571,11 @@ export default function AteneoHome() {
                       placeholder="Nombre y apellido" style={{ width: '100%', padding: '7px 10px', border: '1px solid #d1d5db', borderRadius: 6, fontSize: 13, boxSizing: 'border-box' }} />
                   </div>
                   <div style={{ gridColumn: '1 / -1' }}>
+                    <label style={{ display: 'block', fontSize: 11, fontWeight: 500, color: '#374151', marginBottom: 3 }}>Email de padre/madre/tutor <span style={{ color: '#dc2626' }}>*</span></label>
+                    <input type="email" value={menorForm.email_tutor} onChange={e => setMenorForm(f => ({...f, email_tutor: e.target.value}))}
+                      placeholder="tu@email.com" style={{ width: '100%', padding: '7px 10px', border: '1px solid #d1d5db', borderRadius: 6, fontSize: 13, boxSizing: 'border-box' }} />
+                  </div>
+                  <div style={{ gridColumn: '1 / -1' }}>
                     <label style={{ display: 'block', fontSize: 11, fontWeight: 500, color: '#374151', marginBottom: 3 }}>Telefono de padre/madre/tutor <span style={{ color: '#dc2626' }}>*</span></label>
                     <input type="tel" value={menorForm.telefono_tutor} onChange={e => setMenorForm(f => ({...f, telefono_tutor: e.target.value}))}
                       placeholder="Ej: 2923456789" style={{ width: '100%', padding: '7px 10px', border: '1px solid #d1d5db', borderRadius: 6, fontSize: 13, boxSizing: 'border-box' }} />
@@ -572,7 +587,7 @@ export default function AteneoHome() {
               )}
             </div>
 
-            {!isAuthenticated && confirmInscripcionModal.taller_corto && (
+            {!isAuthenticated && confirmInscripcionModal.taller_corto && !esMenor && (
               <div style={{
                 background: '#eff6ff', border: '1px solid #dbeafe', borderRadius: 8,
                 padding: 16, marginBottom: 20
@@ -605,17 +620,17 @@ export default function AteneoHome() {
             )}
 
             <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8 }}>
-              <button onClick={() => { setConfirmInscripcionModal(null); setEsMenor(false); setMenorForm({ nombre: '', apellido: '', dni: '', fecha_nacimiento: '', nombre_tutor: '', telefono_tutor: '' }); setGuestForm({ name: '', email: '', phone: '', dni: '' }); }} style={{
+              <button onClick={() => { setConfirmInscripcionModal(null); setEsMenor(false); setMenorForm({ nombre: '', apellido: '', dni: '', fecha_nacimiento: '', nombre_tutor: '', email_tutor: '', telefono_tutor: '' }); setGuestForm({ name: '', email: '', phone: '', dni: '' }); }} style={{
                 padding: '8px 16px', background: '#f3f4f6', color: '#374151',
                 border: 'none', borderRadius: 6, cursor: 'pointer', fontWeight: 500, fontSize: 13
               }}>Cancelar</button>
               <button
                 onClick={() => {
-                  if (esMenor && (!menorForm.nombre.trim() || !menorForm.apellido.trim() || !menorForm.dni.trim() || !menorForm.fecha_nacimiento || !menorForm.nombre_tutor.trim() || !menorForm.telefono_tutor.trim())) {
+                  if (esMenor && (!menorForm.nombre.trim() || !menorForm.apellido.trim() || !menorForm.dni.trim() || !menorForm.fecha_nacimiento || !menorForm.nombre_tutor.trim() || !menorForm.email_tutor.trim() || !menorForm.telefono_tutor.trim())) {
                     alert('Completa todos los datos del menor y del tutor para continuar.');
                     return;
                   }
-                  if (!isAuthenticated && confirmInscripcionModal.taller_corto && (!guestForm.name.trim() || !guestForm.email.trim())) {
+                  if (!isAuthenticated && !esMenor && confirmInscripcionModal.taller_corto && (!guestForm.name.trim() || !guestForm.email.trim())) {
                     alert('Completa tu nombre y email para continuar.');
                     return;
                   }
