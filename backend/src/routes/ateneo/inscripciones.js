@@ -199,7 +199,7 @@ router.post('/', optionalAuth, async (req, res) => {
           phone: phone || null,
           dni: dni || null,
           password_hash,
-          role: 'alumno_ateneo',
+          role: 'espectador',
           provincia: null,
           localidad: null
         }, { transaction });
