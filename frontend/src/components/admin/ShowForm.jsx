@@ -1357,14 +1357,14 @@ export default function ShowForm({ show, onSave, onCancel }) {
                 />
               </div>
               <div style={{ flex: 1, minWidth: 140 }}>
-                <label style={{ fontSize: 12, fontWeight: 600, display: 'block', marginBottom: 4 }}>Incluir en bordereaux</label>
+                <label style={{ fontSize: 12, fontWeight: 600, display: 'block', marginBottom: 4 }}>Incluir en bordereau</label>
                 <select
                   value={newService.include_in_bordereaux ? 'bordereaux' : 'teatro'}
                   onChange={e => setNewService(prev => ({ ...prev, include_in_bordereaux: e.target.value === 'bordereaux' }))}
                   style={{ width: '100%', padding: '8px 10px', borderRadius: 6, border: '1px solid #ccc', fontSize: 14 }}
                 >
                   <option value="teatro">Del teatro</option>
-                  <option value="bordereaux">A bordereaux</option>
+                  <option value="bordereaux">A bordereau</option>
                 </select>
               </div>
               <button

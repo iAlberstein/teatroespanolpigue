@@ -54,7 +54,7 @@ export default function BordereauxModal({ showId, sessionId, onClose }) {
       setAuthorName(response.show?.author_name || '');
     } catch (error) {
       console.error('Error loading bordereaux:', error);
-      alert('Error al cargar el bordereaux. Asegúrate de que la tabla "bordereaux" existe en la base de datos.');
+      alert('Error al cargar el bordereau. Intentá nuevamente.');
       onClose();
     } finally {
       setLoading(false);
@@ -64,7 +64,7 @@ export default function BordereauxModal({ showId, sessionId, onClose }) {
   const handleSave = async () => {
     // Productores no pueden editar, ni la vista de sesión individual
     if (user?.role === 'productor' || sessionId) {
-      alert('No tenés permisos para editar el bordereaux');
+      alert('No tenés permisos para editar el bordereau');
       return;
     }
     
@@ -101,11 +101,11 @@ export default function BordereauxModal({ showId, sessionId, onClose }) {
   const handleClose = async () => {
     // Productores ni vista de sesión individual pueden cerrar
     if (user?.role === 'productor' || sessionId) {
-      alert('No tenés permisos para cerrar el bordereaux');
+      alert('No tenés permisos para cerrar el bordereau');
       return;
     }
     
-    if (!confirm('¿Está seguro de cerrar el bordereaux? Esta acción es irreversible.')) {
+    if (!confirm('¿Está seguro de cerrar el bordereau? Esta acción es irreversible.')) {
       return;
     }
     
@@ -122,10 +122,10 @@ export default function BordereauxModal({ showId, sessionId, onClose }) {
       
       // Recargar datos
       await loadBordereaux();
-      alert('Bordereaux cerrado exitosamente');
+      alert('Bordereau cerrado exitosamente');
     } catch (error) {
       console.error('Error closing bordereaux:', error);
-      alert('Error al cerrar el bordereaux');
+      alert('Error al cerrar el bordereau');
     } finally {
       setClosing(false);
     }
@@ -189,8 +189,8 @@ export default function BordereauxModal({ showId, sessionId, onClose }) {
       const a = document.createElement('a');
       a.href = url;
       a.download = sessionId
-        ? `bordereaux_sesion_${data?.show?.title || 'show'}.pdf`
-        : `bordereaux_${data?.show?.title || 'show'}.pdf`;
+        ? `bordereau_sesion_${data?.show?.title || 'show'}.pdf`
+        : `bordereau_${data?.show?.title || 'show'}.pdf`;
       document.body.appendChild(a);
       a.click();
       document.body.removeChild(a);
@@ -224,7 +224,7 @@ export default function BordereauxModal({ showId, sessionId, onClose }) {
           borderRadius: theme.borderRadius.lg,
           boxShadow: theme.shadows.xl
         }}>
-          Cargando bordereaux...
+          Cargando bordereau...
         </div>
       </div>
     );
@@ -316,7 +316,7 @@ export default function BordereauxModal({ showId, sessionId, onClose }) {
               whiteSpace: 'nowrap'
             }}
           >
-            BORDEREAUX PROVISORIO
+            BORDEREAU PROVISORIO
           </div>
         )}
 
@@ -338,7 +338,7 @@ export default function BordereauxModal({ showId, sessionId, onClose }) {
               {/* Info */}
               <div>
                 <h2 style={{ margin: 0, marginBottom: theme.spacing.sm }}>
-                  BORDEREAUX{sessionId ? ' — SESIÓN' : ''}
+                  BORDEREAU{sessionId ? ' — SESIÓN' : ''}
                 </h2>
                 <div><strong>OBRA:</strong> {data.show.title}</div>
                 <div style={{ display: 'flex', alignItems: 'center', gap: theme.spacing.sm }}>
@@ -402,7 +402,7 @@ export default function BordereauxModal({ showId, sessionId, onClose }) {
                 marginBottom: theme.spacing.sm,
                 textAlign: 'center'
               }}>
-                 Bordereaux cerrado el {formatDateTimeCompact(data.bordereaux.closed_at)}
+                 Bordereau cerrado el {formatDateTimeCompact(data.bordereaux.closed_at)}
               </div>
             )}
 
@@ -416,7 +416,7 @@ export default function BordereauxModal({ showId, sessionId, onClose }) {
                   color: '#1e40af',
                   fontSize: theme.typography.small
                 }}>
-                  Vista de sesión individual — solo lectura. Para editar el bordereaux usá la vista consolidada del show.
+                  Vista de sesión individual — solo lectura. Para editar el bordereau usá la vista consolidada del show.
                 </div>
                 <Button
                   variant="success"

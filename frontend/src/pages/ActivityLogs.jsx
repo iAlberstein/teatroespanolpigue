@@ -166,7 +166,7 @@ export default function ActivityLogs() {
       discount_update: 'Cupón actualizado',
       user_role_change: 'Cambio de rol',
       user_status_change: 'Cambio de estado',
-      bordereaux_close: 'Bordereaux cerrado'
+      bordereaux_close: 'Bordereau cerrado'
     };
     return actions[action] || action;
   };
@@ -179,7 +179,7 @@ export default function ActivityLogs() {
       sale: 'Venta',
       ticket: 'Entrada',
       discount: 'Cupón',
-      bordereaux: 'Bordereaux'
+      bordereaux: 'Bordereau'
     };
     return entities[entity] || entity;
   };

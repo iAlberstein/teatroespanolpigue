@@ -1175,7 +1175,7 @@ export default function Reports({ shows }) {
                   onClick={() => setShowBordereauxModal(true)}
                   style={{ marginLeft: theme.spacing.md }}
                 >
-                  {selectedSessionId ? 'Ver Bordereaux (Sesión)' : 'Ver Bordereaux'}
+                  {selectedSessionId ? 'Ver Bordereau (Sesión)' : 'Ver Bordereau'}
                 </Button>
               )}
             </div>
@@ -1300,7 +1300,7 @@ export default function Reports({ shows }) {
             <Card variant="elevated" padding="lg" style={{ marginBottom: theme.spacing.lg }}>
               <h3 style={{ marginBottom: theme.spacing.md, color: theme.colors.textPrimary }}>
                 Desglose por Servicios
-                {isProductor && <span style={{ fontSize: theme.typography.small, color: theme.colors.textSecondary, marginLeft: theme.spacing.sm }}>(a bordereaux)</span>}
+                {isProductor && <span style={{ fontSize: theme.typography.small, color: theme.colors.textSecondary, marginLeft: theme.spacing.sm }}>(a bordereau)</span>}
               </h3>
               <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: theme.spacing.md }}>
                 {/* Admin: mostrar servicios a bordereaux */}
